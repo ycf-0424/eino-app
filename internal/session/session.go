@@ -1,0 +1,234 @@
+// Package session 提供文件或 MySQL 会话持久化，供 Agent 重启后恢复历史。
+package session
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/cloudwego/eino/schema"
+)
+
+// Store 为 HTTP、控制台和迁移工具提供统一入口；Open 根据配置选择后端。
+type Store struct {
+	dir   string
+	mysql *mysqlStore
+}
+
+// Info 是会话摘要；Size 为序列化消息字节数，MySQL 模式不代表磁盘占用。
+type Info struct {
+	ID         string    `json:"id"`
+	Size       int64     `json:"size"`
+	ModifiedAt time.Time `json:"modified_at"`
+}
+
+const summaryPrefix = "[较早对话摘要]\n"
+
+// TrimHistory 保留系统消息和最近若干条消息，防止上下文无限增长。
+func TrimHistory(messages []*schema.Message, maxMessages int, maxChars int) []*schema.Message {
+	if maxMessages <= 0 && maxChars <= 0 {
+		return messages
+	}
+	var system *schema.Message
+	first := 0
+	if len(messages) > 0 && messages[0].Role == schema.System {
+		system = messages[0]
+		first = 1
+	}
+	start := first
+	if maxMessages > 0 && len(messages)-start > maxMessages {
+		start = len(messages) - maxMessages
+	}
+	out := append([]*schema.Message{}, messages[start:]...)
+	if maxChars > 0 {
+		total, keep := 0, 0
+		for i := len(out) - 1; i >= 0; i-- {
+			total += len(out[i].Content)
+			if total > maxChars {
+				keep = i + 1
+				break
+			}
+		}
+		out = out[keep:]
+	}
+	if system != nil {
+		out = append([]*schema.Message{system}, out...)
+	}
+	return out
+}
+
+// CompactHistory 将被裁掉的旧消息压缩为确定性摘要，并保留最近消息。
+// 这里不额外调用模型，避免每轮会话都增加 Ollama 推理开销。
+func CompactHistory(messages []*schema.Message, maxMessages, maxChars int) []*schema.Message {
+	trimmed := TrimHistory(messages, maxMessages, maxChars)
+	if len(trimmed) == len(messages) {
+		return trimmed
+	}
+	kept := make(map[*schema.Message]struct{}, len(trimmed))
+	for _, message := range trimmed {
+		kept[message] = struct{}{}
+	}
+	var lines []string
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		if _, ok := kept[message]; ok || strings.HasPrefix(message.Content, summaryPrefix) {
+			continue
+		}
+		role := "用户"
+		if message.Role == schema.Assistant {
+			role = "助手"
+		}
+		text := strings.Join(strings.Fields(message.Content), " ")
+		if len([]rune(text)) > 160 {
+			text = string([]rune(text)[:160]) + "..."
+		}
+		lines = append(lines, role+": "+text)
+	}
+	if len(lines) == 0 {
+		return trimmed
+	}
+	summary := schema.SystemMessage(summaryPrefix + strings.Join(lines, "\n"))
+	// 摘要作为系统上下文放在最近消息之前，不会被误认为新的用户问题。
+	return append([]*schema.Message{summary}, trimmed...)
+}
+
+var validID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// New 创建会话存储，并自动创建目录。
+func New(dir string) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create session dir: %w", err)
+	}
+	return &Store{dir: dir}, nil
+}
+
+func (s *Store) path(id string) string { return filepath.Join(s.dir, id+".json") }
+
+func validateID(id string) error {
+	if !validID.MatchString(id) {
+		return fmt.Errorf("invalid session id %q: use 1-64 letters, digits, '.', '_' or '-'", id)
+	}
+	return nil
+}
+
+// Load 读取会话；不存在时返回空历史。
+func (s *Store) Load(id string) ([]*schema.Message, error) {
+	if s.mysql != nil {
+		return s.mysql.load(id)
+	}
+	if err := validateID(id); err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(s.path(id))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read session: %w", err)
+	}
+	var messages []*schema.Message
+	if err := json.Unmarshal(b, &messages); err != nil {
+		return nil, fmt.Errorf("parse session: %w", err)
+	}
+	return messages, nil
+}
+
+// Save 原子写入会话，避免程序中断时留下半个 JSON 文件。
+func (s *Store) Save(id string, messages []*schema.Message) error {
+	if s.mysql != nil {
+		return s.mysql.save(id, messages)
+	}
+	if err := validateID(id); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(messages, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode session: %w", err)
+	}
+	tmp := s.path(id) + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return fmt.Errorf("write session: %w", err)
+	}
+	if err := os.Rename(tmp, s.path(id)); err != nil {
+		return fmt.Errorf("commit session: %w", err)
+	}
+	return nil
+}
+
+// List 返回所有 Session，按最近修改时间倒序排列。
+func (s *Store) List() ([]Info, error) {
+	if s.mysql != nil {
+		return s.mysql.list()
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	var result []Info
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, Info{ID: strings.TrimSuffix(entry.Name(), ".json"), Size: info.Size(), ModifiedAt: info.ModTime()})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ModifiedAt.After(result[j].ModifiedAt) })
+	return result, nil
+}
+
+// Delete 删除一个 Session；不存在视为成功，方便接口幂等调用。
+func (s *Store) Delete(id string) error {
+	if s.mysql != nil {
+		return s.mysql.delete(id)
+	}
+	if err := validateID(id); err != nil {
+		return err
+	}
+	err := os.Remove(s.path(id))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// CleanupOlderThan 删除超过指定期限的 Session，并返回删除数量。
+func (s *Store) CleanupOlderThan(age time.Duration) (int, error) {
+	return s.CleanupOlderThanBatch(age, 500)
+}
+
+// CleanupOlderThanBatch is the configurable variant used by the service
+// maintenance loop. The default CleanupOlderThan API remains compatible with
+// existing callers.
+func (s *Store) CleanupOlderThanBatch(age time.Duration, batchSize int) (int, error) {
+	if s.mysql != nil {
+		return s.mysql.cleanupOlderThan(age, batchSize)
+	}
+	if age <= 0 {
+		return 0, fmt.Errorf("cleanup age must be greater than zero")
+	}
+	items, err := s.List()
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	cutoff := time.Now().Add(-age)
+	for _, item := range items {
+		if item.ModifiedAt.Before(cutoff) {
+			if err := s.Delete(item.ID); err != nil {
+				return removed, err
+			}
+			removed++
+		}
+	}
+	return removed, nil
+}

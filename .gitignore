@@ -1,0 +1,12 @@
+.env
+# config.yaml 纳入版本控制：不含真凭据，密钥请走 ${ENV_NAME} 或 config.ark.yaml
+*.exe
+*.log
+build/
+eino-server
+data/
+docs/knowledge/.index-manifest.json
+*.checkpoint
+*.approval.json
+.idea/
+.workbuddy/

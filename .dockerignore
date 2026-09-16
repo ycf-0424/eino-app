@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+data
+build
+*.exe
+*.log
+Dockerfile*
+docker-compose*.yml
+docs/ROADMAP.md
+docs/API.md
+docs/SECURITY.md
+internal/integration
+**/*_test.go

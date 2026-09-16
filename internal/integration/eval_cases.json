@@ -1,0 +1,5 @@
+[
+  {"question":"星河系统的幸运数字是什么？","expected":"7319","must_cite":"milvus-validation.md"},
+  {"question":"星河系统使用什么技术栈？","expected":"Go、Eino 和 Milvus","must_cite":"milvus-validation.md"},
+  {"question":"星河系统首席财务官是谁？","expected":"","must_cite":"","should_refuse":true}
+]

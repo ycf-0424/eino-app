@@ -1,0 +1,110 @@
+# Docker 容器专用配置。容器通过 host.docker.internal 访问 Windows 上的 Ollama，
+# 通过 Compose 服务名 milvus 访问同一 Docker 网络中的向量数据库。
+openai:
+  api_key: "ollama"
+  model: "qwen3.5:9b"
+  base_url: "http://host.docker.internal:11434/v1"
+  reasoning_effort: "none"
+  max_completion_tokens: 512
+
+session_dir: "data/sessions"
+session:
+  # 自动记忆启用时必须使用 MySQL；Compose 仍可通过 SESSION_STORE 显式覆盖。
+  store: "mysql"
+  max_messages: 20
+  max_chars: 12000
+  expire_days: 30
+
+skills:
+  dir: "skills"
+  default: ""
+
+runtime:
+  request_timeout: 180s
+  max_concurrency: 2
+
+# 容器只能看到已挂载目录；workspace-files 由 Compose 挂载到应用工作目录。
+local_files:
+  enabled: true
+  roots:
+    - "workspace-files"
+  max_bytes: 10485760
+
+# P8 实时执行进度；默认关闭，Compose 可通过环境变量或配置文件灰度开启。
+execution_events:
+  enabled: false
+  queue_size: 256
+  retention_days: 7
+  max_events_per_run: 5000
+  dir: "data/executions"
+
+agent:
+  multi_agent: true
+  checkpoint_dir: "data/checkpoints"
+
+memory:
+  enabled: true
+  identity_mode: "local_single_user"
+  owner_id: "local-owner"
+  project_id: "my-eino-app"
+  auto_extract: true
+  extractor_model: "inherit_chat"
+  embedding_config: "inherit_rag"
+  milvus_collection: "my_eino_memory_v1"
+  vectorize_types: ["project_fact", "decision", "milestone", "todo"]
+  extraction_context_messages: 8
+  max_candidates: 5
+  max_candidate_chars: 500
+  worker_concurrency: 1
+  task_timeout: 120s
+  lease_duration: 180s
+  max_attempts: 5
+  retry_initial_delay: 2s
+  retry_max_delay: 60s
+  retrieval_top_k: 5
+  max_context_chars: 2000
+  audit_retention_days: 30
+  turn_retention_days: 30
+  job_success_retention_days: 7
+  job_failed_retention_days: 30
+  source_retention_days: 90
+  version_keep_count: 3
+  cleanup_batch_size: 500
+  cleanup_interval: 24h
+
+debug: false
+
+ollama:
+  health_check: true
+  timeout: 60s
+
+retry:
+  max_attempts: 3
+  base_delay: 1s
+  max_delay: 10s
+
+rag:
+  enabled: true
+  store: "milvus"
+  document_dir: "docs/knowledge"
+  chunk_size: 800
+  chunk_overlap: 120
+  top_k: 5
+  score_threshold: 0.50
+  max_context_chars: 6000
+  dimension: 1024
+  embedding:
+    api_key: "ollama"
+    model: "bge-m3"
+    base_url: "http://host.docker.internal:11434/v1"
+  redis:
+    addr: "redis-stack:6379"
+    password: ""
+    db: 0
+    index: "my_eino_knowledge"
+    key_prefix: "knowledge:"
+  milvus:
+    address: "milvus:19530"
+    username: ""
+    password: ""
+    collection: "my_eino_knowledge"

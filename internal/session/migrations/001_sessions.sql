@@ -1,0 +1,17 @@
+CREATE TABLE IF NOT EXISTS conversations (
+ id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+ updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ INDEX idx_conversations_updated(updated_at)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS messages (
+ conversation_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ sequence BIGINT NOT NULL,
+ role VARCHAR(20) NOT NULL,
+ content LONGTEXT NOT NULL,
+ status VARCHAR(24) NOT NULL,
+ payload JSON NOT NULL,
+ created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ PRIMARY KEY(conversation_id, sequence),
+ CONSTRAINT fk_messages_conversation FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

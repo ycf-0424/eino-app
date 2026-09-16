@@ -1,0 +1,125 @@
+services:
+  mysql:
+    # 固定原容器镜像，避免 latest 更新导致原数据目录被自动升级。
+    image: mysql@sha256:8fdf311514c91fa5014e93e98e19d7f5d9eb162a462c13100c956dacc278ee21
+    command: ["mysqld"]
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    environment:
+      # 原数据卷已初始化；这些变量供健康检查使用，不重置已有账号密码。
+      MYSQL_USER: "${MYSQL_USER:?Configure MYSQL_USER in .env}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?Configure MYSQL_PASSWORD in .env}"
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-eino}"
+    volumes:
+      - mysql-existing-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u\"$$MYSQL_USER\" -D\"$$MYSQL_DATABASE\" -N -e 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+    restart: unless-stopped
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.30
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - milvus-etcd:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - milvus-minio:/minio_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  milvus:
+    image: milvusdb/milvus:v2.5.13
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus-data:/var/lib/milvus
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+
+  attu:
+    image: zilliz/attu:v2.5
+    ports:
+      - "8000:3000"
+    environment:
+      MILVUS_URL: milvus:19530
+    depends_on:
+      milvus:
+        condition: service_healthy
+    restart: unless-stopped
+
+  app:
+    # Compose 网络内通过服务名连接；宿主机仍使用 localhost 和映射端口。
+    environment:
+      # memory.enabled=true requires the transactional MySQL session backend.
+      SESSION_STORE: "${SESSION_STORE:-mysql}"
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-eino}"
+      MYSQL_USER: "${MYSQL_USER:-}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:-}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: my-eino-app:local
+    ports:
+      - "18180:8080"
+    extra_hosts:
+      # 让 Linux 容器可以访问 Windows/macOS 宿主机上的 Ollama。
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - app-data:/app/data
+      # 只读挂载宿主机授权目录；容器内 Agent 无法修改这些文件。
+      - ./workspace-files:/app/workspace-files:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  # 引用已有数据卷；Compose down -v 也不会删除 external 卷。
+  mysql-existing-data:
+    external: true
+    name: gozero_mysql_data
+  milvus-etcd:
+  milvus-minio:
+  milvus-data:
+  app-data:
+

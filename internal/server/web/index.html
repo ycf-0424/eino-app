@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>星河系统</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="会话侧栏">
+      <div class="sidebar-top">
+        <div class="brand" aria-label="星河系统">
+          <span class="brand-mark">E</span>
+          <span>星河系统</span>
+        </div>
+        <button class="icon-button sidebar-close" id="closeSidebar" type="button" title="关闭侧栏" aria-label="关闭侧栏">&times;</button>
+      </div>
+
+      <button class="new-chat" id="newChat" type="button">
+        <span class="plus" aria-hidden="true">+</span>
+        <span>新对话</span>
+      </button>
+
+      <nav class="session-nav" aria-label="历史会话">
+        <div class="section-label">最近对话</div>
+        <div id="sessionList" class="session-list"></div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+        <div>
+          <strong id="statusText">正在连接</strong>
+          <span>Ollama + Milvus</span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="sidebar-scrim" id="sidebarScrim"></div>
+
+    <main class="workspace">
+      <header class="topbar">
+        <button class="icon-button menu-button" id="openSidebar" type="button" title="打开侧栏" aria-label="打开侧栏">&#9776;</button>
+        <div class="model-identity">
+          <strong>星河系统助手</strong>
+          <span id="conversationState">新对话</span>
+        </div>
+        <div class="topbar-actions">
+          <label class="skill-control" id="skillControl" hidden>
+            <span>Skill</span>
+            <select id="skillSelect" aria-label="选择 Skill">
+              <option value="">自动</option>
+            </select>
+          </label>
+          <button class="icon-button" id="clearChat" type="button" title="删除当前会话" aria-label="删除当前会话">&#128465;</button>
+        </div>
+      </header>
+
+      <section class="conversation" id="conversation" aria-live="polite">
+        <div class="welcome" id="welcome">
+          <span class="welcome-mark">E</span>
+          <h1>今天想了解什么？</h1>
+          <p>基于本地 Ollama 模型与 Milvus 知识库</p>
+          <div class="suggestions">
+            <button type="button" data-prompt="星河系统使用什么技术栈？">查询知识库中的技术栈</button>
+            <button type="button" data-prompt="现在几点？">查看当前时间</button>
+            <button type="button" data-prompt="总结星河系统的已知信息">总结已有知识</button>
+          </div>
+        </div>
+        <div class="messages" id="messages"></div>
+      </section>
+
+      <div class="composer-region">
+        <div class="approval-panel" id="approvalPanel" hidden>
+          <div>
+            <strong>需要你的批准</strong>
+            <span id="approvalDescription"></span>
+          </div>
+          <div class="approval-actions">
+            <button class="secondary-button" id="rejectApproval" type="button">拒绝</button>
+            <button class="primary-button" id="approveAction" type="button">批准并继续</button>
+          </div>
+        </div>
+
+        <form class="composer" id="composer">
+          <textarea id="promptInput" rows="1" maxlength="8000" placeholder="给星河系统助手发消息" aria-label="消息内容"></textarea>
+          <button class="send-button" id="sendButton" type="submit" title="发送消息" aria-label="发送消息">
+            <span aria-hidden="true">&#8593;</span>
+          </button>
+        </form>
+        <div class="composer-meta">
+          <span id="requestStatus">本地运行</span>
+          <span>回答可能有误，请核对重要信息</span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog class="confirm-dialog" id="deleteDialog">
+    <form method="dialog">
+      <h2>删除这个对话？</h2>
+      <p>会话记录和对应的 Checkpoint 将从本地删除，此操作无法撤销。</p>
+      <div class="dialog-actions">
+        <button class="secondary-button" value="cancel">取消</button>
+        <button class="danger-button" id="confirmDelete" value="confirm">删除</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="/app.js" defer></script>
+</body>
+</html>

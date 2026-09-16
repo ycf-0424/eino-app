@@ -1,0 +1,120 @@
+# my-eino-app 模型配置
+# 当前指向本地 Ollama；换火山方舟只需改下面三行
+
+openai:
+  api_key: "ollama"                                 # Ollama 不校验 Key；方舟填 ark-xxx
+  model: "qwen3.5:9b"                               # 本地模型名；方舟填 doubao-seed-evolving
+  base_url: "http://localhost:11434/v1"             # 方舟填 https://ark.cn-beijing.volces.com/api/v3
+  reasoning_effort: "none"                          # 关闭本地思考模型的隐藏推理，降低简单问答延迟
+  max_completion_tokens: 512                        # 限制单次输出，避免请求长期占用本机资源
+
+# 对话历史保存目录；程序重启后可通过 --session 恢复
+session_dir: "data/sessions"
+session:
+  store: "file" # .env 的 SESSION_STORE=mysql 会覆盖此默认值
+  max_messages: 20
+  max_chars: 12000
+  expire_days: 30
+
+skills:
+  dir: "skills"
+  default: ""
+
+runtime:
+  request_timeout: 180s
+  max_concurrency: 2
+
+# Agent 只能读取 roots 中的 UTF-8 文本或 DOCX 正文，不能越界、写入或执行文件。
+# 如需读取其他系统目录，请在 roots 中显式添加绝对路径，例如 C:\Users\Administrator\Documents。
+local_files:
+  enabled: true
+  roots:
+    - "workspace-files"
+    # 示例：允许读取 E:\11\work 下的项目文档（请确认该目录可信）。
+    - 'E:\11\work'
+  max_bytes: 10485760
+
+# P8 实时执行进度与执行记录；默认关闭，关闭时行为与 P7 完全一致。
+# 关闭状态下不采集、不传输、不落库，可在出现问题时不改代码直接回滚。
+execution_events:
+  enabled: false
+  queue_size: 256          # WebSocket 出站队列容量；满时中间事件可丢，终态必须送达
+  retention_days: 7        # 执行记录保留天数
+  max_events_per_run: 5000 # 单个 run 落库的事件上限
+  dir: "data/executions"   # 文件后端的执行日志目录
+
+agent:
+  multi_agent: true
+  checkpoint_dir: "data/checkpoints"
+
+# 自动记忆：需先执行 go run ./cmd/session-migrate。
+# 用户偏好保存在 MySQL；项目决策/里程碑才会进入独立 Milvus 集合。
+memory:
+  enabled: true
+  identity_mode: "local_single_user"
+  owner_id: "local-owner"
+  project_id: "my-eino-app"
+  auto_extract: true
+  extractor_model: "inherit_chat"
+  embedding_config: "inherit_rag"
+  milvus_collection: "my_eino_memory_v1"
+  vectorize_types: ["project_fact", "decision", "milestone", "todo"]
+  extraction_context_messages: 8
+  max_candidates: 5
+  max_candidate_chars: 500
+  worker_concurrency: 1
+  task_timeout: 120s
+  lease_duration: 180s
+  max_attempts: 5
+  retry_initial_delay: 2s
+  retry_max_delay: 60s
+  retrieval_top_k: 5
+  max_context_chars: 2000
+  audit_retention_days: 30
+  turn_retention_days: 30
+  job_success_retention_days: 7
+  job_failed_retention_days: 30
+  source_retention_days: 90
+  version_keep_count: 3
+  cleanup_batch_size: 500
+  cleanup_interval: 24h
+
+# 开启后输出模型调用、工具调用及耗时日志
+debug: true
+
+ollama:
+  health_check: true
+  timeout: 60s                   # 首次加载 bge-m3 可能较慢，避免健康检查误判超时
+
+# 模型请求重试策略
+retry:
+  max_attempts: 3
+  base_delay: 1s
+  max_delay: 10s
+
+# RAG 知识库；需要先启动 Redis Stack 并执行 cmd/indexer
+rag:
+  enabled: true                     # 已启用 RAG，当前使用本地 Milvus
+  store: "milvus"                 # 可选 redis 或 milvus
+  document_dir: "docs/knowledge"
+  chunk_size: 800
+  chunk_overlap: 120
+  top_k: 5
+  score_threshold: 0.50           # 根据本地 bge-m3 评测校准；事实问题最低约 0.54
+  max_context_chars: 6000
+  dimension: 1024                 # Ollama bge-m3 的向量维度
+  embedding:
+    api_key: "ollama"
+    model: "bge-m3"
+    base_url: "http://localhost:11434/v1"
+  redis:
+    addr: "localhost:6379"
+    password: ""
+    db: 0
+    index: "my_eino_knowledge"
+    key_prefix: "knowledge:"
+  milvus:
+    address: "localhost:19530"
+    username: ""
+    password: ""
+    collection: "my_eino_knowledge"
