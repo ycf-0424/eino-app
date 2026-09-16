@@ -4,7 +4,7 @@
 >
 > **本手册不是什么**：不复制内容表。**每一步具体改什么**（字段值、SQL、代码片段、工具名清单）以 `EXECUTION-PLAN.md` 的对应步骤为准。两份文档分工明确，避免内容漂移。
 >
-> **基线**：`92b2833`（2026-09-16 建立并推送）。**剩余 22 个 commit、6 次推送。**
+> **基线**：`92b2833`（2026-09-16 建立并推送）。**剩余 25 个 commit、6 次推送。**
 > **工作目录**：`E:\11\my-eino-app`
 > **外部依赖**：全流程只有一处——阶段 2 需要一个**飞书自建应用**（见第一节末）。其余阶段不需要任何项目之外的资源。
 
@@ -25,7 +25,7 @@
 **三条铁律**
 
 1. 测试一律 `go test -p 1 ./...`。**`-p 1` 不能省**——本机内存不足，并行编译会失败（`Makefile:38` 有注释）。
-2. **一个步骤 = 一个 commit**。只有方案明确要求合并的（`1.2+1.3+1.4`、`1.5+1.6`）才合并提交。
+2. **一个步骤 = 一个 commit**。只有方案明确要求合并的（`1.2+1.3+1.4`、`1.5+1.6`、`2.10+2.11`、`2.12+2.13`）才合并提交。
 3. `make check` 内部是 `fmt test vet`，其中 `go fmt ./...` **会改写文件**。所以顺序是：**改代码 → 验收 → `make check` → `git add -A` → `git commit`**。
 
 **grep 的等价写法**
@@ -40,7 +40,7 @@ Select-String -Path "skills\*\SKILL.md" -Pattern '^name:|^metadata:'
 
 ### 外部依赖（只有阶段 2 需要，但建议现在就准备）
 
-全流程只有一处需要项目之外的资源：**飞书自建应用**。阶段 2 的登录建立在飞书 OAuth 之上，没有它，C4–C11 的代码仍能写完，但 **2.10 的验收无法进行**。
+全流程只有一处需要项目之外的资源：**飞书自建应用**。阶段 2 的飞书登录链路（C4–C12）建立在它之上，没有它这些代码仍能写完，但 **2.15 验收里的「跨身份隔离」那组无法进行**。本地账号那部分（C13–C15 及其验收）**不依赖飞书**，可以先做。
 
 「飞书自建应用」= 在飞书开放平台（`open.feishu.cn`）注册、**只在你自己的组织内部使用**的应用。对本项目而言它只是一个**登录服务商**——等价于「用 GitHub 登录」里的 GitHub，不涉及任何业务逻辑。它提供三个值，正好对应步骤 2.1 的三个配置项：
 
@@ -56,21 +56,29 @@ Select-String -Path "skills\*\SKILL.md" -Pattern '^name:|^metadata:'
 2. `open.feishu.cn` → 开发者后台 → **创建企业自建应用**（填名称、描述、图标）。
 3. 左侧「凭证与基础信息」→ 复制 **App ID** 与 **App Secret**。
 4. 左侧「开发配置 → 安全设置 → 重定向 URL」→ 添加 `http://<服务地址>:18180/auth/callback`。
-5. 左侧「开发配置 → 权限管理」→ 开通 **获取用户基本信息**（权限标识 `contact:user.base:readonly`）。
+5. 左侧「开发配置 → 权限管理」→ 开通 **获取用户基本信息**（权限标识 `contact:user.base:readonly`）。**这个名字要与步骤 2.3 授权页 URL 里 `scope=` 的值逐字一致**，否则用户点授权时直接报 **20027**（授权页拼了应用未开通的权限）。
 6. 左侧「应用发布 → 版本管理与发布」→ 创建版本（如 `1.0.0`）→ 申请线上发布 → 管理员审核通过。
+7. **检查可用范围** → 确认要参与 A/B 测试的账号**都在可用范围内**（一般选「全员」）。不在范围内的人登录会报 **20010（用户无应用使用权限）**；这个错误发生在飞书侧，本项目日志里什么都看不到，最难排查。
 
-⚠️ **两个卡点**
+⚠️ **三个卡点**
 
 - **第 6 步不做，第 4/5 步的配置不生效。** 飞书的回调地址与权限都是「发布后生效」，这是最常踩的一个空。
-- **第 4 步的 URL 必须与 `FEISHU_REDIRECT_URL` 完全一致**（含协议、端口、路径，末尾斜杠都不能差），否则授权后报 `redirect_uri` 不匹配。
+- **第 4 步的 URL 必须与 `FEISHU_REDIRECT_URL` 完全一致**（含协议、端口、路径，末尾斜杠都不能差），否则授权后报 `redirect_uri` 不匹配（20071）。
+- **第 7 步漏做 → 20010。** 表现是「别人登录不进来、你自己登录正常」，很容易误判成本项目的 bug。
 
-**2.10 的 A/B 交叉测试需要两个身份**：理想是两个普通飞书账号（两个手机号）。若只有一个账号，可用 `/auth/local` 管理员入口充当第二身份来验证隔离机制，但**管理员有额外权限、不完全等价于普通用户**，严格的越权用例仍需两个普通账号。
+**加速路径（可选）**：飞书为开发阶段准备了**测试企业 + 测试版本** —— 在「测试企业和人员」页创建测试企业并关联应用，切到测试版本后，**第 5、6 步的权限与配置变更直接生效、无需管理员审核**，联调完再切回正式版提交一次审核。只有你既是开发者又是管理员时，直接走正式版也一样快（第 6 步自己点通过）。
+
+**2.15 的交叉测试需要哪些身份**：两个飞书账号（两个手机号）+ 两个本地账号（用 `cmd/user-admin` 建）。
+
+- **好消息**：本地账号可以随时创建，所以**即使你只有一个飞书账号，也能用两个本地账号把「会话 / 记忆 / 执行记录隔离」那几组用例完整跑完**。
+- **但跨身份那组必须两者都有**：验证「本地账号看不到飞书账号的数据」（D14）至少需要 1 个可用的飞书账号。
+- 本地账号之间的用例完全不依赖飞书是否就绪 —— **飞书应用还没批下来时就能先跑一半**。
 
 ---
 
 ## 二、提交与推送节奏
 
-**提交**：一个步骤一个 commit（本手册已把 28 步归并为 **22 个 commit**）。
+**提交**：一个步骤一个 commit（本手册已把 33 步归并为 **25 个 commit**）。
 
 **推送**：**阶段级推送 + `3.1` 单独推**。理由——commit 是给「回退」用的，push 是给「离开这台机器」用的，两者粒度不必一致；阶段内每步都推会产生大量噪声，而阶段边界正好是 `make check` 全绿的天然检查点。`3.1` 要单独推是因为它一次平移 37 个文件，是全程唯一「本地磁盘出事就得重做」的一步。
 
@@ -79,7 +87,7 @@ Select-String -Path "skills\*\SKILL.md" -Pattern '^name:|^metadata:'
 | **P0** | 现在（阶段 0 的文档提交尚未推送，见第四节） | `git push` |
 | P1 | 阶段 1 验收通过 | `git push` |
 | P2 | 阶段 2 验收通过 | `git push` |
-| **P2.5** | **C13（3.1）提交后立即** | `git push` |
+| **P2.5** | **C16（3.1）提交后立即** | `git push` |
 | P3 | 阶段 3 验收通过 | `git push` |
 | P4 | 阶段 4 验收通过 | `git push` |
 | P5 | 阶段 5 验收通过 | `git push` |
@@ -108,19 +116,22 @@ Select-String -Path "skills\*\SKILL.md" -Pattern '^name:|^metadata:'
 | **C10** | 2.7 | Checkpoint 隔离 | ☐ |
 | **C11** | 2.8 | Execution 隔离 | ☐ |
 | **C12** | 2.9 | 前端 | ☐ |
-| — | 2.10 | 阶段 2 验收 A/B 交叉测试（无 commit）→ **P2** | ☐ |
-| **C13** | 3.1 | eino 机械平移 | ☐ → **P2.5** |
-| **C14** | 3.2 | 边界守卫 | ☐ |
-| **C15** | 3.3 | 消除构造泄漏 | ☐ |
+| **C13** | 2.10+2.11 | 自有账号：配置与数据层 / 密码哈希与建号 CLI | ☐ |
+| **C14** | 2.12+2.13 | 自有账号：登录逻辑与路由 / 登录限流与 owner 前缀收口 | ☐ |
+| **C15** | 2.14 | 自有账号：前端登录表单 | ☐ |
+| — | 2.15 | 阶段 2 验收（A/B × L1/L2 交叉测试，无 commit）→ **P2** | ☐ |
+| **C16** | 3.1 | eino 机械平移 | ☐ → **P2.5** |
+| **C17** | 3.2 | 边界守卫 | ☐ |
+| **C18** | 3.3 | 消除构造泄漏 | ☐ |
 | — | — | 阶段 3 验收 → **P3** | ☐ |
-| **C16** | 4.1 | 评测路由维度 | ☐ |
-| **C17** | 4.2 | 评测集扩题 | ☐ |
+| **C19** | 4.1 | 评测路由维度 | ☐ |
+| **C20** | 4.2 | 评测集扩题 | ☐ |
 | — | — | 阶段 4 验收 → **P4** | ☐ |
-| **C18** | 5.1 | 优雅停机 | ☐ |
-| **C19** | 5.2 | 限流与配额 | ☐ |
-| **C20** | 5.3 | 备份与恢复演练 | ☐ |
-| **C21** | 5.4 | 健康检查分离 | ☐ |
-| **C22** | 5.5 | 上线前配置切换 | ☐ |
+| **C21** | 5.1 | 优雅停机 | ☐ |
+| **C22** | 5.2 | 限流与配额 | ☐ |
+| **C23** | 5.3 | 备份与恢复演练 | ☐ |
+| **C24** | 5.4 | 健康检查分离 | ☐ |
+| **C25** | 5.5 | 上线前配置切换 | ☐ |
 | — | — | 阶段 5 验收 → **P5** | ☐ |
 
 ---
@@ -241,10 +252,10 @@ make check
 
 ---
 
-## 六、阶段 2：鉴权与多用户隔离（C4–C12）
+## 六、阶段 2：鉴权、多用户隔离与自有账号体系（C4–C15）
 
 > **依据**：`EXECUTION-PLAN.md` → 四、阶段 2。这是**上线阻塞项**，也是代码量最大的阶段。
-> **本地联调前提**：需要一个飞书自建应用（拿 `AppID` / `AppSecret`），并在开发者后台登记 `RedirectURL`。**没有它就无法完成 2.10 的 A/B 交叉测试**——这一步要提前准备。
+> **本地联调前提**：需要一个飞书自建应用（拿 `AppID` / `AppSecret`），并在开发者后台登记 `RedirectURL`。**没有它就无法完成 2.15 的跨身份用例**——这一步要提前准备。但**本地账号那部分（C13–C15 与相应验收）不依赖飞书**，可以先做。
 
 ### C4 · 步骤 2.1　配置层
 
@@ -262,7 +273,7 @@ git commit -m "feat(auth): 新增 auth 配置段与启动校验"
 
 **验收**
 - [ ] `go build ./...` 通过
-- [ ] 手工把 `auth.enabled` 置 `true` 且不设 `AppID` → 启动**失败且报错清晰**（验完记得改回 `false`）
+- [ ] 手工把 `auth.enabled` 置 `true`、**飞书三字段留空、且 `auth.local.enabled: false`** → 启动**失败且报错清晰**（此时一种登录方式都没启用）。⚠️ C13 会把这套校验改成「至少启用一种」，届时只要 `auth.local.enabled: true` 就能正常启动 —— 验收完记得把 `auth.enabled` 改回 `false`
 
 **回滚**：`git reset --hard HEAD`
 
@@ -272,7 +283,7 @@ git commit -m "feat(auth): 新增 auth 配置段与启动校验"
 
 - **新增**：`internal/session/migrations/004_auth.sql`（`auth_users` + `auth_sessions` 两张表）。
 - **修改**：`internal/session/mysql.go`——新增 `IncludeAuth` 选项，**`ALTER` 语句写在 Go 侧做幂等**（坑 B2：现有 `migrationTableRE` 只匹配 `CREATE TABLE IF NOT EXISTS`，`ALTER` 每次都会重跑，第二次报 `Duplicate column name`）。
-- **别忘了**：迁移后手工执行一次历史数据归属 `UPDATE conversations SET owner_id = '<admin_open_id>' WHERE owner_id = '';`。
+- **别忘了**：迁移后手工执行一次历史数据归属 `UPDATE conversations SET owner_id = 'feishu:<admin_open_id>' WHERE owner_id = '';`（**owner 带 `feishu:` 前缀**，理由见 C6；`auth_sessions` 的归属列名也是 `owner`）。
 
 ```powershell
 cd E:\11\my-eino-app
@@ -297,6 +308,7 @@ git commit -m "feat(db): 新增 auth 表与 conversations.owner_id 幂等迁移"
 - ⚠️ **端点用新版**：授权页 `accounts.feishu.cn/open-apis/authen/v1/authorize`、换 token `accounts.feishu.cn/oauth/v3/token`、取用户 `open.feishu.cn/open-apis/authen/v1/user_info`。网上大量教程仍写已弃用的 `v2/oauth/token`，照抄会直接失败（坑 B4）。
 - ⚠️ **授权码 5 分钟有效且只能用一次**——`/auth/callback` 拿到 code 必须**立即**兑换。
 - 登录态存储按 D11 用**进程内 map**；`auth_sessions` 表建好备用。
+- ⚠️ **owner 一律取 `<provider>:<subject>` 形式**：飞书写 `feishu:<open_id>`，本地账号在 C14 写 `local:<uuid>`。下游只做等值比较，加前缀零成本；不加前缀则数据库里会长期混着两种格式，排查归属时看不出身份来源。
 - **state 校验**必须做（`HttpOnly` + `SameSite=Lax` 短时 Cookie）。
 
 ```powershell
@@ -313,8 +325,8 @@ git commit -m "feat(auth): 飞书 OAuth 登录与会话存储"
 
 ### C7 · 步骤 2.4　路由与中间件接入
 
-- **新增 4 条路由**：`GET /auth/login`、`GET /auth/callback`、`GET /auth/logout`、`GET /auth/me`。
-- **免认证白名单**：`/auth/login`、`/auth/callback`、`/health`、`/health/ready`。
+- **新增 5 条路由**：`GET /auth/login`、`GET /auth/callback`、`GET /auth/logout`、`GET /auth/me`，以及**条件注册**的 `POST /auth/local`（本地账号登录，C14 落地）。
+- **免认证白名单**：`/auth/login`、`/auth/callback`、`/auth/local`、`/health`、`/health/ready`。⚠️ **登录入口自身必须在白名单内**，否则未登录时根本访问不到。
 - ⚠️ **不要把认证中间件包在最外层**：`http.go:59-72` 的超时包装是最外层 `HandlerFunc` 且对 `/ws` 跳过超时，包在外面会让 `/ws` 丢掉超时豁免。**放在 mux 内部逐路由包装**。
 - ⚠️ `/ws` 的认证**只能靠 Cookie**（浏览器 WebSocket API 无法自定义 Header）；同时**保留 `ws.go` 的 `CheckOrigin`**，两者都要。
 
@@ -430,27 +442,103 @@ git commit -m "feat(web): 登录态显示、登出与 401 处理"
 
 ---
 
-### 2.10 · 阶段 2 验收（无 commit）
+### C13 · 步骤 2.10+2.11　自有账号：配置与数据层 / 密码哈希与建号 CLI
 
-准备**两个飞书账号 A、B** 交叉测试。完整清单见 `EXECUTION-PLAN.md` 步骤 2.10，四组：
+- **配置**：三份配置加 `auth.local` 子段（`enabled: true`、`min_password_length: 8`）；`internal/config/auth.go` 加 `LocalAuth` 结构。
+- ⚠️ **必须同时修正步骤 2.1 的校验**：C4 原写「`auth.enabled` 时飞书三字段必填」，会堵死「只用自有账号、不接飞书」的场景。改成「飞书三字段齐全 **或** `auth.local.enabled` —— 至少一个即可」。
+- **迁移**：新增 `internal/session/migrations/005_local_users.sql`（表 `auth_local_users`）；`mysql.go` 加 `IncludeLocalUsers`。该语句是 `CREATE TABLE IF NOT EXISTS`，**天然幂等**，不踩坑 B2。
+- **密码哈希**：新增 `internal/auth/password.go`。⚠️ **用 Go 标准库 `crypto/pbkdf2`（1.24+ 自带，零新增依赖），绝不用 sha256** —— 自有账号口令由用户自选，强度不可控，必须慢哈希（坑 B9）。210000 轮 + 16 字节随机盐，存储格式 `pbkdf2-sha256$<iter>$<b64salt>$<b64key>`。
+- **建号工具**：新增 `cmd/user-admin/main.go`（`-create` / `-passwd` / `-disable` / `-enable` / `-list`）。建号**不经 HTTP**（D15）。
+- 建第一个管理员：`go run ./cmd/user-admin -create -username=admin -admin`（口令走 stdin 交互输入，不进 shell 历史）。
+
+```powershell
+cd E:\11\my-eino-app
+go test ./internal/auth/...
+make db-migrate          # 连跑两次，第二次不应报 Duplicate
+make check
+git add -A
+git commit -m "feat(auth): 自有账号的配置、用户表与密码哈希"
+```
+
+**验收**
+- [ ] `make db-migrate` 连跑**两次**都成功
+- [ ] `auth_local_users` 表存在，`username` 有唯一索引
+- [ ] `-list` 能看到刚建的账号；表里 `password_hash` 形如 `pbkdf2-sha256$210000$...`，**无明文**
+
+**回滚**：`git reset --hard HEAD`（数据库侧 `DROP TABLE auth_local_users`）
+
+---
+
+### C14 · 步骤 2.12+2.13　自有账号：登录逻辑与路由 / 登录限流与 owner 前缀收口
+
+- **登录逻辑**：新增 `internal/auth/local.go`。四条硬要求（详见方案 2.12 表格）：用户名**先做 `^[a-zA-Z0-9_]{3,32}$` 格式校验再查库**（必须**拒绝含 `:`**，否则与飞书 owner 命名空间撞车，坑 B7）；口令长度 8–128（上限防 PBKDF2 被拖成 DoS）；**「用户名不存在」与「口令错误」返回同一响应**；`disabled` 账号一律拒绝且**不提示「已停用」**。
+- **路由**：`POST /auth/local`，**复用步骤 2.3 的同一套 session 签发与 Cookie 写入**。**不做注册路由、不做改密路由**。
+- ⚠️ **登录限流必须有**：新增 `internal/server/ratelimit.go`（进程内令牌桶，**按 IP + 用户名双维度**：只按 IP 漏内网多机，只按用户名漏批量撞库）。用户名可枚举，无限流等于开放爆破（坑 B8）。
+- ⚠️ **这份 `ratelimit.go` 就是步骤 5.2（C22）要复用的那一份** —— 到那一步**只扩展、不重建**，否则会出现两套限流实现。
+- **owner 前缀收口**：确认飞书侧写 `feishu:<open_id>`、本地账号写 `local:<uuid>`，全项目**没有**裸 `open_id` 当 owner 的位置。
+
+```powershell
+cd E:\11\my-eino-app
+make check
+git add -A
+git commit -m "feat(auth): 自有账号登录、登录限流与 owner 前缀收口"
+```
+
+**验收**
+- [ ] 正确凭据 200 + `Set-Cookie`；错误凭据 401 JSON；`disabled` 账号 401
+- [ ] 用户名填 `feishu:abc` 被格式校验拒绝
+- [ ] 连续 10 次错误口令触发 429，且窗口内**即使口令正确也被拒**（预期行为）
+
+**回滚**：`git reset --hard HEAD`
+
+---
+
+### C15 · 步骤 2.14　自有账号：前端登录表单
+
+- **改动**：`index.html` + `app.js` 加登录方式切换（飞书按钮 / 账号表单），**某一种未启用则不渲染该入口**；用户名显示带来源（「张三（飞书）」/「zhangsan（账号）」）。
+- **启用状态从哪来**：扩展 `GET /health` 返回体加 `login: {feishu, local}` —— 该路由已在免认证白名单内，**不新增路由**。
+- **页面上不放任何注册入口**（D12）。
+- ⚠️ **不要回退技能暴露面门禁**：`app.js` 的下拉框显隐、技能事件过滤、`skill` 字段按 debug 发送，全部保留。
+
+```powershell
+cd E:\11\my-eino-app
+make check
+git add -A
+git commit -m "feat(web): 飞书与自有账号双入口登录页"
+```
+
+**验收**
+- [ ] 两种登录方式都能走通，且显示正确的用户名与来源
+- [ ] 停用某一种后该入口从页面消失
+- [ ] 页面上不存在注册入口
+
+**回滚**：`git reset --hard HEAD`
+
+---
+
+### 2.15 · 阶段 2 验收（无 commit）
+
+准备**两个飞书账号 A、B** 与**两个本地账号 L1、L2**（用 `cmd/user-admin` 建）交叉测试。完整清单见 `EXECUTION-PLAN.md` 步骤 2.15，六组：
 
 - [ ] **认证**：302 / 401 / 登录 / state / code 复用 / 登出
 - [ ] **会话隔离**：B 看不到 A 的会话；`GET` / `DELETE` / `approval` / `POST /chat` 四项越权全部被拒，且**不污染 A 的历史**
 - [ ] **记忆隔离**：`GET /memory/facts` 只返回自己的；**A 与 B 的对话都能触发记忆抽取**（专验坑 B1：查 `memory_jobs` 两个 owner 的行都应从 pending 变 succeeded）；maintenance 跑一轮后**两个 owner** 的过期数据都被清理
-- [ ] **执行记录 / 容错**：A 的执行记录 B 查不到；管理员后门可用；**CLI 未配置 auth 时行为不变**
+- [ ] **自有账号**：建号能登录、`-disable` 后立即失效、`-passwd` 重置生效、错误口令触发 429、页面**无注册入口**
+- [ ] **跨身份隔离（本阶段最关键的一组）**：L1 与 L2 之间互不可见；**L1 拿飞书账号 A 的 session id 访问 → 403/404**（反向亦然）—— 这是「两套身份完全独立」（D14）的判定性用例
+- [ ] **执行记录 / 容错**：A 的执行记录 B 查不到；**清空 `FEISHU_*` 并重启后，本地账号仍可登录**（这是本地账号存在的首要理由）；**只启用本地账号**（飞书三字段留空 + `auth.local.enabled: true`）时服务能正常启动并登录；**CLI 未配置 auth 时行为不变**
 
-**回滚整个阶段**：`git reset --hard HEAD~9`（数据库改动需手工回退）
+**回滚整个阶段**：`git reset --hard HEAD~12`（数据库改动需手工回退）
 
 **然后推送**：`git push`　（= **P2**）
 
 ---
 
-## 七、阶段 3：eino 框架收敛（C13–C15）
+## 七、阶段 3：eino 框架收敛（C16–C18）
 
 > **依据**：`EXECUTION-PLAN.md` → 五、阶段 3。
 > **性质：行为零变化**。严格限定为路径移动，**不碰任何 eino API 写法**（坑 C6）。验收标准是测试通过数与基线**完全一致**（17 个包全绿）。
 
-### C13 · 步骤 3.1　机械平移　⚠️ 必须一次提交
+### C16 · 步骤 3.1　机械平移　⚠️ 必须一次提交
 
 ```powershell
 cd E:\11\my-eino-app
@@ -482,7 +570,7 @@ git push          # ⚠️ P2.5：立即单独推送
 
 ---
 
-### C14 · 步骤 3.2　边界守卫
+### C17 · 步骤 3.2　边界守卫
 
 - **改动**：`Makefile` 新增 `boundary` 目标，并把它并入 `check`（`check: fmt boundary test vet`）。
 - **作用**：防止几个月后新代码又把 `compose` / `adk` / `callbacks` 扩散到 `internal/eino/` 之外。
@@ -501,7 +589,7 @@ git commit -m "chore(build): 增加 eino 边界守卫"
 
 ---
 
-### C15 · 步骤 3.3　消除构造泄漏
+### C18 · 步骤 3.3　消除构造泄漏
 
 三项独立，可以分开做但一起提交：
 
@@ -528,12 +616,12 @@ git commit -m "refactor: 消除 embedder 与工具构造泄漏"
 
 ---
 
-## 八、阶段 4：评测与可观测性收口（C16–C17）
+## 八、阶段 4：评测与可观测性收口（C19–C20）
 
 > **依据**：`EXECUTION-PLAN.md` → 六、阶段 4。
-> ⚠️ **必须在 C13 之后**：本阶段要改的 `internal/evaluation/evaluation.go` 与 `cmd/eval/main.go` 正在 C13 的 import 改写清单里，先做会被二次改写。
+> ⚠️ **必须在 C16 之后**：本阶段要改的 `internal/evaluation/evaluation.go` 与 `cmd/eval/main.go` 正在 C16 的 import 改写清单里，先做会被二次改写。
 
-### C16 · 步骤 4.1　评测增加「路由」维度
+### C19 · 步骤 4.1　评测增加「路由」维度
 
 - **埋点已现成**：`runtime.go` 已写入 `skill_names` / `requested_names`，不用新增采集。
 - **动作**：`Case` 加 `ExpectSkills []string`；评测执行时用 `execution.NewRecorder(0)` 挂到 `ChatWithSink`；跑完扫 `Events()` 里 `SkillLoaded` 的 `payload.skill_names` 做集合断言；`Report` 加 `RoutingAccuracy`；`cmd/eval` 输出该指标。
@@ -551,7 +639,7 @@ git commit -m "feat(eval): 评测增加路由准确率维度"
 
 ---
 
-### C17 · 步骤 4.2　评测集扩到 ≥20 题
+### C20 · 步骤 4.2　评测集扩到 ≥20 题
 
 - **改动**：`internal/integration/eval_cases.json` 从 3 题扩到 **≥20 题**（D3），覆盖步骤 1.4 的易混场景，每题带 `expect_skills`。
 
@@ -573,12 +661,12 @@ git commit -m "test(eval): 评测集扩到 20 题并标注期望技能"
 
 ---
 
-## 九、阶段 5：上线收口（C18–C22）
+## 九、阶段 5：上线收口（C21–C25）
 
 > **依据**：`EXECUTION-PLAN.md` → 七、阶段 5。
 > ⚠️ **5.5 必须是最后一步**——它把系统切到鉴权开启状态，没做完前面四步就切会直接把服务锁死。
 
-### C18 · 步骤 5.1　优雅停机（一行修复）
+### C21 · 步骤 5.1　优雅停机（一行修复）
 
 ```powershell
 cd E:\11\my-eino-app
@@ -597,11 +685,11 @@ git commit -m "fix(server): 捕获 SIGTERM 以支持优雅停机"
 
 ---
 
-### C19 · 步骤 5.2　限流与配额
+### C22 · 步骤 5.2　限流与配额
 
-- **新增** `internal/server/ratelimit.go`（进程内令牌桶，key 取 `auth.OwnerFromContext(ctx)`，未认证退回客户端 IP）。
+- ⚠️ **复用 C14 已建的 `internal/server/ratelimit.go`，本步不新建** —— 只做扩展：key 取 `auth.OwnerFromContext(ctx)`，未认证退回客户端 IP。若在此重新实现一套，就会出现两套限流。
 - **新增配置** `runtime.rate_limit`（`enabled: true` / `per_minute: 30` / `burst: 10`），**三份配置都写**。
-- **应用在** `POST /chat` 与 `GET /ws` 两条路径。
+- **扩展到** `POST /chat` 与 `GET /ws` 两条路径（C14 已用于 `POST /auth/local`，保持不变）。
 - 超限返回 **`429` + `Retry-After`** + JSON 错误体。
 - **注释里必须写清边界**：这是**单副本**限流，进程内计数；多副本需换 Redis，当前不部署多副本。同时**不做 token 预算**。
 
@@ -618,7 +706,7 @@ git commit -m "feat(server): 新增按用户/IP 的进程内限流"
 
 ---
 
-### C20 · 步骤 5.3　备份与恢复演练
+### C23 · 步骤 5.3　备份与恢复演练
 
 - **新增**：`scripts/backup.ps1`（mysqldump + Milvus 卷打包 + `manifest.txt` 含时间/行数摘要/SHA256）、`scripts/restore-check.ps1`（**恢复演练**：恢复到临时库 `eino_restore_check`，比对三张表行数，比对完 DROP）。
 - **`Makefile`** 新增 `backup` 目标。
@@ -643,7 +731,7 @@ git commit -m "chore(ops): 新增备份与恢复演练脚本"
 
 ---
 
-### C21 · 步骤 5.4　健康检查分离
+### C24 · 步骤 5.4　健康检查分离
 
 - `/health` **保持 liveness 语义**（静态 ok + `debug` 字段）—— `Dockerfile` 的 HEALTHCHECK **保持不动**。
 - **新增** `GET /health/ready`：检查 MySQL / Milvus / Ollama 连通性，单项超时 2 秒，逐项报状态。
@@ -663,15 +751,26 @@ git commit -m "feat(server): 分离 liveness 与 readiness 健康检查"
 
 ---
 
-### C22 · 步骤 5.5　上线前配置切换（最后一步）
+### C25 · 步骤 5.5　上线前配置切换（最后一步）
 
 | 配置 | 改为 |
 |---|---|
 | `config.docker.yaml` 的 `auth.enabled` | `false` → **`true`** |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_REDIRECT_URL` | 填真实凭据，**走环境变量，不写进仓库** |
+| `config.docker.yaml` 的 `auth.local.enabled` | **保持 `true`**（飞书故障时的兜底入口） |
 | `config.docker.yaml` 的 `memory.identity_mode` | `local_single_user` → **`multi_user`** |
 | `config.docker.yaml` 的 `debug` | **保持 `false`** |
 | 监听地址 | 保持 `:18180`（容器内），对外暴露面由 compose 端口映射决定 |
+
+⚠️ **执行顺序（最容易漏的一步）**：**先建管理员本地账号，再打开 `auth.enabled`。**
+
+```powershell
+cd E:\11\my-eino-app
+go run ./cmd/user-admin -create -username=admin -admin   # 口令走 stdin 交互输入
+# 然后再改配置、重启
+```
+
+否则飞书认证服务一旦出问题，系统将**没有任何入口**（坑 B10）—— 而本地账号存在的首要理由正是这一刻。
 
 ```powershell
 cd E:\11\my-eino-app
@@ -683,11 +782,13 @@ git push          # = P5
 ```
 
 **验收（上线前最终检查）**
-- [ ] `config.docker.yaml`：`auth.enabled: true`、`identity_mode: multi_user`、`debug: false`、`execution_events.enabled: true`
+- [ ] `config.docker.yaml`：`auth.enabled: true`、`auth.local.enabled: true`、`identity_mode: multi_user`、`debug: false`、`execution_events.enabled: true`
+- [ ] **已用 `cmd/user-admin` 建好管理员本地账号**（在打开 auth **之前**完成）
 - [ ] `FEISHU_*` 通过环境变量注入，**不在仓库中**
 - [ ] `REDIRECT_URL` 与飞书开发者后台登记的**完全一致**（含端口与路径）
+- [ ] 飞书后台**已完成「发布」**，且**可用范围**包含所有要用的人（否则报 20010）
 - [ ] `CookieSecure` 与部署协议匹配（内网 http 必须 `false`，否则浏览器不保存 Cookie）
-- [ ] 管理员 `AdminOpenID` 已配置，本地后门可用
+- [ ] 管理员 `AdminOpenID` 已配置
 - [ ] 备份定时任务已生效，`restore-check` 至少跑过一次
 - [ ] `make check` 全绿
 
@@ -699,14 +800,14 @@ git push          # = P5
 |---|---|
 | 回退**未提交**的改动 | `git checkout -- <文件或目录>` |
 | 回退**最近一个 commit** | `git reset --hard HEAD~1` |
-| 回退**整个阶段** | `git reset --hard HEAD~<该阶段 commit 数>`（阶段 1 是 3，阶段 2 是 9，阶段 3 是 3，阶段 4 是 2，阶段 5 是 5） |
+| 回退**整个阶段** | `git reset --hard HEAD~<该阶段 commit 数>`（阶段 1 是 3，阶段 2 是 **12**，阶段 3 是 3，阶段 4 是 2，阶段 5 是 5） |
 | 回退到**基线** | `git reset --hard 92b2833` |
 | 看某一步改了什么 | `git show <commit>` / `git diff HEAD~1` |
 | 已推送后又想回退 | 先 `git revert <commit>` 生成反向提交，**不要** `push --force` |
 
 ⚠️ **`git reset --hard` 会丢弃未提交改动**。执行前先 `git status` 确认没有你还想要的东西。
 
-⚠️ **数据库与数据卷不在 git 里**：C5 的建表/加列、C20 的备份目录，回滚代码不会回滚它们，需按该步「回滚」栏手工处理。
+⚠️ **数据库与数据卷不在 git 里**：C5 的建表/加列、C13 的 `auth_local_users` 表、C23 的备份目录，回滚代码不会回滚它们，需按该步「回滚」栏手工处理。
 
 ---
 
@@ -718,6 +819,9 @@ git push          # = P5
 4. **飞书登录直接失败** → 坑 B4（用了已弃用的 v2 token 端点）。
 5. **`/ws` 超时行为变了** → 认证中间件包在了最外层，挤掉了 `/ws` 的超时豁免。
 6. **`internal/eino/eino/model` 这种双 eino 路径** → 坑 C3（路径前缀二次替换）。
+7. **本地账号登录被持续拒绝（口令确认没错）** → 触发了 C14 的登录限流，等窗口过去；若 `disabled=1` 则无论口令对错都是 401（且不提示「已停用」，这是刻意的）。
+8. **`cmd/user-admin` 建号报错或登录失败** → 用户名需匹配 `^[a-zA-Z0-9_]{3,32}$`（**不能含 `:`**），口令长度需 ≥ `auth.local.min_password_length`。
+9. **打开 `auth.enabled` 后谁都进不来** → 坑 B10：没建任何本地账号，且飞书侧未配通。
 7. **编译内存不足** → 忘了 `-p 1`。
 
 ---
