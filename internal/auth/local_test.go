@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -81,5 +82,42 @@ func TestAccountErrorsAreDistinct(t *testing.T) {
 	}
 	if ErrAccountNotFound.Error() == ErrUsernameTaken.Error() {
 		t.Fatal("两种错误不能共用同一条信息")
+	}
+}
+
+// 登录的四条纪律里，前两条（格式与长度）必须在查库之前生效 ——
+// 这样非法输入既不落库也不进 PBKDF2。
+func TestLoginRejectsBeforeQuery(t *testing.T) {
+	store := NewLocalStore(nil) // 没有数据库：任何走到查库的调用都会报错
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name     string
+		username string
+		password string
+	}{
+		{name: "用户名含冒号（会与飞书身份撞命名空间）", username: "feishu:ou_abc", password: "Str0ng-Passw0rd!"},
+		{name: "用户名太短", username: "ab", password: "Str0ng-Passw0rd!"},
+		{name: "用户名含非法字符", username: "admin!", password: "Str0ng-Passw0rd!"},
+		{name: "口令过短", username: "admin", password: "short"},
+		{name: "口令超长", username: "admin", password: strings.Repeat("a", 129)},
+		{name: "空口令", username: "admin", password: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.Login(ctx, tc.username, tc.password, 8); !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("Login 错误 = %v, want ErrInvalidCredentials（且不应触达数据库）", err)
+			}
+		})
+	}
+}
+
+// 非法输入通过校验后才会连库；没有连接时应报连接错误，而不是 ErrInvalidCredentials
+// —— 否则运维会把「数据库挂了」读成「口令错了」。
+func TestLoginWithoutDatabaseReportsInfrastructureError(t *testing.T) {
+	store := NewLocalStore(nil)
+	if _, err := store.Login(context.Background(), "admin", "Str0ng-Passw0rd!", 8); errors.Is(err, ErrInvalidCredentials) {
+		t.Fatal("缺少数据库连接时不应报「凭据无效」")
+	} else if err == nil {
+		t.Fatal("缺少数据库连接时应报错")
 	}
 }

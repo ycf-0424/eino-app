@@ -46,10 +46,14 @@ type Service struct {
 	execCfg    config.ExecutionEvents
 	// 认证组件在 cfg.Auth.Enabled 时由 NewService 装配；零值时 authEnabled()
 	// 为 false，路由不注册、请求不需要登录。
-	authSessions  *auth.Sessions
-	authFeishu    *auth.FeishuClient
-	authUsers     *auth.UserStore
-	authMW        *auth.Middleware
+	authSessions *auth.Sessions
+	authFeishu   *auth.FeishuClient
+	authUsers    *auth.UserStore
+	authMW       *auth.Middleware
+	// localAccounts 与 loginLimiter 仅在 auth.local.enabled 时装配；
+	// 两者为 nil 时 POST /auth/local 不注册（404）。
+	localAccounts *auth.LocalStore
+	loginLimiter  *rateLimiter
 	lockMu        sync.Mutex
 	locks         map[string]chan struct{}
 	concurrency   chan struct{}
@@ -121,6 +125,13 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 		}
 		service.authUsers = auth.NewUserStore(userDB)
 		service.authMW = auth.NewMiddleware(service.authSessions)
+		if cfg.Auth.Local.Enabled {
+			// 自有账号是例外通道（没有飞书账号的人 + 飞书故障兜底），
+			// 与飞书共用同一套登录态签发，只是凭据来源不同。
+			service.localAccounts = auth.NewLocalStore(userDB)
+			// 每分钟 10 次、突发 10 次：正常人手速远低于此，爆破者会立刻撞墙。
+			service.loginLimiter = newRateLimiter(loginRatePerMinute, loginBurst)
+		}
 	}
 	if cfg.Memory.Enabled {
 		// Reuse the already-loaded chat model for the background extractor. Creating

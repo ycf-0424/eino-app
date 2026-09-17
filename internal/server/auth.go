@@ -2,7 +2,11 @@
 package server
 
 import (
+	"errors"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"my-eino-app/internal/auth"
 )
@@ -22,7 +26,12 @@ func (s *Service) registerAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/logout", s.handleAuthLogout)
 	// /auth/me 需要登录：未登录时它就是 401，这正是前端判断登录态的信号。
 	mux.Handle("GET /auth/me", s.protected(http.HandlerFunc(s.handleAuthMe)))
-	// POST /auth/local 在步骤 2.12 落地后按 auth.local.enabled 条件注册。
+	// POST /auth/local 仅在启用自有账号时注册；未启用则 404，
+	// 前端登录页据此不渲染账号入口（步骤 2.14）。
+	if s.localLoginEnabled() {
+		mux.HandleFunc("POST /auth/local", s.handleAuthLocal)
+	}
+	// 不做注册路由（D12：仅管理员建号），也不做改密路由（D15：改密走 cmd/user-admin）。
 }
 
 // handleAuthLogin 302 到飞书授权页，并种下 CSRF state Cookie。
@@ -101,6 +110,94 @@ func (s *Service) feishuReady() bool {
 	}
 	a := s.cfg.Auth
 	return a.AppID != "" && a.AppSecret != "" && a.RedirectURL != ""
+}
+
+// localLoginEnabled 判断自有账号登录是否可用（配置开启且存储已装配）。
+func (s *Service) localLoginEnabled() bool {
+	return s.localAccounts != nil && s.cfg != nil && s.cfg.Auth.Local.Enabled
+}
+
+// localLoginRequest 是 POST /auth/local 的请求体。
+type localLoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// handleAuthLocal 处理自有账号登录：校验成功后复用与飞书完全相同的一套
+// 登录态签发与 Cookie 写入（步骤 2.3），因此下游的 owner 注入路径只有一条。
+//
+// 顺序是刻意的：先限流再校验口令。反过来就等于「先花 21 万轮 PBKDF2，
+// 再决定要不要拒绝」，爆破者照样能把 CPU 打满。
+func (s *Service) handleAuthLocal(w http.ResponseWriter, r *http.Request) {
+	if !s.localLoginEnabled() {
+		writeJSON(w, http.StatusNotFound, response{Error: "local login is not enabled"})
+		return
+	}
+	var req localLoginRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, response{Error: err.Error()})
+		return
+	}
+
+	keys := s.loginRateKeys(r, req.Username)
+	for _, key := range keys {
+		if ok, retryAfter := s.loginLimiter.Allow(key); !ok {
+			// 429 + Retry-After：调用方能算出该等多久，浏览器与脚本都能按规矩退避。
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds()+0.999)))
+			writeJSON(w, http.StatusTooManyRequests, response{Error: "登录尝试过于频繁，请稍后再试"})
+			return
+		}
+	}
+
+	sess, err := s.localAccounts.Login(r.Context(), req.Username, req.Password, s.cfg.Auth.Local.MinPasswordLength)
+	if err != nil {
+		if errors.Is(err, auth.ErrInvalidCredentials) {
+			// 与「账号不存在」「口令错误」「已停用」共用同一响应，不泄露账号状态。
+			writeJSON(w, http.StatusUnauthorized, response{Error: "invalid username or password"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, response{Error: err.Error()})
+		return
+	}
+	// 成功即归还令牌：桶里的计数只反映失败尝试，正常登录不该被自己的历史失败拖累。
+	for _, key := range keys {
+		s.loginLimiter.Refund(key)
+	}
+
+	token, _, err := s.authSessions.Create(sess.Owner, sess.Name, sess.AvatarURL, sess.Provider)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{Error: err.Error()})
+		return
+	}
+	auth.SetSessionCookie(w, token, s.authSessions.TTL(), s.cfg.Auth.CookieSecure)
+	writeJSON(w, http.StatusOK, response{Data: map[string]any{
+		"owner":    sess.Owner,
+		"name":     sess.Name,
+		"provider": sess.Provider,
+	}})
+}
+
+// loginRateKeys 返回本次登录要计数的桶：IP 与用户名各一个。
+//
+// 只按 IP 会漏掉内网多机分布式尝试（对方换台机器就是一个新桶）；
+// 只按用户名会漏掉批量撞库（每个用户名只试一次）。两者都要有。
+// 用户名归一成小写：账号本身大小写敏感，但爆破者会拿大小写变体刷桶。
+func (s *Service) loginRateKeys(r *http.Request, username string) []string {
+	return []string{"ip:" + clientIP(r), "user:" + strings.ToLower(username)}
+}
+
+// clientIP 取限流用的客户端地址。
+//
+// 只用 RemoteAddr，不采信 X-Forwarded-For：XFF 是客户端可以随便写的头，
+// 采信它等于把 IP 维度的限流直接让给攻击者（每次换个假 IP 就绕开了）。
+// 将来若部署在反向代理之后，正确做法是在代理层保证 RemoteAddr 可信，
+// 而不是在这里无条件读 XFF。
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // authEnabled 判断认证是否启用（NewService 里按 cfg.Auth.Enabled 装配）。

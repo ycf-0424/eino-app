@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,6 +33,9 @@ var (
 	ErrAccountNotFound = errors.New("local account not found")
 	// ErrUsernameTaken 表示用户名已被占用。
 	ErrUsernameTaken = errors.New("local account username is already taken")
+	// ErrInvalidCredentials 是登录失败的唯一对外错误：账号不存在、口令错误、
+	// 账号被停用三种情况共用它，调用方与攻击者都无法据此区分。
+	ErrInvalidCredentials = errors.New("invalid username or password")
 )
 
 // localUsernameRE 是用户名格式：3..32 位字母、数字或下划线。
@@ -205,6 +209,63 @@ func (s *LocalStore) TouchLastSeen(ctx context.Context, id string) error {
 		return fmt.Errorf("touch local account: %w", err)
 	}
 	return nil
+}
+
+// dummyHashOnce 提供一个「口令必然不匹配」的合法哈希串。
+//
+// 账号不存在时也执行一次等价的口令校验，抹平「账号存在」与「账号不存在」的响应
+// 时间差 —— 否则 21 万轮 PBKDF2 与立即返回之间的落差，足以让登录接口变成
+// 用户名枚举器（这也正是第 ③ 条纪律想防的事）。惰性生成，避免每个 cmd 工具启动
+// 都白付一次 PBKDF2 开销。
+var dummyHashOnce = sync.OnceValue(func() string {
+	hash, err := HashPassword("timing-equalizer-not-a-real-credential")
+	if err != nil {
+		return ""
+	}
+	return hash
+})
+
+// Login 校验用户名口令，返回该账号对应的登录身份（不含 token —— token 由
+// auth.Sessions 统一签发）。失败一律返回 ErrInvalidCredentials。
+//
+// 四条纪律（步骤 2.12）：
+//  1. 用户名先做格式校验再查库：含 ':' 的名字必须被拒，否则 "feishu:ou_xxx"
+//     会与飞书身份在 owner 命名空间上撞车；
+//  2. 口令长度上下限：下限按配置，上限固定，防止超长输入把 PBKDF2 拖成 DoS；
+//  3. 「账号不存在」与「口令错误」返回同一错误，且耗时相当；
+//  4. disabled 一律拒绝且不提示「已停用」—— 停用状态不泄露给尝试者。
+func (s *LocalStore) Login(ctx context.Context, username, password string, minPasswordLength int) (Session, error) {
+	if ValidateUsername(username) != nil {
+		return Session{}, ErrInvalidCredentials
+	}
+	if ValidatePassword(password, minPasswordLength) != nil {
+		return Session{}, ErrInvalidCredentials
+	}
+	if err := s.mustDB(); err != nil {
+		return Session{}, err
+	}
+
+	user, hash, err := s.ByUsername(ctx, username)
+	if errors.Is(err, ErrAccountNotFound) {
+		VerifyPassword(dummyHashOnce(), password)
+		return Session{}, ErrInvalidCredentials
+	}
+	if err != nil {
+		return Session{}, err
+	}
+	if !VerifyPassword(hash, password) {
+		return Session{}, ErrInvalidCredentials
+	}
+	if user.Disabled {
+		return Session{}, ErrInvalidCredentials
+	}
+	// 审计信息，失败不影响登录结果。
+	_ = s.TouchLastSeen(ctx, user.ID)
+	return Session{
+		Owner:    LocalOwner(user.ID),
+		Name:     user.DisplayName,
+		Provider: "local",
+	}, nil
 }
 
 func (s *LocalStore) mustDB() error {
