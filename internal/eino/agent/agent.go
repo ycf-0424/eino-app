@@ -76,6 +76,7 @@ func NewWithInstruction(ctx context.Context, cm einomodel.ToolCallingChatModel, 
 		// ToolsConfig 把工具定义和统一工具中间件挂到 Agent 的执行循环中。
 		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               tools,
+			UnknownToolsHandler: unknownToolHint(tools),
 			ToolCallMiddlewares: []compose.ToolMiddleware{safeToolMiddleware(debug, "xinghe-system-assistant")},
 		}},
 	})
@@ -92,6 +93,7 @@ func NewWithInstruction(ctx context.Context, cm einomodel.ToolCallingChatModel, 
 			// 子 Agent 也必须挂同一中间件，否则它会绕过执行事件采集。
 			ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools:               knowledgeTools(extraTools),
+				UnknownToolsHandler: unknownToolHint(knowledgeTools(extraTools)),
 				ToolCallMiddlewares: []compose.ToolMiddleware{safeToolMiddleware(debug, "knowledge-agent")},
 			}},
 		})
@@ -103,6 +105,7 @@ func NewWithInstruction(ctx context.Context, cm einomodel.ToolCallingChatModel, 
 			Instruction: prompt.WriterAgentInstruction + "\n" + runtimeInstruction, Model: cm,
 			ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools:               skillReadTools(extraTools),
+				UnknownToolsHandler: unknownToolHint(skillReadTools(extraTools)),
 				ToolCallMiddlewares: []compose.ToolMiddleware{safeToolMiddleware(debug, "writer-agent")},
 			}},
 		})
@@ -137,6 +140,41 @@ func wrapSkillInstruction(instruction string) string {
 		return "<skill_context>\n无额外 Skill 规则。\n</skill_context>"
 	}
 	return "<skill_context>\n" + instruction + "\n</skill_context>"
+}
+
+// unknownToolHint 把「模型调用了不存在的工具」从整轮硬失败降级成一次可自愈的纠正。
+//
+// 为什么必须处理（2026-09-17 实测，22 题评测日志）：
+// 技能目录里每个技能渲染成 `- report_writer: 一句话描述`，这种「名字 + 描述」的排版
+// 与工具定义长得一样，模型会直接把技能名当工具调用。框架默认行为是返回
+//
+//	[NodeRunError] tool report_writer not found in toolsNode indexes
+//
+// 整轮就此结束（实测 answer_chars=0）—— 模型连改正的机会都没有，用户只看到空回答。
+//
+// eino 的 UnknownToolsHandler 正是为这种幻觉准备的：返回值会被当作该工具的
+// 「执行结果」交回模型，于是模型在同一轮里就能改用 load_skills 重试。
+// 相比反复调提示词措辞，这是能自愈的那一半：措辞降低发生概率，兜底保证发生时不致命。
+//
+// 提示里带上真实工具名，是为了让模型下一步能直接选对，而不是再猜一次。
+func unknownToolHint(tools []einotool.BaseTool) func(ctx context.Context, name, input string) (string, error) {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if info, err := t.Info(context.Background()); err == nil && info.Name != "" {
+			names = append(names, info.Name)
+		}
+	}
+	available := strings.Join(names, ", ")
+	if available == "" {
+		available = "（本轮没有注册任何工具）"
+	}
+	return func(_ context.Context, name, _ string) (string, error) {
+		return fmt.Sprintf(
+			"错误：不存在名为 %q 的工具。本轮实际注册的工具只有：%s。\n"+
+				"若 %q 是技能目录里的名字，请注意技能名不是工具名 —— 请改用 load_skills，"+
+				"把 %q 放进 names 参数里读取该技能，然后按技能规则执行。",
+			name, available, name, name), nil
+	}
 }
 
 // knowledgeTools 限制知识 Agent 只处理检索相关工具，避免它绕过职责执行文件写入。

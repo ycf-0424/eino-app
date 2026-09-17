@@ -29,6 +29,47 @@ func writeNoteAllowed(ctx context.Context) bool {
 	return allowed
 }
 
+// recoverableToolResult 判断某个工具错误是否应该「降级为一段交回模型的结果」。
+//
+// 为什么必须降级（2026-09-17 评测实测）：eino 的工具节点遇到工具返回 error 会中止整轮
+// （`[NodeRunError] failed to invoke tool ...`），于是「模型把文件路径写错」这种小事
+// 会直接变成「用户拿到空回答」。实测中一条 `/workspace-files/README.md` 读不到，
+// 整题 0 字输出 —— 模型既没机会换一个路径，也没机会如实说明文件不存在。
+//
+// 只降级「成因在输入」的错误：路径越界/不存在、不是文本、不是普通文件、文件过大。
+// 这些都指向模型自己的选择，把原因告诉它，它能在同一轮里改正或如实告知用户。
+//
+// 不降级的（仍然向上抛）：超时、用户取消、未知的 tool_error，以及审批中断。
+// 那些不是模型能靠重试解决的问题，掩盖它们只会让真正的故障更难查。
+// 注意：无论是否降级，ToolFailed 事件照常发出，可观测性不受影响。
+//
+// 关于 code 的取值范围：本函数只可能收到 toolset.ErrorCode 的输出，即
+// outside_roots / not_found / not_text / not_regular_file / too_large / tool_error 六种。
+// **"timeout" 与「用户取消」不会到这里** —— 它们在 middleware.go:129/132 的更早分支
+// 就被分流了（前者只发事件、后者交给取消链路收尾）。default 分支的 false 是兜底，
+// 不是「还没实现」，不要为了「补齐 timeout」在这里加 case。
+func recoverableToolResult(code, toolName string, err error) (string, bool) {
+	reason := ""
+	switch code {
+	case "outside_roots":
+		reason = "路径不在授权目录内，或该文件不存在"
+	case "not_found":
+		reason = "文件不存在"
+	case "not_text":
+		reason = "该文件不是可读取的 UTF-8 文本"
+	case "not_regular_file":
+		reason = "该路径不是普通文件"
+	case "too_large":
+		reason = "文件超出大小上限"
+	default:
+		return "", false
+	}
+	return fmt.Sprintf(
+		"工具 %s 执行失败：%s（%s）。这是本次调用的输入问题，不是系统故障。\n"+
+			"请改用正确的输入重试；若确实无法取得该内容，请如实告诉用户缺少什么，不要编造内容。",
+		toolName, reason, err.Error()), true
+}
+
 // safeToolMiddleware 为所有非流式工具统一增加超时、审计日志和执行事件。
 // 它不接收 Emitter 参数，而是从 context 读取，因此根 Agent 与子 Agent 可以共用同一份实现。
 func safeToolMiddleware(debug bool, agentName string) compose.ToolMiddleware {
@@ -100,6 +141,10 @@ func safeToolMiddleware(debug bool, agentName string) compose.ToolMiddleware {
 				payload["error_code"] = toolset.ErrorCode(err)
 				payload["error_message"] = observability.Redact(err.Error())
 				em.Emit(execution.Event{Type: execution.ToolFailed, Payload: payload})
+				// 输入类错误降级为可恢复结果，理由见 recoverableToolResult 的注释。
+				if result, ok := recoverableToolResult(payload["error_code"].(string), input.Name, err); ok {
+					return &compose.ToolOutput{Result: result}, nil
+				}
 			}
 			return output, err
 		}
