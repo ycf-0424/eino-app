@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/schema"
 	"io"
 	"strings"
+
+	"github.com/cloudwego/eino/schema"
+
+	"my-eino-app/internal/eino"
 )
 
 type ModelExtractor struct {
-	Model         model.BaseChatModel
+	Model         eino.BaseChatModel
 	MaxCandidates int
 }
 

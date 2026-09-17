@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	openaiembedding "github.com/cloudwego/eino-ext/components/embedding/openai"
-
 	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino/embedding"
 )
 
 // TargetFingerprint includes routing and index generation, never credentials.
@@ -19,12 +18,11 @@ func TargetFingerprint(c config.RAG) string {
 
 // NewFromConfig 根据 store 字段创建 Redis 或 Milvus 向量存储。
 func NewFromConfig(ctx context.Context, cfg config.RAG) (Store, error) {
-	// Redis 和 Milvus 共用同一个 Embedding 实例，确保入库和检索向量一致。
-	embedder, err := openaiembedding.NewEmbedder(ctx, &openaiembedding.EmbeddingConfig{
-		APIKey: cfg.Embedding.APIKey, Model: cfg.Embedding.Model, BaseURL: cfg.Embedding.BaseURL,
-	})
+	// Redis 和 Milvus 共用同一个 Embedding 实例，确保入库和检索向量一致；
+	// 构造与 memory 侧共用 embedding.NewFromConfig，避免两处参数漂移。
+	embedder, err := embedding.NewFromConfig(ctx, cfg.Embedding)
 	if err != nil {
-		return nil, fmt.Errorf("new embedder: %w", err)
+		return nil, err
 	}
 	switch cfg.Store {
 	case "redis":

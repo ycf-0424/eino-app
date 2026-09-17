@@ -4,22 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/cloudwego/eino/components/embedding"
-	"github.com/milvus-io/milvus-sdk-go/v2/client"
-	"github.com/milvus-io/milvus-sdk-go/v2/entity"
-	"my-eino-app/internal/config"
 	"strconv"
 	"strings"
+
+	"github.com/milvus-io/milvus-sdk-go/v2/client"
+	"github.com/milvus-io/milvus-sdk-go/v2/entity"
+
+	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino"
 )
 
 type MilvusIndex struct {
 	Client     client.Client
-	Embedder   embedding.Embedder
+	Embedder   eino.Embedder
 	Collection string
 	Dimension  int
 }
 
-func NewMilvusIndex(ctx context.Context, c config.RAG, collection string, embedder embedding.Embedder) (*MilvusIndex, error) {
+func NewMilvusIndex(ctx context.Context, c config.RAG, collection string, embedder eino.Embedder) (*MilvusIndex, error) {
 	cli, e := client.NewClient(ctx, client.Config{Address: c.Milvus.Address, Username: c.Milvus.Username, Password: c.Milvus.Password})
 	if e != nil {
 		return nil, e

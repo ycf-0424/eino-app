@@ -3,14 +3,15 @@ package memory
 import (
 	"context"
 	"fmt"
-	openaiembedding "github.com/cloudwego/eino-ext/components/embedding/openai"
-	"github.com/cloudwego/eino/components/model"
-	"my-eino-app/internal/config"
-	"my-eino-app/internal/session"
 	"time"
+
+	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino"
+	"my-eino-app/internal/eino/embedding"
+	"my-eino-app/internal/session"
 )
 
-func Open(ctx context.Context, cfg *config.Config, sessions *session.Store, model model.BaseChatModel) (*Engine, error) {
+func Open(ctx context.Context, cfg *config.Config, sessions *session.Store, model eino.BaseChatModel) (*Engine, error) {
 	if !cfg.Memory.Enabled {
 		return nil, nil
 	}
@@ -29,7 +30,7 @@ func Open(ctx context.Context, cfg *config.Config, sessions *session.Store, mode
 			return nil, fmt.Errorf("memory tables missing: run cmd/session-migrate: %w", err)
 		}
 	}
-	emb, err := openaiembedding.NewEmbedder(check, &openaiembedding.EmbeddingConfig{APIKey: cfg.RAG.Embedding.APIKey, Model: cfg.RAG.Embedding.Model, BaseURL: cfg.RAG.Embedding.BaseURL})
+	emb, err := embedding.NewFromConfig(check, cfg.RAG.Embedding)
 	if err != nil {
 		return nil, err
 	}

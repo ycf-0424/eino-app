@@ -17,11 +17,11 @@ import (
 	"strings"
 	"time"
 
-	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/google/uuid"
 
 	"my-eino-app/internal/checkpoint"
 	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino"
 	"my-eino-app/internal/eino/agent"
 	"my-eino-app/internal/eino/chain"
 	"my-eino-app/internal/eino/model"
@@ -78,7 +78,7 @@ func main() {
 		}
 	}
 
-	var extraTools []einotool.BaseTool
+	var extraTools []eino.BaseTool
 	if cfg.LocalFiles.Enabled {
 		fileTool, toolErr := toolset.NewLocalFileReadTool(cfg.LocalFiles.Roots, cfg.LocalFiles.MaxBytes)
 		if toolErr != nil {

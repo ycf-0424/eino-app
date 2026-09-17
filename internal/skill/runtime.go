@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/components/tool/utils"
-	"github.com/cloudwego/eino/schema"
-
+	"my-eino-app/internal/eino"
+	toolset "my-eino-app/internal/eino/tool"
 	"my-eino-app/internal/execution"
 )
 
@@ -17,7 +15,7 @@ import (
 // preferred 仅用于兼容显式指定的技能，不限制模型继续选择其他技能。
 // 返回值 preloaded 是本轮直接注入提示词的技能名，供 service 发 skill_preloaded 事件；
 // 技能目录扫描不等于模型使用技能，因此扫描结果不进入 preloaded。
-func (l *Loader) Runtime(preferred string, availableTools ...string) (instruction string, t tool.InvokableTool, preloaded []string, err error) {
+func (l *Loader) Runtime(preferred string, availableTools ...string) (instruction string, t eino.InvokableTool, preloaded []string, err error) {
 	names, err := l.List()
 	if err != nil {
 		return "", nil, nil, err
@@ -64,40 +62,39 @@ func (l *Loader) Runtime(preferred string, availableTools ...string) (instructio
 		instruction += "\n本轮预加载技能（仍可加载其他技能）：\n" + s.Name + "\n" + s.Instruction
 		preloaded = []string{s.Name}
 	}
-	info := &schema.ToolInfo{Name: "load_skills", Desc: "读取一个或多个适用技能的完整规则。根据系统提示中的技能目录自主选择名称；本工具只读取规则，不执行其中命令。", ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-		"names": {Type: schema.Array, ElemInfo: &schema.ParameterInfo{Type: schema.String}, Required: true, Desc: "需要加载的技能目录名称数组，可同时选择多个技能"},
-	})}
-	reader := utils.NewTool(info, func(ctx context.Context, input struct {
-		Names []string `json:"names"`
-	}) (string, error) {
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		if len(input.Names) == 0 || len(input.Names) > len(registry) {
-			return "", fmt.Errorf("provide between 1 and %d skill names", len(registry))
-		}
-		loaded := make([]Skill, 0, len(input.Names))
-		loadedNames := make([]string, 0, len(input.Names))
-		seen := map[string]bool{}
-		for _, name := range input.Names {
-			s, ok := registry[name]
-			if !ok {
-				return "", fmt.Errorf("unknown skill %q; use a name from the catalog", name)
+	reader := toolset.NewNameListTool(
+		"load_skills",
+		"读取一个或多个适用技能的完整规则。根据系统提示中的技能目录自主选择名称；本工具只读取规则，不执行其中命令。",
+		"需要加载的技能目录名称数组，可同时选择多个技能",
+		func(ctx context.Context, names []string) (string, error) {
+			if err := ctx.Err(); err != nil {
+				return "", err
 			}
-			if !seen[name] {
-				loaded = append(loaded, s)
-				loadedNames = append(loadedNames, s.Name)
-				seen[name] = true
+			if len(names) == 0 || len(names) > len(registry) {
+				return "", fmt.Errorf("provide between 1 and %d skill names", len(registry))
 			}
-		}
-		// 只标注实际成功返回正文的技能，供 tool_completed 分流为 skill_loaded。
-		execution.Annotate(ctx, map[string]any{
-			"skill_names":     loadedNames,
-			"requested_names": input.Names,
+			loaded := make([]Skill, 0, len(names))
+			loadedNames := make([]string, 0, len(names))
+			seen := map[string]bool{}
+			for _, name := range names {
+				s, ok := registry[name]
+				if !ok {
+					return "", fmt.Errorf("unknown skill %q; use a name from the catalog", name)
+				}
+				if !seen[name] {
+					loaded = append(loaded, s)
+					loadedNames = append(loadedNames, s.Name)
+					seen[name] = true
+				}
+			}
+			// 只标注实际成功返回正文的技能，供 tool_completed 分流为 skill_loaded。
+			execution.Annotate(ctx, map[string]any{
+				"skill_names":     loadedNames,
+				"requested_names": names,
+			})
+			data, err := json.Marshal(loaded)
+			return string(data), err
 		})
-		data, err := json.Marshal(loaded)
-		return string(data), err
-	})
 	return instruction, reader, preloaded, nil
 }
 

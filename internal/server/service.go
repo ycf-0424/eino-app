@@ -14,14 +14,13 @@ import (
 	"time"
 	"unicode/utf8"
 
-	einomodel "github.com/cloudwego/eino/components/model"
-	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/google/uuid"
 
 	"github.com/cloudwego/eino/schema"
 	"my-eino-app/internal/auth"
 	"my-eino-app/internal/checkpoint"
 	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino"
 	"my-eino-app/internal/eino/agent"
 	modelset "my-eino-app/internal/eino/model"
 	"my-eino-app/internal/eino/rag"
@@ -36,8 +35,8 @@ import (
 type Service struct {
 	memories    *memory.Engine
 	cfg         *config.Config
-	model       einomodel.ToolCallingChatModel
-	tools       []einotool.BaseTool
+	model       eino.ChatModel
+	tools       []eino.BaseTool
 	checkpoints *checkpoint.FileStore
 	sessions    *session.Store
 	skills      *skill.Loader
@@ -80,7 +79,7 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	var tools []einotool.BaseTool
+	var tools []eino.BaseTool
 	if cfg.LocalFiles.Enabled {
 		fileTool, toolErr := toolset.NewLocalFileReadTool(cfg.LocalFiles.Roots, cfg.LocalFiles.MaxBytes)
 		if toolErr != nil {
@@ -137,7 +136,7 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 		// Reuse the already-loaded chat model for the background extractor. Creating
 		// a second local llama server can exhaust GPU memory; an override model is
 		// still supported by constructing a separate instance below.
-		memoryModel := einomodel.BaseChatModel(cm)
+		memoryModel := eino.BaseChatModel(cm)
 		if cfg.Memory.ExtractorModel != "inherit_chat" && cfg.Memory.ExtractorModel != "" {
 			memoryCfg := *cfg
 			memoryCfg.OpenAI.Model = cfg.Memory.ExtractorModel
@@ -351,7 +350,7 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 	if err != nil {
 		return nil, nil, err
 	}
-	tools := append([]einotool.BaseTool{}, s.tools...)
+	tools := append([]eino.BaseTool{}, s.tools...)
 	tools = append(tools, skillTool)
 	chat, err := agent.NewWithInstruction(ctx, s.model, s.cfg.Debug, s.cfg.Agent.MultiAgent, s.checkpointStoreFor(ctx), instruction, tools...)
 	if err != nil {
