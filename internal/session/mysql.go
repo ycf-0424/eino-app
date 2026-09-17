@@ -436,7 +436,10 @@ func (s *mysqlStore) ownerOf(id string) (string, bool, error) {
 func (s *mysqlStore) list(owner string) ([]Info, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id,COALESCE(SUM(OCTET_LENGTH(m.payload)),0),c.updated_at FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id WHERE c.owner_id=? GROUP BY c.id,c.updated_at ORDER BY c.updated_at DESC`, owner)
+	// HAVING 过滤掉零消息的会话：那是「点了新对话但还没提问」留下的空壳，
+	// 列表里既拿不到标题（只能回退成 UUID）、点开也没有任何内容。
+	// 用 COUNT 而不是 SUM(...)>0 —— 消息存在但 payload 为空串时同样应当保留。
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id,COALESCE(SUM(OCTET_LENGTH(m.payload)),0),c.updated_at FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id WHERE c.owner_id=? GROUP BY c.id,c.updated_at HAVING COUNT(m.conversation_id)>0 ORDER BY c.updated_at DESC`, owner)
 	if err != nil {
 		return nil, err
 	}

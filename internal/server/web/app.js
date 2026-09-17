@@ -244,6 +244,15 @@ function parseThink(value) {
     if (match[1]?.trim()) thinkParts.push(match[1].trim());
   }
   rest = rest.replace(/<think(?:ing)?>\s*[\s\S]*?<\/think(?:ing)?>/gi, "");
+  // 孤立闭合标签：部分模型（qwen 系列）的运行环境已经把 <think> 注入模板，
+  // 模型只回吐 </think>，于是「思考正文 + </think> + 正式回答」整段落进 content。
+  // 这段文本必须回收，否则思考会当正文展示 —— 表现为「先答错、再自我纠正」
+  // （2026-09-17 实测：current_time 调用前先输出了一个幻觉日期）。
+  const orphan = rest.match(/^([\s\S]*?)<\/think(?:ing)?>[ \t]*\r?\n?/i);
+  if (orphan) {
+    if (orphan[1]?.trim()) thinkParts.push(orphan[1].trim());
+    rest = rest.slice(orphan[0].length);
+  }
   const open = rest.match(/<think(?:ing)?>\s*([\s\S]*)$/i);
   if (open) {
     if (open[1]?.trim()) thinkParts.push(open[1].trim());
@@ -471,18 +480,23 @@ function finishGeneration() {
 // 因此这里必须异步等待，`makeSessionId()` 已移除。
 async function startNewChat() {
   closeSocket();
-  if (!state.newChatRequest) {
-    state.newChatRequest = api("/sessions", { method: "POST" })
-      .then((created) => created.id)
-      .finally(() => {
-        state.newChatRequest = null;
-      });
-  }
-  try {
-    state.sessionId = await state.newChatRequest;
-  } catch (error) {
-    showToast(error.message);
-    return;
+  // 当前会话还没有任何消息时直接复用，不再向服务端申请新的 id：连点「新对话」
+  // 会在服务端堆出多条零消息的空会话，而侧栏只能把它们显示成 UUID（2026-09-17 实测）。
+  const reuse = Boolean(state.sessionId) && ui.messages.children.length === 0;
+  if (!reuse) {
+    if (!state.newChatRequest) {
+      state.newChatRequest = api("/sessions", { method: "POST" })
+        .then((created) => created.id)
+        .finally(() => {
+          state.newChatRequest = null;
+        });
+    }
+    try {
+      state.sessionId = await state.newChatRequest;
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
   }
   state.assistantBody = null;
   state.assistantNode = null;
@@ -543,7 +557,11 @@ function describeEvent(event) {
 }
 
 // renderEvent 把一条事件渲染进面板；同一 tool_call_id 复用同一条目。
-function renderEvent(panel, event) {
+//
+// live 表示这是本轮正在发生的事件。历史回放（openSession → replayExecution）
+// 补的是已经结束的步骤，不能改写流式状态条：那会让一条早已完成的消息重新
+// 显示「正在整理回答…」，而且此后不再有任何事件把它关掉（2026-09-17 实测）。
+function renderEvent(panel, event, live = false) {
   if (!panel || !event || !event.type) return;
   if (event.type === "chunk") return;
   const payload = event.payload || {};
@@ -551,6 +569,7 @@ function renderEvent(panel, event) {
   // 包括 load_skills 的工具调用本身，否则面板会露出「加载技能」。
   if (!state.debug && (event.type === "skill_preloaded" || event.type === "skill_loaded" || payload.tool_name === "load_skills")) return;
   const message = panel._messageNode;
+  const setStatus = live ? (text) => setStreamStatus(message, text) : () => {};
   panel.hidden = false;
   const list = panel.querySelector(".exec-list");
   const key = payload.tool_call_id || `event:${event.event_id}`;
@@ -567,13 +586,13 @@ function renderEvent(panel, event) {
       item.dataset.state = "info";
       icon.textContent = "▶";
       text.textContent = "开始处理本轮请求";
-      setStreamStatus(message, "正在准备本轮请求…");
+      setStatus("正在准备本轮请求…");
       break;
     case "model_waiting":
       item.dataset.state = "pending";
       icon.textContent = "…";
       text.textContent = payload.phase === "resume" ? "等待模型继续生成" : "等待模型响应";
-      setStreamStatus(message, "正在思考…");
+      setStatus("正在思考…");
       break;
     case "skill_preloaded": {
       const names = Array.isArray(payload.skill_names) ? payload.skill_names : [];
@@ -586,7 +605,7 @@ function renderEvent(panel, event) {
       item.dataset.state = "pending";
       icon.textContent = "…";
       text.textContent = `调用 ${toolLabel(payload.tool_name)}`;
-      setStreamStatus(message, `正在调用 ${toolLabel(payload.tool_name)}…`);
+      setStatus(`正在调用 ${toolLabel(payload.tool_name)}…`);
       break;
     case "tool_completed":
     case "skill_loaded":
@@ -594,7 +613,7 @@ function renderEvent(panel, event) {
       item.dataset.state = "done";
       icon.textContent = "✓";
       text.textContent = describeEvent(event);
-      setStreamStatus(message, "正在整理回答…");
+      setStatus("正在整理回答…");
       if (payload.tool_name === "knowledge_search" && Array.isArray(payload.sources)) {
         const message = panel._messageNode;
         if (message) {
@@ -612,13 +631,13 @@ function renderEvent(panel, event) {
       icon.textContent = "✗";
       text.textContent = describeEvent(event);
       time.textContent = "";
-      setStreamStatus(message, "工具执行失败，正在处理结果…");
+      setStatus("工具执行失败，正在处理结果…");
       break;
     case "approval_required":
       item.dataset.state = "pending";
       icon.textContent = "!";
       text.textContent = `等待审批：${toolLabel(payload.tool_name)}`;
-      setStreamStatus(message, "等待你的批准…");
+      setStatus("等待你的批准…");
       break;
     case "run_completed":
       item.dataset.state = "done";
@@ -660,7 +679,7 @@ function handleStreamEvent(event) {
   if (run.seen.has(key)) return;
   run.seen.add(key);
   if (typeof event.sequence === "number" && event.sequence > run.lastSeq) run.lastSeq = event.sequence;
-  renderEvent(run.panel, event);
+  renderEvent(run.panel, event, true);
   if (event.dropped && run.runId) backfillRun(run.runId);
 }
 
@@ -805,7 +824,7 @@ async function submitApproval(approved) {
       const key = `${event.run_id || ""}#${event.sequence ?? ""}`;
       if (state.activeRun.seen.has(key)) continue;
       state.activeRun.seen.add(key);
-      renderEvent(state.activeRun.panel, event);
+      renderEvent(state.activeRun.panel, event, true);
     }
     if (result.approval) {
       state.pendingApproval = result.approval;
@@ -940,7 +959,14 @@ async function loadSessions() {
       ui.sessionList.append(row);
       api(`/sessions/${encodeURIComponent(session.id)}`).then((messages) => {
         const title = firstUserText(messages);
-        if (title) { open.textContent = title; open.title = title; }
+        if (title) {
+          open.textContent = title;
+          open.title = title;
+          return;
+        }
+        // 零消息的会话是「点了新对话但没提问」留下的空壳：既点不出内容，标题
+        // 也只能回退成 UUID。直接去掉这一行，不显示这种条目（2026-09-17 实测）。
+        row.remove();
       }).catch(() => {});
     }
     highlightSession();
