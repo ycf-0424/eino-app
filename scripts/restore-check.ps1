@@ -100,11 +100,21 @@ function Read-ManifestFiles([string]$Path) {
 
 if ([string]::IsNullOrWhiteSpace($BackupDir)) {
     if (-not (Test-Path $BackupRoot)) { Fail "no backups found at $BackupRoot" }
-    $newest = Get-ChildItem -LiteralPath $BackupRoot -Directory |
+    # 只认「有 manifest.txt 的」目录：目录名正常但内容缺失，说明那次备份中途失败过。
+    # 直接挑最近一份会让演练报「manifest 不存在」，把问题指向错误的方向。
+    $candidates = Get-ChildItem -LiteralPath $BackupRoot -Directory |
         Where-Object { $_.Name -match '^\d{8}-\d{6}$' } |
-        Sort-Object Name -Descending |
-        Select-Object -First 1
-    if (-not $newest) { Fail "no timestamped backup directory under $BackupRoot" }
+        Sort-Object Name -Descending
+    $skipped = @()
+    $newest = $null
+    foreach ($candidate in $candidates) {
+        if (Test-Path (Join-Path $candidate.FullName "manifest.txt")) { $newest = $candidate; break }
+        $skipped += $candidate.Name
+    }
+    if (-not $newest) { Fail "no complete backup (with manifest.txt) under $BackupRoot" }
+    if ($skipped.Count -gt 0) {
+        Write-Step "WARNING: 跳过 $($skipped.Count) 个不完整备份目录: $($skipped -join ', ')"
+    }
     $BackupDir = $newest.FullName
 }
 $BackupDir = (Resolve-Path -LiteralPath $BackupDir).Path
@@ -142,10 +152,19 @@ try {
 }
 
 $settings = Read-DotEnv (Join-Path $RepoRoot ".env")
-$DbUser = $settings["MYSQL_USER"]
-$DbPassword = $settings["MYSQL_PASSWORD"]
+# 与 backup.ps1 同一套凭据：恢复演练既要读 eino（比对基线不读它，但保持一致），
+# 又要在 eino_restore_check 上做 DROP/CREATE/导入。应用账号两样都做不到：
+# 它没有临时库的任何权限，而 migrate 账号的授权是按库（ON `eino`.*）给的，
+# 对 eino_restore_check 同样无效。
+$DbUser = $settings["MYSQL_BACKUP_USER"]
+$DbPassword = $settings["MYSQL_BACKUP_PASSWORD"]
 if ([string]::IsNullOrWhiteSpace($DbUser) -or [string]::IsNullOrWhiteSpace($DbPassword)) {
-    Fail "MYSQL_USER / MYSQL_PASSWORD must be set in .env"
+    Write-Step "WARNING: MYSQL_BACKUP_* 未配置，回落到应用账号 MYSQL_USER"
+    $DbUser = $settings["MYSQL_USER"]
+    $DbPassword = $settings["MYSQL_PASSWORD"]
+}
+if ([string]::IsNullOrWhiteSpace($DbUser) -or [string]::IsNullOrWhiteSpace($DbPassword)) {
+    Fail "MYSQL_BACKUP_USER / MYSQL_BACKUP_PASSWORD（或回落的 MYSQL_USER / MYSQL_PASSWORD）必须在 .env 中设置"
 }
 
 $containerId = (Invoke-Docker @("compose", "-f", $ComposeFile, "ps", "-q", "mysql")) | Select-Object -First 1
