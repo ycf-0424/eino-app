@@ -3,10 +3,13 @@
 启动：
 
 ```powershell
-go run ./cmd/server -addr :18180
+go run ./cmd/server -addr 127.0.0.1:18181
 ```
 
-浏览器访问 `http://localhost:18180` 即可打开内置 Web 对话界面。前端资源已经
+（`make run` 等价于此命令。）端口用 18181 是为了避开容器模式占用的宿主 18180，
+详见 `COMMANDS.md` 第八节。
+
+浏览器访问 `http://localhost:18181` 即可打开内置 Web 对话界面。前端资源已经
 嵌入 Go 程序，不需要安装 Node.js 或单独启动开发服务器。
 
 主要接口：

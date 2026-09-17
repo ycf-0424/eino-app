@@ -39,7 +39,13 @@ func main() {
 	}
 	server := &http.Server{Addr: *addr, Handler: service.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	defer service.Close()
-	fmt.Printf("server listening on http://localhost%s\n", *addr)
+	// -addr 既可能是 ":8080"（绑定全部网卡），也可能是 "127.0.0.1:18181"。
+	// 只有前者需要在展示时补上主机名，否则会拼出 localhost127.0.0.1:18181。
+	displayAddr := *addr
+	if len(displayAddr) > 0 && displayAddr[0] == ':' {
+		displayAddr = "localhost" + displayAddr
+	}
+	fmt.Printf("server listening on http://%s\n", displayAddr)
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ListenAndServe() }()
 	select {

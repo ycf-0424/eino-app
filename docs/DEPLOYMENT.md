@@ -16,8 +16,9 @@ make index
 make run
 ```
 
-访问 `http://localhost:18180`。这一模式读取项目根目录的 `config.yaml`，其中
-Ollama 和 Milvus 地址均为 `localhost`。
+访问 `http://localhost:18181`。这一模式读取项目根目录的 `config.yaml`，其中
+Ollama 和 Milvus 地址均为 `localhost`。开发模式固定用 18181，因为宿主 18180
+已由容器模式占用（见「完整 Docker 模式」）。
 
 ## 完整 Docker 模式
 

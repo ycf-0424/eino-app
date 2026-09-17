@@ -23,7 +23,7 @@ help: ## 显示可用命令
 	@echo "make db-memory-indexes - 使用具备 ALTER 权限的账号补充记忆清理索引"
 	@echo "make sessions-import - 将本地 JSON 会话导入 MySQL"
 	@echo "make check       - 格式化、测试并执行静态检查"
-	@echo "make run         - 在宿主机启动 Go 服务"
+	@echo "make run         - 在宿主机启动 Go 服务（127.0.0.1:18181）"
 	@echo "make infra-up    - 启动 MySQL/Milvus/etcd/MinIO"
 	@echo "make attu         - 启动 Milvus 和 Attu 管理界面"
 	@echo "make up          - 构建并启动完整 Docker 服务"
@@ -43,8 +43,12 @@ vet: ## 执行 Go 静态检查
 
 check: fmt test vet ## 提交前完整检查
 
-run: ## 本地启动后端和内置前端
-	go run ./cmd/server -addr :18180
+# 本地端口固定 18181：compose 的 app 服务已把宿主 18180 映射给容器（18180:8080），
+# 两者同时运行会抢占同一个 (IP, 端口)。Windows 下 Go 不设 SO_REUSEADDR，无法共存。
+# 要改回 18180，先停容器：docker compose -f docker-compose.milvus.yml stop app
+# 绑定 127.0.0.1 而非全部网卡，避免本地服务被同局域网机器直连。
+run: ## 本地启动后端和内置前端（127.0.0.1:18181）
+	go run ./cmd/server -addr 127.0.0.1:18181
 
 build: ## 构建当前操作系统可执行文件
 	go build -trimpath -o $(SERVER) ./cmd/server

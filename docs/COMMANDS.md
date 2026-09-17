@@ -29,8 +29,11 @@ make run
 浏览器访问：
 
 ```text
-http://localhost:18180
+http://localhost:18181
 ```
+
+本地模式（`make run`）固定用 **18181**，容器模式（`make up`）固定用 **18180**：
+compose 已把宿主 18180 映射给 app 容器，两者同时运行会抢占同一个宿主端口。
 
 测试本地文件读取：先把 UTF-8 文本放入 `workspace-files`，然后在网页或控制台明确
 输入“读取 README.txt 并概括内容”。默认不会读取该目录之外的文件。
@@ -64,7 +67,7 @@ make index
 docker compose -f docker-compose.milvus.yml up -d etcd minio milvus
 docker compose -f docker-compose.milvus.yml ps
 go run ./cmd/indexer
-go run ./cmd/server -addr :18180
+go run ./cmd/server -addr 127.0.0.1:18181
 ```
 
 ## 四、完整 Docker 启动
@@ -168,13 +171,15 @@ make restart
 
 ```powershell
 Get-NetTCPConnection -LocalPort 18180 -ErrorAction SilentlyContinue
+Get-NetTCPConnection -LocalPort 18181 -ErrorAction SilentlyContinue
 Get-NetTCPConnection -LocalPort 11434 -ErrorAction SilentlyContinue
 Get-NetTCPConnection -LocalPort 19530 -ErrorAction SilentlyContinue
 ```
 
 主要端口：
 
-- `18180`：Go Web/API（宿主机端口，容器内仍监听 8080）
+- `18180`：Go Web/API 容器模式的宿主机端口（容器内仍监听 8080）
+- `18181`：本地 `make run` 的监听端口，仅绑定 `127.0.0.1`，不对外暴露
 - `11434`：Ollama
 - `19530`：Milvus gRPC
 - `9091`：Milvus 健康检查
