@@ -10,7 +10,8 @@
 # 本脚本把「验证」放到「写入」之前：飞书不认这个值，就一个字节都不动 .env。
 #
 # 用法：
-#   powershell -File scripts/feishu-set-secret.ps1                  # 交互式粘贴（不回显）
+#   powershell -File scripts/feishu-set-secret.ps1                  # 交互式粘贴（不回显；直接回车则用剪贴板）
+#   powershell -File scripts/feishu-set-secret.ps1 -FromClipboard   # 直接读剪贴板：在后台点「复制」图标，再来跑这一条
 #   powershell -File scripts/feishu-set-secret.ps1 -DryRun          # 只验证，不写 .env
 #   powershell -File scripts/feishu-set-secret.ps1 -Secret xxx      # 脚本化调用
 #   powershell -File scripts/feishu-set-secret.ps1 -AppID cli_xxx   # 覆盖 App ID（默认读 .env）
@@ -28,7 +29,11 @@ param(
     [string]$EnvFile = '',
     [int]$Timeout = 15,
     # 只验证凭据，不动 .env。
-    [switch]$DryRun
+    [switch]$DryRun,
+    # 直接读剪贴板取 Secret。飞书后台 App Secret 右侧那个图标点一下就把值放进剪贴板，
+    # 于是「复制 → 粘贴 → 回车」能压成「点复制 → 跑这一条」，也就没有剪贴板之外的
+    # 手抄环节（手抄是本项目唯一一个「填错也不报错」的失败源）。
+    [switch]$FromClipboard
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,12 +46,44 @@ function Write-Step([string]$m) { Write-Host "[secret] $m" }
 function Write-Pass([string]$m) { Write-Host "[secret] OK   $m" }
 function Write-Fail([string]$m) { Write-Host "[secret] FAIL $m" }
 
+# 读剪贴板。PS 5.1 的 Get-Clipboard 需要 STA 线程；powershell.exe 默认就是 STA，
+# 但被别的方式拉起时可能失败 —— 失败返回空串，交回交互式粘贴，不抛异常打断流程。
+function Read-ClipboardText {
+    try {
+        $t = Get-Clipboard -Raw
+        if ($null -eq $t) { return '' }
+        return $t
+    } catch {
+        return ''
+    }
+}
+
 # ---------- 1. 取 Secret（交互式时不回显） ----------
+if ([string]::IsNullOrWhiteSpace($Secret) -and $FromClipboard) {
+    $Secret = Read-ClipboardText
+    if ([string]::IsNullOrWhiteSpace($Secret)) {
+        Write-Fail "-FromClipboard 指定了，但剪贴板里没有文本（或被其它程序占用）。"
+        Write-Host "       在飞书后台点 App Secret 右侧的**复制图标**后立刻重跑；"
+        Write-Host "       或去掉 -FromClipboard，改用交互式粘贴。"
+        exit 1
+    }
+    Write-Step "已从剪贴板读取（$($Secret.Trim().Length) 字符）"
+}
+
 if ([string]::IsNullOrWhiteSpace($Secret)) {
-    $secure = Read-Host -Prompt "[secret] 请粘贴 App Secret（回车确认，不回显）" -AsSecureString
+    $secure = Read-Host -Prompt "[secret] 粘贴 App Secret（回车确认，不回显；直接回车 = 用剪贴板内容）" -AsSecureString
     $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try { $Secret = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
     finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+
+    # 空回车 = 用剪贴板。让「在后台点一下复制图标」成为唯一取值动作，
+    # 手抄环节整个消失。
+    if ([string]::IsNullOrWhiteSpace($Secret)) {
+        $Secret = Read-ClipboardText
+        if (-not [string]::IsNullOrWhiteSpace($Secret)) {
+            Write-Step "输入为空，改用剪贴板内容（$($Secret.Trim().Length) 字符）"
+        }
+    }
 }
 
 # 从网页复制常带尾部空白/换行；不去掉会被飞书判成 invalid_client（且肉眼看不出来）。
