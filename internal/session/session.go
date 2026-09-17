@@ -201,6 +201,35 @@ func (s *Store) List(owner string) ([]Info, error) {
 	return result, nil
 }
 
+// Create 登记一条空会话并绑定 owner，供服务端签发 session id 时使用（步骤 2.7）。
+//
+// 单独一个方法而不是让调用方写 Save(owner, id, nil)：这里表达的是「签发新会话」，
+// 与「追加消息」是两种意图，将来要加限流或审计也有明确的落脚点。
+func (s *Store) Create(owner, id string) error {
+	return s.Save(owner, id, nil)
+}
+
+// OwnerOf 返回会话归属；会话不存在时 exists 为 false。
+//
+// 服务端据此决定是否沿用调用方带来的 session id：只有不存在（新会话）或
+// 归属就是当前用户时才接受，否则调用方必须收到明确的越权错误，
+// 而不是被悄悄换一个 id —— 后者会掩盖越权尝试。
+// 文件后端没有 owner 维度，存在即归属空 owner（auth 启用时 ValidateAuth 已强制 mysql）。
+func (s *Store) OwnerOf(id string) (owner string, exists bool, err error) {
+	if err := validateID(id); err != nil {
+		return "", false, err
+	}
+	if s.mysql != nil {
+		return s.mysql.ownerOf(id)
+	}
+	if _, statErr := os.Stat(s.path(id)); statErr == nil {
+		return "", true, nil
+	} else if !os.IsNotExist(statErr) {
+		return "", false, statErr
+	}
+	return "", false, nil
+}
+
 // Delete 删除一个 Session；不存在视为成功，方便接口幂等调用。
 // 归属他人时返回 ErrForeignSession（MySQL 模式）。
 func (s *Store) Delete(owner, id string) error {

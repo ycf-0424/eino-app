@@ -342,7 +342,7 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 	}
 	tools := append([]einotool.BaseTool{}, s.tools...)
 	tools = append(tools, skillTool)
-	chat, err := agent.NewWithInstruction(ctx, s.model, s.cfg.Debug, s.cfg.Agent.MultiAgent, s.checkpoints, instruction, tools...)
+	chat, err := agent.NewWithInstruction(ctx, s.model, s.cfg.Debug, s.cfg.Agent.MultiAgent, s.checkpointStoreFor(ctx), instruction, tools...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -444,7 +444,9 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 		return ChatResult{}, lockErr
 	}
 	defer unlock()
-	if pending, err := s.checkpoints.LoadApproval(id); err != nil {
+	// 审批元数据按 owner 分目录：拿别人的 session id 也读不到他的中断现场。
+	checks := s.checkpointStoreFor(ctx)
+	if pending, err := checks.LoadApproval(id); err != nil {
 		return ChatResult{}, err
 	} else if pending != nil {
 		return ChatResult{SessionID: id, RunID: pending.RunID, Approval: &agent.ApprovalRequest{TargetID: pending.TargetID, ToolName: pending.ToolName, Arguments: pending.Arguments}}, nil
@@ -470,7 +472,7 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 	err = chat.AskTo(ctx, query, writer)
 	var approval *agent.ApprovalRequest
 	if errors.As(err, &approval) {
-		if saveErr := s.checkpoints.SaveApproval(id, checkpoint.PendingApproval{TargetID: approval.TargetID, ToolName: approval.ToolName, Arguments: approval.Arguments, RunID: runIDOf(em)}); saveErr != nil {
+		if saveErr := checks.SaveApproval(id, checkpoint.PendingApproval{TargetID: approval.TargetID, ToolName: approval.ToolName, Arguments: approval.Arguments, RunID: runIDOf(em)}); saveErr != nil {
 			finishRun(em, execution.StatusFailed, "save_approval_failed")
 			return ChatResult{}, saveErr
 		}
@@ -512,7 +514,8 @@ func (s *Service) ApproveWithSink(ctx context.Context, id string, approved bool,
 		return ChatResult{}, lockErr
 	}
 	defer unlock()
-	pending, err := s.checkpoints.LoadApproval(id)
+	checks := s.checkpointStoreFor(ctx)
+	pending, err := checks.LoadApproval(id)
 	if err != nil {
 		return ChatResult{}, err
 	}
@@ -529,7 +532,7 @@ func (s *Service) ApproveWithSink(ctx context.Context, id string, approved bool,
 	err = chat.ResumeApprovalTo(ctx, request, approved, writer)
 	var next *agent.ApprovalRequest
 	if errors.As(err, &next) {
-		if e := s.checkpoints.SaveApproval(id, checkpoint.PendingApproval{TargetID: next.TargetID, ToolName: next.ToolName, Arguments: next.Arguments, RunID: runIDOf(em)}); e != nil {
+		if e := checks.SaveApproval(id, checkpoint.PendingApproval{TargetID: next.TargetID, ToolName: next.ToolName, Arguments: next.Arguments, RunID: runIDOf(em)}); e != nil {
 			finishRun(em, execution.StatusFailed, "save_approval_failed")
 			return ChatResult{}, e
 		}
@@ -543,7 +546,7 @@ func (s *Service) ApproveWithSink(ctx context.Context, id string, approved bool,
 		finishRun(em, status, code)
 		return ChatResult{}, err
 	}
-	if err = s.checkpoints.ClearApproval(id); err != nil {
+	if err = checks.ClearApproval(id); err != nil {
 		finishRun(em, execution.StatusFailed, "clear_approval_failed")
 		return ChatResult{}, err
 	}

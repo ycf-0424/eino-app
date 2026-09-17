@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -397,6 +398,21 @@ func MessageStatus(m *schema.Message) string {
 		return v
 	}
 	return "completed"
+}
+
+// ownerOf 返回会话归属；会话不存在时 exists 为 false。
+func (s *mysqlStore) ownerOf(id string) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var owner string
+	err := s.db.QueryRowContext(ctx, "SELECT owner_id FROM conversations WHERE id=?", id).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return owner, true, nil
 }
 
 // list 只返回该 owner 的会话；owner 为空串时匹配未归属的历史数据（单用户模式）。

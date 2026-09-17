@@ -12,6 +12,9 @@ const state = {
   activeRun: null,
   // 后端调试模式：只有它为 true 时才显示技能入口与技能事件。
   debug: false,
+  // 正在进行的「申请新会话」请求：连点新对话时复用同一次签发，
+  // 避免在服务端留下多条空会话。
+  newChatRequest: null,
 };
 
 const ui = Object.fromEntries([
@@ -60,10 +63,6 @@ function toolLabel(name) {
 function errorLabel(code) {
   if (!code) return "执行失败";
   return ERROR_LABELS[code] || code;
-}
-
-function makeSessionId() {
-  return globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 async function api(path, options = {}) {
@@ -447,9 +446,26 @@ function finishGeneration() {
   ui.promptInput.focus();
 }
 
-function startNewChat() {
+// startNewChat 先向服务端申请一个新的 session id，再进入空会话。
+//
+// id 不再由前端生成：客户端自造 id 正是「知道别人的 id 就能读他的审批内容、
+// 恢复他的执行」的来源。现在一律由 POST /sessions 签发并登记归属，
+// 因此这里必须异步等待，`makeSessionId()` 已移除。
+async function startNewChat() {
   closeSocket();
-  state.sessionId = makeSessionId();
+  if (!state.newChatRequest) {
+    state.newChatRequest = api("/sessions", { method: "POST" })
+      .then((created) => created.id)
+      .finally(() => {
+        state.newChatRequest = null;
+      });
+  }
+  try {
+    state.sessionId = await state.newChatRequest;
+  } catch (error) {
+    showToast(error.message);
+    return;
+  }
   state.assistantBody = null;
   state.assistantNode = null;
   state.pendingApproval = null;
@@ -662,9 +678,15 @@ function sendMessage(query) {
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "ready") {
+      // 会话 id 以服务端为准：连接建立时可能已经签发或校正过它。
+      if (message.session_id) {
+        state.sessionId = message.session_id;
+        highlightSession();
+      }
       applyDebugMode(message.debug === true);
+      // 帧内不再携带 session_id —— 会话由连接本身确定，服务端一律忽略该字段。
       // 非调试模式不带 skill：按名指定技能属于内部能力，交给模型自主路由。
-      socket.send(JSON.stringify({ type: "chat", session_id: state.sessionId, query, skill: state.debug ? ui.skillSelect.value : "" }));
+      socket.send(JSON.stringify({ type: "chat", query, skill: state.debug ? ui.skillSelect.value : "" }));
     } else if (message.type === "chunk") {
       const run = state.activeRun;
       if (run) {

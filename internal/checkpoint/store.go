@@ -3,20 +3,29 @@ package checkpoint
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 )
 
 var validID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // FileStore 实现 Eino CheckPointStore 和 CheckPointDeleter。
+//
+// 目录按 owner 分层（dir/<owner>/<id>.checkpoint）。这里不做「方法签名加 owner」：
+// Get/Set/Delete 受 eino 的 CheckPointStore 接口约束无法加参数，调用方改用
+// For(owner) 取得绑定到当前身份的同款视图。
 type FileStore struct {
 	dir string
-	mu  sync.RWMutex
+	// mu 在所有派生视图之间共享：视图是按请求创建的，若各自持有锁，
+	// 同一会话的并发写会同时落到同一个 <id>.checkpoint.tmp 上并互相覆盖。
+	mu *sync.RWMutex
 }
 
 // PendingApproval 是跨进程恢复审批所需的最小元数据；执行状态本身保存在 checkpoint 中。
@@ -34,7 +43,44 @@ func New(dir string) (*FileStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create checkpoint dir: %w", err)
 	}
-	return &FileStore{dir: dir}, nil
+	return &FileStore{dir: dir, mu: &sync.RWMutex{}}, nil
+}
+
+// For 返回绑定到指定 owner 的视图：checkpoint 与审批元数据落在 dir/<owner>/ 下。
+//
+// owner 为空串时返回原视图（根目录），保持 CLI 单用户路径与改造前完全一致。
+// 这是纵深防御：session id 由服务端签发（步骤 2.7），分层目录保证即便 id 泄露，
+// 另一个身份的请求也读不到对应的 checkpoint 与审批内容。
+func (s *FileStore) For(owner string) *FileStore {
+	if owner == "" || s == nil {
+		return s
+	}
+	mu := s.mu
+	if mu == nil {
+		mu = &sync.RWMutex{}
+	}
+	return &FileStore{dir: filepath.Join(s.dir, ownerSegment(owner)), mu: mu}
+}
+
+// ownerSegment 把 owner 转成安全的单层目录名。
+//
+// owner 形如 feishu:<open_id> / local:<uuid>，冒号在 Windows 上是非法文件名字符。
+// 只做字符替换会产生碰撞（a:b_c 与 a_b:c 结果相同），而这里一旦碰撞就是两个
+// 身份共用同一目录 —— 属于隔离边界，因此额外拼上原值的短哈希保证一一对应。
+func ownerSegment(owner string) string {
+	sum := sha256.Sum256([]byte(owner))
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, owner)
+	if len(safe) > 48 {
+		safe = safe[:48]
+	}
+	return safe + "-" + hex.EncodeToString(sum[:6])
 }
 
 func (s *FileStore) path(id string) (string, error) {
@@ -42,6 +88,15 @@ func (s *FileStore) path(id string) (string, error) {
 		return "", fmt.Errorf("invalid checkpoint id %q", id)
 	}
 	return filepath.Join(s.dir, id+".checkpoint"), nil
+}
+
+// ensureDir 在写入前补建目录：For(owner) 是按请求创建的轻量视图，不在构造时
+// 做 I/O，避免为一次只读请求也建目录。
+func ensureDir(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create checkpoint dir: %w", err)
+	}
+	return nil
 }
 
 func (s *FileStore) Get(_ context.Context, id string) ([]byte, bool, error) {
@@ -64,6 +119,9 @@ func (s *FileStore) Get(_ context.Context, id string) ([]byte, bool, error) {
 func (s *FileStore) Set(_ context.Context, id string, value []byte) error {
 	path, err := s.path(id)
 	if err != nil {
+		return err
+	}
+	if err := ensureDir(path); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -106,6 +164,9 @@ func (s *FileStore) SaveApproval(id string, approval PendingApproval) error {
 	}
 	b, err := json.MarshalIndent(approval, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := ensureDir(path); err != nil {
 		return err
 	}
 	s.mu.Lock()

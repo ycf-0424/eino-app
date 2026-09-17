@@ -113,3 +113,38 @@ func TestErrForeignSessionIsDistinguishable(t *testing.T) {
 		t.Fatal("ErrForeignSession must survive wrapping")
 	}
 }
+
+// TestCreateRegistersOwnership 固定「服务端签发会话」的契约：
+// POST /sessions 之后 OwnerOf 必须能立刻回答「这个 id 存在且属于谁」，
+// 否则后续判断「沿用还是拒绝调用方带来的 id」就没有依据。
+func TestCreateRegistersOwnership(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 未登记时 exists=false。
+	if _, exists, err := store.OwnerOf("fresh-id"); err != nil || exists {
+		t.Fatalf("OwnerOf(before create) exists=%v err=%v", exists, err)
+	}
+	if err := store.Create("feishu:ou_signed", "fresh-id"); err != nil {
+		t.Fatal(err)
+	}
+	owner, exists, err := store.OwnerOf("fresh-id")
+	if err != nil || !exists {
+		t.Fatalf("OwnerOf(after create) exists=%v err=%v", exists, err)
+	}
+	// 文件后端没有 owner 维度，归属恒为空串。这不是缺口：auth.enabled 时
+	// ValidateAuth 强制 session.store=mysql，文件模式只用于单用户/CLI。
+	if owner != "" {
+		t.Fatalf("file backend must not invent an owner, got %q", owner)
+	}
+	// 空会话可以被正常加载（前端拿到 id 后会立刻拉取会话）。
+	msgs, err := store.Load(testOwner, "fresh-id")
+	if err != nil || len(msgs) != 0 {
+		t.Fatalf("Load() = %+v, %v; want empty history", msgs, err)
+	}
+	// 非法 id 必须被拒绝，避免调用方把路径片段当 id 塞进来。
+	if _, _, err := store.OwnerOf("../escape"); err == nil {
+		t.Fatal("OwnerOf must reject unsafe ids")
+	}
+}

@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"my-eino-app/internal/execution"
@@ -52,7 +51,9 @@ func (c *wsConn) close() {
 
 // wsRequest 是入站帧。旧客户端不带 type，因此空 type 等同 chat。
 type wsRequest struct {
-	Type      string `json:"type"`
+	Type string `json:"type"`
+	// SessionID 仅为兼容旧客户端的报文结构而保留，取值一律忽略：
+	// 会话由连接建立时的 handshake（或服务端生成）确定，见 handleWebSocket。
 	SessionID string `json:"session_id"`
 	Query     string `json:"query"`
 	Skill     string `json:"skill"`
@@ -106,6 +107,15 @@ func frameFor(ev execution.Event, dropped bool) map[string]any {
 // 读循环只解析入站帧（chat 或 cancel），每轮执行放在独立 goroutine 中，
 // 因此取消、断线和超时都能及时到达后端，而不是等待 Chat 返回。
 func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// session id 在升级之前定下来：归属他人时用普通 HTTP 403 回绝。
+	// 升级之后再报错就只能走 WebSocket 错误帧，调用方拿不到状态码，也不好区分
+	// 「越权」和「服务端故障」。合法路径只有两种：调用方带来服务端签发过的 id，
+	// 或者留空由服务端生成。
+	id, resolveErr := s.resolveSessionID(r.Context(), r.URL.Query().Get("session_id"))
+	if resolveErr != nil {
+		writeSessionError(w, resolveErr)
+		return
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -113,10 +123,6 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	c := &wsConn{conn: conn}
 	defer c.close()
 
-	id := r.URL.Query().Get("session_id")
-	if id == "" {
-		id = uuid.NewString()
-	}
 	// ready 帧携带 debug 状态：前端据此决定是否显示技能选择器与技能事件。
 	if err := c.writeJSON(map[string]any{"type": "ready", "session_id": id, "debug": s.debugEnabled()}); err != nil {
 		return
@@ -156,9 +162,9 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			turnMu.Unlock()
 		case "", "chat":
-			if req.SessionID != "" {
-				id = req.SessionID
-			}
+			// 帧内不再接受 session_id：连接建立时就已确定（步骤 2.7）。
+			// 「帧内还能覆盖 id」是原来的越权入口之一，保留字段只为兼容旧客户端的
+			// 报文结构，取值一律忽略。
 			if strings.TrimSpace(req.Query) == "" {
 				continue
 			}

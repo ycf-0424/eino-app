@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"my-eino-app/internal/auth"
+	"my-eino-app/internal/checkpoint"
 	"my-eino-app/internal/execution"
 	"my-eino-app/internal/session"
 )
@@ -54,6 +55,53 @@ func writeSessionError(w http.ResponseWriter, err error) {
 // ownerOf 返回当前请求的身份；认证关闭时为空串（单用户模式）。
 func ownerOf(r *http.Request) string { return auth.OwnerFromContext(r.Context()) }
 
+// checkpointStoreFor 返回当前请求身份对应的 checkpoint 视图。
+//
+// checkpoint 与审批元数据按 owner 分目录存放：即便某个 session id 泄露，
+// 另一身份的请求也读不到对应的中断内容与审批参数（纵深防御）。
+func (s *Service) checkpointStoreFor(ctx context.Context) *checkpoint.FileStore {
+	return s.checkpoints.For(auth.OwnerFromContext(ctx))
+}
+
+// resolveSessionID 决定本次请求使用的 session id。
+//
+// 规则（步骤 2.7）：
+//   - 调用方没带 id → 服务端生成；
+//   - 带的 id 不存在（新会话）→ 沿用，保持既有脚本与文档的用法；
+//   - 带的 id 属于当前用户 → 沿用，多轮对话照常续接；
+//   - 带的 id 属于别人 → ErrForeignSession（403），必须明确拒绝而不是换个 id
+//     继续跑：静默替换会掩盖越权尝试，也让调用方失去信号。
+func (s *Service) resolveSessionID(ctx context.Context, requested string) (string, error) {
+	if strings.TrimSpace(requested) == "" {
+		return uuid.NewString(), nil
+	}
+	owner, exists, err := s.sessions.OwnerOf(requested)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case !exists:
+		return requested, nil
+	case owner == auth.OwnerFromContext(ctx):
+		return requested, nil
+	default:
+		return "", session.ErrForeignSession
+	}
+}
+
+// handleCreateSession 由服务端签发一个新的 session id 并登记归属。
+//
+// 客户端不再自己造 id —— 「知道别人的 id 就能读他的审批内容、恢复他的执行」
+// 正是步骤 2.7 要堵的越权根源。
+func (s *Service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	id := uuid.NewString()
+	if err := s.sessions.Create(ownerOf(r), id); err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, response{Data: map[string]string{"id": id}})
+}
+
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	// 认证路由（auth.enabled 关闭时为 no-op）：/auth/login、/auth/callback、
@@ -73,6 +121,8 @@ func (s *Service) Handler() http.Handler {
 	}
 	mux.Handle("POST /chat", s.protected(http.HandlerFunc(s.handleChat)))
 	mux.Handle("GET /sessions", s.protected(http.HandlerFunc(s.handleSessions)))
+	// 会话 id 由服务端签发：前端不再自己造 id（app.js 的 makeSessionId 已移除）。
+	mux.Handle("POST /sessions", s.protected(http.HandlerFunc(s.handleCreateSession)))
 	mux.Handle("GET /sessions/{id}", s.protected(http.HandlerFunc(s.handleGetSession)))
 	mux.Handle("GET /sessions/{id}/execution", s.protected(http.HandlerFunc(s.handleExecution)))
 	mux.Handle("DELETE /sessions/{id}", s.protected(http.HandlerFunc(s.handleDeleteSession)))
@@ -107,14 +157,21 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, response{Error: "query is required"})
 		return
 	}
-	if req.SessionID == "" {
-		req.SessionID = uuid.NewString()
+	id, resolveErr := s.resolveSessionID(r.Context(), req.SessionID)
+	if resolveErr != nil {
+		writeSessionError(w, resolveErr)
+		return
 	}
+	req.SessionID = id
 	var output bytes.Buffer
 	// 同步接口把事件收进内存后一次性返回：实时推送只由 WebSocket 提供。
 	recorder := execution.NewRecorder(s.execCfg.MaxEventsPerRun)
 	result, err := s.ChatWithSink(r.Context(), req.SessionID, req.Query, s.requestedSkill(req.Skill), &output, recorder)
 	if err != nil {
+		if errors.Is(err, session.ErrForeignSession) {
+			writeSessionError(w, err)
+			return
+		}
 		writeJSON(w, 500, response{Error: err.Error()})
 		return
 	}
@@ -204,8 +261,11 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeSessionError(w, err)
 		return
 	}
-	_ = s.checkpoints.Delete(r.Context(), id)
-	_ = s.checkpoints.ClearApproval(id)
+	// checkpoint 与审批元数据按 owner 分目录，删除必须落在同一身份下，
+	// 否则删掉的是别人的中断现场。
+	checks := s.checkpointStoreFor(r.Context())
+	_ = checks.Delete(r.Context(), id)
+	_ = checks.ClearApproval(id)
 	// 执行记录必须跟随会话一起清理，否则会留下孤儿 run/event。
 	_ = s.DeleteExecutions(r.Context(), id)
 	writeJSON(w, 200, response{Data: map[string]bool{"deleted": true}})
