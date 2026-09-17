@@ -982,3 +982,258 @@ schtasks /Create /TN "eino-backup" /SC HOURLY /MO 6 /RL HIGHEST ^
 - `/health` 的 `login.feishu=false`，`login.local=true`；
 - **本地账号是此刻唯一的入口，不要把它关掉。**
 
+---
+
+## 十四、运行期实测记录（2026-09-17 下午）
+
+> 第十三章记录的是「代码写完了没有」，本章记录的是「**真跑起来是什么结果**」。
+> Docker 引擎恢复可用后补做的实测：C20 评测、C21 优雅停机、C22 限流、C23 备份/恢复、C24 健康检查。
+> 实测共 **9 处「只有真跑才暴露」的修复**，分布是：限流脚本请求体字段写错 1（14.1）、
+> 备份链 4（14.2）、AI 侧整轮硬失败路径 2（14.5）、构建缓存导致「重建了但产物没换」1（14.3）、
+> 后台任务失败日志丢原因 1（14.9）。
+> **14.1–14.6 是第一轮**（发现问题的过程），**14.8 是镜像修正后的第二轮**（四项全部通过）。
+
+### 14.1 C22 限流实测 ✅
+
+新增 `scripts/ratelimit-check.ps1`（方案 5.2 的验收要求「脚本连续打 40 次 `POST /chat`」，
+此前**并没有这个脚本**，只有单测）。`Makefile` 未加目标，直接调脚本即可：
+
+```powershell
+pwsh -File scripts/ratelimit-check.ps1 -BaseUrl http://127.0.0.1:18181
+pwsh -File scripts/ratelimit-check.ps1 -BaseUrl http://localhost:18180 -Cookie "eino_session=<token>"
+```
+
+**为什么不用 `Invoke-WebRequest`**：Windows PowerShell 5.1 没有 `-SkipHttpErrorCheck`，
+429 会直接抛异常，拿不到状态码与响应头。脚本改用 `curl.exe` 的 `-w`/`-D` 取两者，5.1 与 7 行为一致。
+
+⚠️ **方案 5.2 的验收描述与令牌桶语义不符**，实测时以本节为准：
+
+| 写法 | 实际语义 |
+|---|---|
+| 「第 31 次起返回 429」 | 桶容量 = `burst`（10），新 key **从满桶开始**（首次请求不该被拦）。因此**连续快速请求下第 11 次起就是 429**；长期平均才是 `per_minute`（30/分钟） |
+| 「`burst` 内允许突发」 | 正确。桶满时前 `burst` 次放行 |
+
+也就是说 `per_minute: 30 / burst: 10` 的含义是「**长期最多 30 次/分钟，允许一次性突发 10 次**」，
+不是「先放 30 次再放 10 次」。方案原文的「第 31 次」是把 burst 当成了额外额度，
+按令牌桶实现拿不到这个数——除非把 `burst` 设成 40，但那等于允许 40 次瞬时突发，与「配额」意图相反。
+
+**实测结果**（`data/verify/config.yaml`，18183，40 次）：
+
+```
+[ratelimit] 2xx=0 other4xx5xx=15 throttled=25 first_throttle=13 retry_after_missing=0
+[ratelimit] status_by_index: 1:500 … 12:500 13:429 14:429 … 20:500 21:429 … 38:500 39:429 40:429
+[ratelimit] sample 429 body: {"error":"请求过于频繁，请稍后再试"}
+[ratelimit] sample Retry-After: 2
+[ratelimit] OK: 限流行为与预期一致
+```
+
+`first_throttle=13` 而不是 11，是**补充速率**造成的：每 2 秒（30/分钟）补 1 个令牌，
+12 次请求耗时约 5 秒 → 中途补回约 2 个 → 实际放行 12 次。下标 20、38 处零星出现的 2xx/5xx
+是同一原因（那一刻刚好补出一个令牌）。所以**「第一次被拒的下标」不是固定值**，
+它取决于单次请求耗时；脚本因此只断言「不能是第 1 次」（桶必须从满的开始），
+不断言上界——真打到模型时单次耗时会大得多，硬编码上界必然误报。
+
+⚠️ **脚本自身的一个 bug（已修）**：请求体原本写的是 `{"message": …}`，
+而 `POST /chat` 的字段是 **`query`**（`internal/server/http.go` 的 `chatRequest`）。
+后果是**放行的每次请求都被 400 挡在 handler 之外**。限流结论仍然成立
+（429 在进入 handler 之前就产生了），但脚本并没有在测真实聊天路径,已改成 `{"query": …}`，
+修正后放行的请求返回 500（验证配置里模型指向死端口，是预期行为）。
+
+### 14.2 C23 备份与恢复演练：挖出 4 个缺陷 ✅
+
+`make backup` 现在能产出完整备份（`mysql.sql` + 3 个 Milvus 卷包 + 含行数摘要与 SHA256 的
+`manifest.txt`）。从「脚本看起来写完了」到「真能跑」，中间踩了 **4 个坑**：
+
+**缺陷 1（阻塞）：`mysqldump` 需要全局 `FLUSH_TABLES`，而应用账号只有 DML。**
+```
+mysqldump: Couldn't execute 'FLUSH /*!40101 LOCAL */ TABLES': Access denied;
+you need (at least one of) the RELOAD or FLUSH_TABLES privilege(s) for this operation (1227)
+```
+MySQL 8.0.21+ 起 `--single-transaction` 会先执行 `FLUSH TABLES` 取一致性快照，需要全局权限。
+本机 mysqldump 是 **9.7.1**，所以「升级客户端」这条路不通。
+**修法：新建专用最小权限账号 `eino_backup`，不动应用账号**（应用账号每天被服务使用，
+为一次备份给它挂全局权限等于长期扩大攻击面）：
+
+```sql
+CREATE USER 'eino_backup'@'%' IDENTIFIED BY '<口令>';
+GRANT FLUSH_TABLES, SHOW_ROUTINE ON *.* TO 'eino_backup'@'%';           -- 比 RELOAD 窄
+GRANT SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES ON `eino`.* TO 'eino_backup'@'%';
+GRANT ALL PRIVILEGES ON `eino_restore_check`.* TO 'eino_backup'@'%';    -- 恢复演练的临时库
+```
+凭据放 `.env` 的 `MYSQL_BACKUP_USER` / `MYSQL_BACKUP_PASSWORD`（脚本优先用它，缺失时回落到
+应用账号并打印 WARNING）。同时给 mysqldump 加 `--no-tablespaces`（避免再要 PROCESS 权限）。
+
+**缺陷 2（阻塞）：服务器开了 GTID，dump 里带特权语句，恢复必然失败。**
+dump 第 18 行是 `SET @@SESSION.SQL_LOG_BIN= 0;`、第 24 行是 `SET @@GLOBAL.GTID_PURGED='…:1-4586';`，
+恢复时报 `ERROR 1227 ... need SUPER, SYSTEM_VARIABLES_ADMIN or SESSION_VARIABLES_ADMIN`。
+**修法：mysqldump 加 `--set-gtid-purged=OFF`**。这不只是绕权限——`GTID_PURGED` 记的是**源库**的
+GTID 集合，本来就**不该**灌进别的库；备份的目的是「能恢复到任意目标库」。
+
+**缺陷 3：打包器镜像写死 `alpine`（= `alpine:latest`），拉不到 Docker Hub 就直接失败。**
+本机实测 `failed to resolve reference "docker.io/library/alpine:latest": … EOF`，
+而 `alpine:3.22` 其实早就在本地。
+**修法：从 `docker images` 里按优先级挑本地已有的打包器 + `--pull=never`**；
+一个都找不到时**明确失败**，不静默跳过卷备份（一份号称成功、实则没有 Milvus 数据的备份
+比没有备份更危险）。
+
+**缺陷 4：备份失败会留下一个「名字像备份、内容是空」的目录。**
+目录名就是时间戳，`restore-check` 按名字挑最近一份 → 下次演练会挑中这个空目录，
+报「manifest 不存在」，把「这次 dump 失败了」误报成「备份格式不对」。
+**修法：两处都加固**——`backup.ps1` 在 `manifest.txt` 写成功之前失败时**删掉目标目录**；
+`restore-check.ps1` 只认**有 `manifest.txt` 的**目录，跳过其余并打印 WARNING。
+
+### 14.3 C24 健康检查：容器里的 `/health/ready` 是 401 —— 根因是「重建了但产物没换」
+
+实测容器 `/health` 200、`/health/ready` **401**。代码侧 `GET /health/ready` 是直接
+`mux.HandleFunc` 注册的、没包 `protected`，理应免认证；`internal/server/auth.go` 的白名单
+注释也已列出它。第一轮排查只到「镜像旧了，重建一次就好」，**重建后仍然 401**。
+
+⚠️ **真正的原因是构建缓存复用了旧的编译产物**：`docker compose ... up -d --build app`
+**报告了 `Image ... Built`、退出码 0，但镜像里的二进制是旧的**。判定方法不是看构建日志，
+而是**查产物本身**：
+
+```bash
+# 容器里的二进制有没有这条路由的字符串
+docker exec my-eino-app-app-1 sh -c 'grep -c "health/ready" /app/eino-server'   # 旧的 → 0
+# 对照：确认 grep 本身有效（该字符串必然存在）
+docker exec my-eino-app-app-1 sh -c 'grep -c "GET /health" /app/eino-server'    # → 1
+```
+
+实测旧二进制里 `GET /health` / `GET /metrics` / `GET /skills` 都在、`health/ready` 计数为 **0**，
+即该二进制编译自加入路由之前的源码。`docker compose build --progress=plain app` 再跑一次后，
+镜像内二进制变为 2，`docker compose up -d --force-recreate app` 重建容器，路由随即生效。
+
+> **教训（写进习惯）**：`Built` 只说明「构建流程走完了」，不说明「产物是新的」。
+> 改完 `internal/` 下的代码，**用产物验证**（上面那条 `grep -c`，或直接 `curl /health/ready`），
+> 不要用「构建成功」当验收。顺带一提，`--no-cache` 重建在本机**不可用**——
+> `RUN apk add …` 会因 Docker Hub 网络问题报
+> `SSL routines::unexpected eof while reading` 而失败，所以不能靠它兜底。
+
+### 14.4 本机跑评测的两个环境前提
+
+1. **必须独占跑。** 与备份/镜像构建并发时实测出现两类失败：
+   - `fatal error: out of memory allocating heap arena map`（docker CLI 自己 OOM）；
+   - `ollama embedding returned HTTP 500`。
+   先跑完评测再做别的。
+2. **Ollama 偶发 CUDA 崩溃，但框架会重试。** 日志里有
+   `llama-server process has terminated: exit status 0xc0000409 ... CUDA error: shared object initialization failed`，
+   随后 `model request failed; retrying in 1.11s (1/3)` 并成功。所以日志里出现它**不代表评测失败**，
+   要看最终结论；但也说明这台机器的显卡不能承受并发压测。
+
+### 14.5 评测暴露的两个「整轮失败」路径（已修）
+
+第一轮 22 题实测里，有 **4 题整轮零字输出**，分两类，都值得记：
+
+**A. 模型把技能名当工具名调用** → `[NodeRunError] tool report_writer not found in toolsNode indexes`。
+第十三章的「把工具清单前置」只能**降低发生概率**，不能消除。真正的兜底是 eino 的
+`ToolsNodeConfig.UnknownToolsHandler`（`v0.9.13` 提供）：把幻觉出来的工具调用**当作一次工具结果
+交回模型**，模型在同一轮里就能改用 `load_skills`。
+实现在 `internal/eino/agent/agent.go` 的 `unknownToolHint`，主 Agent 与两个子 Agent 都挂上，
+提示里带上**真实可用工具名**与「技能名不是工具名」的指引。
+> 一句话：措辞负责少发生，兜底负责发生时不致命。
+
+**B. 工具执行报错也中止整轮** → `failed to invoke tool, toolName=local_file_read,
+err=file is outside the allowed local directories or does not exist`。
+评测题问 `README.md`，而 `workspace-files/` 里实际是 `README.txt`（这是**题目**的问题，
+已改），但「模型把路径写错 → 用户拿到空回答」这个链路是真缺陷。
+修法在 `internal/eino/agent/middleware.go` 的 `recoverableToolResult`：
+只把**成因在输入**的错误（`outside_roots` / `not_found` / `not_text` / `not_regular_file` /
+`too_large`）降级为交回模型的结果，并说明「这是输入问题，可以改正后重试；无法取得就如实说明，
+不要编造」。**超时、用户取消、未知 `tool_error`、审批中断仍然向上抛**——
+那些不是模型重试能解决的，掩盖只会让故障更难看。`ToolFailed` 事件照常发出，可观测性不受影响。
+
+### 14.6 C20 实测结果：答案维度几乎满分，路由维度几乎为零
+
+`make eval` 本机全量一次约 **15 分钟**（22 题 × 答案 + 路由两个维度）。两轮实测：
+
+| 轮次 | 评测集 | 答案正确率 | 引用率 | 拒答率 | 路由准确率 | 整轮硬失败 |
+|---|---|---|---|---|---|---|
+| 第 1 轮（修复前） | 22 题 | — | — | — | **0.045**（1/22） | **4 题** |
+| 第 3 轮（修复后） | 22 题 / 16 题带 `expect_skills` | **0.955**（21/22） | 1.0 | 1.0 | **0.0625**（1/16） | **0 条** |
+
+**兜底修复是有效的**：两处 `[NodeRunError]` 硬失败全部消失；日志里能直接看到自愈过程——
+模型先误调 `report_writer`，拿到 `unknownToolHint` 的提示后改成
+`[tool] start name=load_skills args={"names":["report_writer"]}`。
+
+**但路由准确率仍然是「基本不发生」**（0.045 → 0.0625，两轮一致，不是噪声）。结论要分两层看：
+
+1. **这不是评测脚手架的问题。** 事件采集、覆盖式断言、`availableTools` 传参都已对齐服务端口径；
+   唯一命中的那题（`report_writer`）证明整条链路是通的。
+2. **这是模型行为的事实**：本地 `qwen3.5:9b` 不会主动做「先读技能说明再执行」这一步。
+   它倾向于直接作答 —— 而且**答案是对的**（0.955），因为它有 `knowledge_search` 工具与基础
+   提示词里的引用规则。也就是说，**在当前 7 个技能的内容下，不加载技能并不影响回答质量**。
+
+⚠️ **测量口径的一个已知限制**：本轮是在 `config.yaml`（`debug: true`）下跑的，而 debug 分支的
+`exposureRule` 明确写着「技能推荐……**不调用 `load_skills`**」。如果模型把执行类问题判成了
+「推荐/咨询」意图，它就是在**遵守提示词**而不是失败。因此这个 0.0625 应理解为
+「debug 模式下的路由行为」，**生产模式（`debug: false`）下的路由准确率尚未测量**，是明确的下一步。
+
+**关于 4.2 的验收口径（本次修正）**：`expect_skills` 现在只用于**执行类请求**
+（写报告 / 读文件分析 / 设计模板 / 操作工作簿等）；6 条**事实问答**题不再带它。
+理由是那 6 题的正确答案本来就是「用 `knowledge_search` 取事实并给出引用」，
+其正确性已由 `expected` / `must_cite` / `should_refuse` 三个断言覆盖（实测 6/6 通过、
+引用率 1.0）。把「必须加载 `knowledge_qa`」当成它们的验收条件，会让指标反映的是一件
+**不影响用户结果的事**。修正后 `routing_total` 从 22 变为 16。
+
+> 附带结论：`knowledge_qa` 这个技能在当前提示词体系下**没有被使用到**（6/6 未加载），
+> 但答案与引用完全达标。它要么是冗余的，要么需要与 `knowledge_search` 合并 —— 登记为待定项，
+> 不在阶段 4 内处理。
+
+### 14.8 第二轮实测（镜像修正后）：C21 / C22 / C23 / C24 全部通过 ✅
+
+修掉 14.3 的构建缓存问题、并把容器换成新镜像后，四项验收一次性跑通。
+
+| 项 | 实测 | 结论 |
+|---|---|---|
+| **C21 优雅停机** | `docker stop` 耗时 **2 秒**，`ExitCode=0`，`OOMKilled=false` | ✅ |
+| **C22 限流** | 40 次 `POST /chat` → 放行 12、**429 共 25 次**、`Retry-After` 无缺失 | ✅ |
+| **C23 备份** | 4 个产物（`mysql.sql` + 3 个 Milvus 卷包 + `manifest.txt`） | ✅ |
+| **C23 恢复演练** | 4 个 SHA256 全对；dump 灌入临时库后 **16/16 张表行数一致**；临时库已 DROP | ✅ |
+| **C24 健康分离** | 停 MySQL → `/health` **200**、`/health/ready` **503** 且点名 `mysql`；重启 MySQL → `/health/ready` 回到 **200** | ✅ |
+
+**C21 的判读依据是退出码，不是日志。** `cmd/server` 在停机路径上不打任何日志，
+所以「有没有走优雅路径」只能从进程结局反推：Go 运行时对**未被捕获**的 `SIGTERM`
+走默认动作（进程被信号打死），`docker stop` 会记到 **143**；捕获后正常从 `main` 返回才是 **0**。
+本次 `ExitCode=0` 且 2 秒即退出（远小于 `Shutdown` 的 10 秒上限，说明不是等到超时被 `SIGKILL`，
+那会是 137）。**修复前的行为（只捕 `os.Interrupt`）在本机没有留档**，所以这里是正向证据，
+不是对照实验。
+
+`/health/ready` 的响应体是自解释的，运维能直接看出是哪一项不通：
+
+```json
+{"data":{"checks":[
+  {"name":"mysql","ok":false,"latency_ms":2000,"error":"dial tcp: lookup mysql: i/o timeout"},
+  {"name":"milvus","ok":true,"latency_ms":0},
+  {"name":"ollama","ok":true,"latency_ms":8}],"status":"unavailable"}}
+```
+
+**顺带观察到一个良性但值得记的现象**：MySQL 停掉的 20 秒里，app 日志连刷 8 行
+`memory worker: task failed`（06:50:50–06:51:09），MySQL 恢复后**自动停止**，
+不需要人工干预。memory worker 的失败是「本轮跳过、下轮再取」，不是终态失败。
+
+### 14.9 顺手修掉的第 5 个缺陷：后台任务失败日志把原因整条丢弃
+
+上面那 8 行 `memory worker: task failed` 后面原本跟着的是 **`(details withheld)`** ——
+`internal/memory/worker.go` 只打印这句话，**一个字符的原因都不留**。停库期间运维看到的
+只有「失败了 8 次」，既不知道是数据库不通、还是模型超时、还是数据损坏，只能靠猜。
+`memory maintenance failed` 同样如此。这行代码来自基线提交 `92b2833`，在任何文档里
+都没有「刻意如此」的记录。
+
+**修法**：抽一个 `logWorkerFailure(prefix, err)`，用项目既有的脱敏口径
+（`observability.Redact`，与 `internal/eino/agent/middleware.go` 的工具失败事件一致）
+打印错误，并**按 rune 截断到 300 字符**，避免一次异常把整段模型响应体灌进日志。
+
+> 「脱敏后打印」和「整条丢弃」不是二选一；后者只是把风险换成了盲区。
+
+### 14.7 仍未完成 / 需外部条件
+
+| 项 | 状态 | 阻塞因素 |
+|---|---|---|
+| C25 飞书凭据 | ⏸ | 需要飞书开发者后台 + 已发布应用，代码侧无法完成 |
+| 生产模式（`debug: false`）路由准确率 | ⏸ | 需再跑一轮 15 分钟评测 |
+| `auth.enabled: true` 下的 **per-owner 限流**实测 | ⏸ | 容器侧已验证路由与 503/200 分离；per-owner 计数需先有可登录账号（库里有 `auth_local_users=1`，但口令未知），当前只实测了 per-IP 回落路径 |
+| 多副本限流 / token 预算 | ⏸ | 方案明确不做，需换 Redis，另立项 |
+| `knowledge_qa` 技能的存废 | ⏸ | 见 14.6 附带结论 |
+
+
+
