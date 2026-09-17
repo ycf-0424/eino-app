@@ -26,7 +26,8 @@ func main() {
 	}
 	defer store.Close()
 	if *interruptID != "" {
-		messages, e := store.Load(*interruptID)
+		// CLI 是运维/单用户路径，没有登录态，owner 传空串（与认证关闭时的运行期一致）。
+		messages, e := store.Load("", *interruptID)
 		if e != nil {
 			fail(e)
 		}
@@ -35,14 +36,14 @@ func main() {
 		}
 		// 只修改最后一条消息的状态，保留原请求 ID 和已保存的部分回答。
 		messages[len(messages)-1].Extra["storage_status"] = "interrupted"
-		if e = store.Save(*interruptID, messages); e != nil {
+		if e = store.Save("", *interruptID, messages); e != nil {
 			fail(e)
 		}
 		fmt.Println("interrupted", *interruptID)
 		return
 	}
 	if *deleteID != "" {
-		if err := store.Delete(*deleteID); err != nil {
+		if err := store.Delete("", *deleteID); err != nil {
 			fail(err)
 		}
 		fmt.Println("deleted", *deleteID)
@@ -60,7 +61,8 @@ func main() {
 		fmt.Printf("cleaned %d sessions\n", count)
 		return
 	}
-	items, err := store.List()
+	// 列表同样按空 owner 过滤；运维清理（-cleanup）是跨 owner 的全局操作，不受影响。
+	items, err := store.List("")
 	if err != nil {
 		fail(err)
 	}

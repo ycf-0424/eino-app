@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino/schema"
+	"my-eino-app/internal/auth"
 	"my-eino-app/internal/execution"
 )
 
@@ -39,7 +40,9 @@ func (s *Service) replySkillCatalog(ctx context.Context, id, query string, write
 		}
 		answer.WriteString("\n以上是技能规则目录；实际执行能力取决于当前接入的工具，注册技能不代表已经具备其中提到的插件或桌面操作能力。")
 	}
-	history, err := s.sessions.Load(id)
+	// 目录查询同样受会话隔离约束：owner 在改写 ctx 之前取出。
+	owner := auth.OwnerFromContext(ctx)
+	history, err := s.sessions.Load(owner, id)
 	if err != nil {
 		return ChatResult{}, err
 	}
@@ -53,7 +56,7 @@ func (s *Service) replySkillCatalog(ctx context.Context, id, query string, write
 		message.Extra["run_id"] = em.RunID()
 	}
 	history = append(history, schema.UserMessage(query), message)
-	if err = s.sessions.Save(id, history); err != nil {
+	if err = s.sessions.Save(owner, id, history); err != nil {
 		finishRun(em, execution.StatusFailed, "save_failed")
 		return ChatResult{}, err
 	}

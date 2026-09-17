@@ -34,6 +34,13 @@ import (
 	toolset "my-eino-app/internal/tool"
 )
 
+// consoleOwner 是控制台 CLI 的会话归属。
+//
+// console 没有登录流程，天然是单用户工具，因此传空串——与「认证关闭」时
+// HTTP 服务的行为一致，两边写入的会话可以互相读取。会话隔离上线后，
+// 空 owner 不再匹配任何已归属的会话，这是预期的：CLI 不代登录用户操作数据。
+const consoleOwner = ""
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -139,10 +146,10 @@ func main() {
 		fmt.Printf("正在恢复会话: %s\n", *sessionID)
 	}
 	defer store.Close()
-	chat.SetPersistence(func(messages []*schema.Message) error { return store.Save(*sessionID, messages) }, cfg.Session.MaxMessages, cfg.Session.MaxChars)
+	chat.SetPersistence(func(messages []*schema.Message) error { return store.Save(consoleOwner, *sessionID, messages) }, cfg.Session.MaxMessages, cfg.Session.MaxChars)
 	chat.SetSessionID(*sessionID)
 	approvalScanner := bufio.NewScanner(os.Stdin)
-	if history, loadErr := store.Load(*sessionID); loadErr != nil {
+	if history, loadErr := store.Load(consoleOwner, *sessionID); loadErr != nil {
 		fmt.Fprintln(os.Stderr, "load session:", loadErr)
 	} else if len(history) > 0 {
 		chat.SetHistory(history)
@@ -259,7 +266,7 @@ func runMemoryConsole(ctx context.Context, cfg *config.Config, id, skillName, qu
 
 // saveCompactedSession 保存完整历史；上下文压缩由 Agent 在调用模型前单独执行。
 func saveCompactedSession(store *session.Store, chat *agent.ChatAgent, sessionID string, cfg *config.Config) error {
-	return store.Save(sessionID, chat.History())
+	return store.Save(consoleOwner, sessionID, chat.History())
 }
 
 // runRAGChain 是固定 RAG 模式的控制台适配层；业务流程由 internal/chain 实现。

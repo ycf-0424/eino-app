@@ -16,6 +16,10 @@ type Run struct {
 	FinishedAt        *time.Time `json:"finished_at,omitempty"`
 	UserSequence      *int64     `json:"user_sequence,omitempty"`
 	AssistantSequence *int64     `json:"assistant_sequence,omitempty"`
+	// Owner 不落 execution_runs（该表没有 owner 列，归属由 conversation_id 外键
+	// 推导）；它只在 StartRun 里用来补齐 conversations.owner_id，避免执行记录
+	// 先建出一行 owner 为空白的会话。json:"-" 防止随接口返回体泄露归属。
+	Owner string `json:"-"`
 }
 
 // 运行状态取值。

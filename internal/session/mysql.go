@@ -257,12 +257,28 @@ var memoryMigrationSQL string
 //go:embed migrations/004_auth.sql
 var authMigrationSQL string
 
-func (s *mysqlStore) load(id string) ([]*schema.Message, error) {
+func (s *mysqlStore) load(owner, id string) ([]*schema.Message, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// 先判归属：会话存在但不属于该 owner 时返回明确的错误（调用方映射 403），
+	// 与「不存在 → 空历史」区分开，便于前端给出正确提示。
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM conversations WHERE id=?", id).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	var owned int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM conversations WHERE id=? AND owner_id=?", id, owner).Scan(&owned); err != nil {
+		return nil, err
+	}
+	if owned == 0 {
+		return nil, ErrForeignSession
+	}
 	rows, err := s.db.QueryContext(ctx, "SELECT payload FROM messages WHERE conversation_id=? ORDER BY sequence", id)
 	if err != nil {
 		return nil, err
@@ -285,7 +301,11 @@ func (s *mysqlStore) load(id string) ([]*schema.Message, error) {
 
 // save 用短事务锁定会话，只追加新消息或更新生成中的最后一条助手消息。
 // 历史前缀不匹配时拒绝保存，防止旧快照覆盖已完成的聊天记录。
-func (s *mysqlStore) save(id string, messages []*schema.Message) error {
+//
+// 写路径同样要校验归属：原来的 INSERT IGNORE 遇到已存在的 id 会静默跳过，
+// 于是知道别人 session id 的人可以继续往那个会话里追加消息。这里改成
+// 「不存在则连同 owner 一起插入，已存在则锁行比对 owner」，不匹配即拒绝。
+func (s *mysqlStore) save(owner, id string, messages []*schema.Message) error {
 	if err := validateID(id); err != nil {
 		return err
 	}
@@ -296,12 +316,17 @@ func (s *mysqlStore) save(id string, messages []*schema.Message) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "INSERT IGNORE INTO conversations(id) VALUES (?)", id); err != nil {
+	// ON DUPLICATE KEY UPDATE id=id 是空更新：不改变已有行的 owner_id，
+	// 但语句本身会拿到该行的锁，后续 SELECT ... FOR UPDATE 才有意义。
+	if _, err = tx.ExecContext(ctx, "INSERT INTO conversations(id, owner_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE id=id", id, owner); err != nil {
 		return err
 	}
-	var locked string
-	if err = tx.QueryRowContext(ctx, "SELECT id FROM conversations WHERE id=? FOR UPDATE", id).Scan(&locked); err != nil {
+	var existingOwner string
+	if err = tx.QueryRowContext(ctx, "SELECT owner_id FROM conversations WHERE id=? FOR UPDATE", id).Scan(&existingOwner); err != nil {
 		return err
+	}
+	if existingOwner != owner {
+		return ErrForeignSession
 	}
 	rows, err := tx.QueryContext(ctx, "SELECT payload FROM messages WHERE conversation_id=? ORDER BY sequence", id)
 	if err != nil {
@@ -374,10 +399,11 @@ func MessageStatus(m *schema.Message) string {
 	return "completed"
 }
 
-func (s *mysqlStore) list() ([]Info, error) {
+// list 只返回该 owner 的会话；owner 为空串时匹配未归属的历史数据（单用户模式）。
+func (s *mysqlStore) list(owner string) ([]Info, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id,COALESCE(SUM(OCTET_LENGTH(m.payload)),0),c.updated_at FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id GROUP BY c.id,c.updated_at ORDER BY c.updated_at DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id,COALESCE(SUM(OCTET_LENGTH(m.payload)),0),c.updated_at FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id WHERE c.owner_id=? GROUP BY c.id,c.updated_at ORDER BY c.updated_at DESC`, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -393,14 +419,32 @@ func (s *mysqlStore) list() ([]Info, error) {
 	return result, rows.Err()
 }
 
-func (s *mysqlStore) delete(id string) error {
+// delete 先按 owner 限定删除，再区分「不存在」与「归属他人」。
+//
+// DELETE ... AND owner_id=? 命中 0 行时无法分辨两种情况，所以补一次存在性查询：
+// 确实不存在 → 返回 nil（接口幂等）；存在但不是该 owner → ErrForeignSession（403）。
+// owner_id 在会话创建后不再变更，故这个两步判断不存在竞态。
+func (s *mysqlStore) delete(owner, id string) error {
 	if err := validateID(id); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, "DELETE FROM conversations WHERE id=?", id)
-	return err
+	result, err := s.db.ExecContext(ctx, "DELETE FROM conversations WHERE id=? AND owner_id=?", id, owner)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err == nil && affected > 0 {
+		return nil
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM conversations WHERE id=?", id).Scan(&exists); err != nil {
+		return err
+	}
+	if exists > 0 {
+		return ErrForeignSession
+	}
+	return nil
 }
 
 // cleanupOlderThan removes expired conversations in small transactions. Memory

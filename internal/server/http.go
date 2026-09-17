@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"my-eino-app/internal/auth"
 	"my-eino-app/internal/execution"
+	"my-eino-app/internal/session"
 )
 
 type chatRequest struct {
@@ -34,6 +37,22 @@ type executionSnapshot struct {
 	Runs   []execution.Run   `json:"runs"`
 	Events []execution.Event `json:"events"`
 }
+
+// writeSessionError 统一映射会话访问错误。
+//
+// 归属他人是越权，必须与「参数错误」区分：403 而不是 400。这里不回 404，
+// 是为了让调用方能明确知道自己拿到的是别人的会话 id（内部系统，便于排查），
+// 同时请求本身已经被拒绝。ErrForeignSession 是唯一需要特殊处理的一类。
+func writeSessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, session.ErrForeignSession) {
+		writeJSON(w, http.StatusForbidden, response{Error: "session belongs to another user"})
+		return
+	}
+	writeJSON(w, 400, response{Error: err.Error()})
+}
+
+// ownerOf 返回当前请求的身份；认证关闭时为空串（单用户模式）。
+func ownerOf(r *http.Request) string { return auth.OwnerFromContext(r.Context()) }
 
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -128,8 +147,9 @@ func (s *Service) handleApproval(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, response{Data: result})
 }
 
-func (s *Service) handleSessions(w http.ResponseWriter, _ *http.Request) {
-	items, err := s.sessions.List()
+// handleSessions 只返回当前登录用户的会话；owner 来自认证中间件注入的 context。
+func (s *Service) handleSessions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.sessions.List(ownerOf(r))
 	if err != nil {
 		writeJSON(w, 500, response{Error: err.Error()})
 		return
@@ -138,9 +158,9 @@ func (s *Service) handleSessions(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Service) handleGetSession(w http.ResponseWriter, r *http.Request) {
-	messages, err := s.sessions.Load(r.PathValue("id"))
+	messages, err := s.sessions.Load(ownerOf(r), r.PathValue("id"))
 	if err != nil {
-		writeJSON(w, 400, response{Error: err.Error()})
+		writeSessionError(w, err)
 		return
 	}
 	writeJSON(w, 200, response{Data: messages})
@@ -180,8 +200,8 @@ func (s *Service) handleExecution(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := s.sessions.Delete(id); err != nil {
-		writeJSON(w, 400, response{Error: err.Error()})
+	if err := s.sessions.Delete(ownerOf(r), id); err != nil {
+		writeSessionError(w, err)
 		return
 	}
 	_ = s.checkpoints.Delete(r.Context(), id)

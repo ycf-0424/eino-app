@@ -315,6 +315,9 @@ func (s *Service) acquireSession(ctx context.Context, id string) (func(), error)
 
 // newAgent 创建本轮 Agent，并返回本轮直接预加载的技能名。
 func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.ChatAgent, []string, error) {
+	// owner 在这里取出并捕获进闭包：SetPersistence 的回调可能在请求 context
+	// 已取消之后才被调用，那时再读 context 已经取不到值。
+	owner := auth.OwnerFromContext(ctx)
 	if s.memories != nil {
 		if err := s.memories.Repo.CheckBinding(ctx, id); err != nil {
 			return nil, nil, err
@@ -342,7 +345,7 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 		return nil, nil, err
 	}
 	chat.SetSessionID(id)
-	history, err := s.sessions.Load(id)
+	history, err := s.sessions.Load(owner, id)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -351,12 +354,14 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 	if s.memories != nil {
 		chat.SetMemoryContext(s.memories.Context)
 	}
-	chat.SetPersistence(func(messages []*schema.Message) error { return s.sessions.Save(id, messages) }, s.cfg.Session.MaxMessages, s.cfg.Session.MaxChars)
+	chat.SetPersistence(func(messages []*schema.Message) error { return s.sessions.Save(owner, id, messages) }, s.cfg.Session.MaxMessages, s.cfg.Session.MaxChars)
 	return chat, preloaded, nil
 }
 
-func (s *Service) save(id string, chat *agent.ChatAgent) error {
-	return s.sessions.Save(id, chat.History())
+// save 以当前请求身份落盘。owner 取自 context，因此 CLI 侧（不注入 owner）
+// 与 HTTP 侧共用同一套调用，行为与改造前一致。
+func (s *Service) save(ctx context.Context, id string, chat *agent.ChatAgent) error {
+	return s.sessions.Save(auth.OwnerFromContext(ctx), id, chat.History())
 }
 
 // beginRun 建立本轮执行上下文。开关关闭时返回 Nop，不产生任何副作用。
@@ -380,7 +385,9 @@ func (s *Service) beginRun(ctx context.Context, id string, sink execution.Sink, 
 	})
 	if s.executions != nil {
 		// StartRun 内部会先确保 conversations 行存在，否则首轮外键失败。
-		_ = s.executions.StartRun(ctx, execution.Run{RunID: runID, SessionID: id, Status: execution.StatusRunning, StartedAt: time.Now().UTC()})
+		// owner 必须一并写入：会话隔离后，若这里留下 owner_id='' 的行，
+		// 紧接着的 Save 会因归属不匹配而拒绝落盘（新会话第一轮就报错）。
+		_ = s.executions.StartRun(ctx, execution.Run{RunID: runID, SessionID: id, Owner: auth.OwnerFromContext(ctx), Status: execution.StatusRunning, StartedAt: time.Now().UTC()})
 	}
 	return execution.WithEmitter(ctx, em), em
 }
@@ -465,7 +472,7 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 			finishRun(em, execution.StatusFailed, "save_approval_failed")
 			return ChatResult{}, saveErr
 		}
-		_ = s.save(id, chat)
+		_ = s.save(ctx, id, chat)
 		s.linkRun(context.WithoutCancel(ctx), em, chat.History())
 		finishRun(em, execution.StatusAwaitingApproval, "")
 		return ChatResult{SessionID: id, RunID: runIDOf(em), Approval: approval}, nil
@@ -476,7 +483,7 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 		finishRun(em, status, code)
 		return ChatResult{}, err
 	}
-	if err = s.save(id, chat); err != nil {
+	if err = s.save(ctx, id, chat); err != nil {
 		s.linkRun(context.WithoutCancel(ctx), em, chat.History())
 		finishRun(em, execution.StatusFailed, "save_failed")
 		return ChatResult{}, err
@@ -538,7 +545,7 @@ func (s *Service) ApproveWithSink(ctx context.Context, id string, approved bool,
 		finishRun(em, execution.StatusFailed, "clear_approval_failed")
 		return ChatResult{}, err
 	}
-	if err = s.save(id, chat); err != nil {
+	if err = s.save(ctx, id, chat); err != nil {
 		s.linkRun(context.WithoutCancel(ctx), em, chat.History())
 		finishRun(em, execution.StatusFailed, "save_failed")
 		return ChatResult{}, err

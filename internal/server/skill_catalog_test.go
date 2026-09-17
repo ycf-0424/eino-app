@@ -50,7 +50,8 @@ func TestSkillCatalogBypassesSelectedSkillAndModel(t *testing.T) {
 	if !strings.Contains(out.String(), "visualize") || !strings.Contains(out.String(), "创建可视化") || strings.Contains(out.String(), "UNRELATED_HTML") {
 		t.Fatal(out.String())
 	}
-	history, err := s.sessions.Load("catalog-test")
+	// 未注入身份（context.Background()），owner 为空串，与会话写入侧保持一致。
+	history, err := s.sessions.Load("", "catalog-test")
 	if err != nil || len(history) != 2 {
 		t.Fatalf("history=%v err=%v", history, err)
 	}

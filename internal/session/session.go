@@ -3,6 +3,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,13 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 )
+
+// ErrForeignSession 表示会话存在但不属于当前 owner。
+//
+// 必须与「会话不存在」区分开：后者在 Load 里返回空历史（新会话的正常起点），
+// 在 Delete 里视为成功（接口幂等）；而归属他人是越权访问，HTTP 层要映射成 403。
+// 只做查询过滤不够——知道 id 就能操作，所以每个按 id 的方法都要显式比对 owner。
+var ErrForeignSession = errors.New("session belongs to another user")
 
 // Store 为 HTTP、控制台和迁移工具提供统一入口；Open 根据配置选择后端。
 type Store struct {
@@ -119,9 +127,14 @@ func validateID(id string) error {
 }
 
 // Load 读取会话；不存在时返回空历史。
-func (s *Store) Load(id string) ([]*schema.Message, error) {
+//
+// owner 是会话归属（"<provider>:<subject>"，单用户/CLI 场景为空串）。
+// MySQL 模式下会话存在但归属他人时返回 ErrForeignSession；
+// 文件模式没有 owner 维度，owner 参数被忽略（auth 启用时 ValidateAuth
+// 已强制 session.store=mysql，因此这一忽略不会成为隔离缺口）。
+func (s *Store) Load(owner, id string) ([]*schema.Message, error) {
 	if s.mysql != nil {
-		return s.mysql.load(id)
+		return s.mysql.load(owner, id)
 	}
 	if err := validateID(id); err != nil {
 		return nil, err
@@ -141,9 +154,10 @@ func (s *Store) Load(id string) ([]*schema.Message, error) {
 }
 
 // Save 原子写入会话，避免程序中断时留下半个 JSON 文件。
-func (s *Store) Save(id string, messages []*schema.Message) error {
+// owner 语义同 Load：MySQL 模式下归属他人时报 ErrForeignSession。
+func (s *Store) Save(owner, id string, messages []*schema.Message) error {
 	if s.mysql != nil {
-		return s.mysql.save(id, messages)
+		return s.mysql.save(owner, id, messages)
 	}
 	if err := validateID(id); err != nil {
 		return err
@@ -162,10 +176,11 @@ func (s *Store) Save(id string, messages []*schema.Message) error {
 	return nil
 }
 
-// List 返回所有 Session，按最近修改时间倒序排列。
-func (s *Store) List() ([]Info, error) {
+// List 返回该 owner 的所有 Session，按最近修改时间倒序排列。
+// owner 为空串时匹配未归属的历史数据（单用户模式）。
+func (s *Store) List(owner string) ([]Info, error) {
 	if s.mysql != nil {
-		return s.mysql.list()
+		return s.mysql.list(owner)
 	}
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -187,9 +202,10 @@ func (s *Store) List() ([]Info, error) {
 }
 
 // Delete 删除一个 Session；不存在视为成功，方便接口幂等调用。
-func (s *Store) Delete(id string) error {
+// 归属他人时返回 ErrForeignSession（MySQL 模式）。
+func (s *Store) Delete(owner, id string) error {
 	if s.mysql != nil {
-		return s.mysql.delete(id)
+		return s.mysql.delete(owner, id)
 	}
 	if err := validateID(id); err != nil {
 		return err
@@ -216,7 +232,8 @@ func (s *Store) CleanupOlderThanBatch(age time.Duration, batchSize int) (int, er
 	if age <= 0 {
 		return 0, fmt.Errorf("cleanup age must be greater than zero")
 	}
-	items, err := s.List()
+	// 全局运维清理，跨 owner，不按归属过滤。
+	items, err := s.List("")
 	if err != nil {
 		return 0, err
 	}
@@ -224,7 +241,7 @@ func (s *Store) CleanupOlderThanBatch(age time.Duration, batchSize int) (int, er
 	cutoff := time.Now().Add(-age)
 	for _, item := range items {
 		if item.ModifiedAt.Before(cutoff) {
-			if err := s.Delete(item.ID); err != nil {
+			if err := s.Delete("", item.ID); err != nil {
 				return removed, err
 			}
 			removed++

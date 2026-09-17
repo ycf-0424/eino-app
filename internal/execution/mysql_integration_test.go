@@ -43,7 +43,7 @@ func TestMySQLExecutionStoreRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	id := "exec-test-" + uuid.NewString()
-	defer sessions.Delete(id)
+	defer sessions.Delete("", id)
 
 	runID := uuid.NewString()
 	started := time.Now().UTC()

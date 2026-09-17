@@ -115,7 +115,8 @@ func saveTurn(t *testing.T, s *session.Store, text string) string {
 	u.Extra = map[string]any{"memory_turn": id}
 	a := schema.AssistantMessage("收到", nil)
 	a.Extra = map[string]any{"storage_status": "completed", "storage_turn": id}
-	if err := s.Save(uuid.NewString(), []*schema.Message{u, a}); err != nil {
+	// 记忆引擎的集成测试是单用户路径，owner 传空串。
+	if err := s.Save("", uuid.NewString(), []*schema.Message{u, a}); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -244,7 +245,7 @@ func TestMySQLAtomicCapture(t *testing.T) {
 	u.Extra = map[string]any{"memory_turn": id}
 	a := schema.AssistantMessage("ok", nil)
 	a.Extra = map[string]any{"storage_status": "completed"}
-	if s.Save(id, []*schema.Message{u, a}) == nil {
+	if s.Save("", id, []*schema.Message{u, a}) == nil {
 		t.Fatal("expected rollback")
 	}
 	var count int
@@ -252,7 +253,7 @@ func TestMySQLAtomicCapture(t *testing.T) {
 	if count != 0 {
 		t.Fatal("turn escaped rollback")
 	}
-	ms, err := s.Load(id)
+	ms, err := s.Load("", id)
 	if err != nil || len(ms) != 0 {
 		t.Fatal("history escaped rollback")
 	}

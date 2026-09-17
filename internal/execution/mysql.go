@@ -24,6 +24,11 @@ func NewMySQLStore(db *sql.DB) *MySQLStore {
 // StartRun 先确保会话行存在，再插入执行记录。
 // conversations 行原本在首次 Save 时才创建，而 run_started 早于 Save，
 // 因此这里必须自己 INSERT IGNORE，否则首轮会外键失败。
+//
+// owner_id 必须一并写入：会话隔离后，留一行 owner_id=” 的会话会让紧接着的
+// Save 因归属不匹配而拒绝落盘，新会话第一轮就报错。调用方（Service.beginRun）
+// 传的 Owner 取自已认证的 context，且归属校验在此之前的 Load 已完成。
+// INSERT IGNORE 不会覆盖已有行的 owner_id，越权场景仍由 Save 的显式比对兜住。
 func (s *MySQLStore) StartRun(ctx context.Context, run Run) error {
 	if !validSessionID.MatchString(run.SessionID) {
 		return fmt.Errorf("invalid session id %q", run.SessionID)
@@ -41,7 +46,7 @@ func (s *MySQLStore) StartRun(ctx context.Context, run Run) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "INSERT IGNORE INTO conversations(id) VALUES (?)", run.SessionID); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT IGNORE INTO conversations(id, owner_id) VALUES (?, ?)", run.SessionID, run.Owner); err != nil {
 		return fmt.Errorf("ensure conversation: %w", err)
 	}
 	if _, err = tx.ExecContext(ctx,

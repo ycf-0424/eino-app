@@ -45,7 +45,8 @@ func main() {
 		if err != nil {
 			fail(err)
 		}
-		items, err = src.List()
+		// 源目录是文件后端，没有 owner 维度，传空串。
+		items, err = src.List("")
 		if err != nil {
 			fail(err)
 		}
@@ -81,13 +82,14 @@ func main() {
 	}
 	count := 0
 	for _, item := range items {
-		messages, e := src.Load(item.ID)
+		messages, e := src.Load("", item.ID)
 		if e != nil {
 			fail(e)
 		}
 		if !*dry {
-			// 相同 ID 必须整段相同，或现有记录是源文件的前缀；冲突拒绝覆盖。
-			if e = dst.Save(item.ID, messages); e != nil {
+			// 导入的会话先写成「无归属」，再由 -claim-owner 一次性归属给指定 owner；
+			// 这正是历史数据迁移的预期路径，不要在这里猜 owner。
+			if e = dst.Save("", item.ID, messages); e != nil {
 				fail(fmt.Errorf("import %s: %w", item.ID, e))
 			}
 		}

@@ -20,7 +20,7 @@ func TestChatPersistsBeforeInferenceAndKeepsHistory(t *testing.T) {
 	var service *Service
 	id := "test-" + uuid.NewString()
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		messages, err := service.sessions.Load(id)
+		messages, err := service.sessions.Load("", id)
 		if err != nil || len(messages) < 2 || session.MessageStatus(messages[len(messages)-1]) != "generating" {
 			t.Errorf("request not persisted before model call: %v", err)
 		}
@@ -51,13 +51,13 @@ func TestChatPersistsBeforeInferenceAndKeepsHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.sessions.Close()
-	defer service.sessions.Delete(id)
+	defer service.sessions.Delete("", id)
 	for i := 0; i < 2; i++ {
 		if _, err = service.Chat(context.Background(), id, "测试问题", "", io.Discard); err != nil {
 			t.Fatal(err)
 		}
 	}
-	messages, err := service.sessions.Load(id)
+	messages, err := service.sessions.Load("", id)
 	if err != nil {
 		t.Fatal(err)
 	}

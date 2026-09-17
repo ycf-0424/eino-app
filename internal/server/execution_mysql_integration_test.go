@@ -87,7 +87,7 @@ func TestChatRecordsExecutionEvents(t *testing.T) {
 	}
 	handler := service.Handler()
 	id := "exec-e2e-" + uuid.NewString()
-	defer service.sessions.Delete(id)
+	defer service.sessions.Delete("", id)
 	defer service.DeleteExecutions(context.Background(), id)
 
 	chatBody, _ := json.Marshal(map[string]string{"session_id": id, "query": "请回答"})
