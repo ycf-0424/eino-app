@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"my-eino-app/internal/config"
-	"my-eino-app/internal/health"
 	"my-eino-app/internal/eino/rag"
+	"my-eino-app/internal/health"
 )
 
 // TestOllamaAndMilvusRAG 是显式端到端测试，普通 go test ./... 不连接外部服务。
