@@ -93,6 +93,14 @@ services:
       MYSQL_DATABASE: "${MYSQL_DATABASE:-eino}"
       MYSQL_USER: "${MYSQL_USER:-}"
       MYSQL_PASSWORD: "${MYSQL_PASSWORD:-}"
+      # 飞书登录凭据必须在这里显式透传。compose 读 .env 只用于**变量插值**，
+      # 不会把变量注入容器 —— 只在 .env 里填三个 FEISHU_* 而漏掉这几行，
+      # 容器内读到的是空值，而 auth.local.enabled=true 让 ValidateAuth 判定
+      # 「至少有一种登录方式」而正常启动，于是登录页静默少了飞书按钮、不报错。
+      FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
+      FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
+      # 必须与飞书开发者后台登记的回调地址完全一致（路径固定 /auth/callback）。
+      FEISHU_REDIRECT_URL: "${FEISHU_REDIRECT_URL:-}"
     build:
       context: .
       dockerfile: Dockerfile

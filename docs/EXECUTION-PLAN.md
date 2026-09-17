@@ -388,7 +388,6 @@ type Auth struct {
     RedirectURL  string    `yaml:"redirect_url"`   // http://192.168.x.x:18180/auth/callback
     SessionTTL   Duration  `yaml:"session_ttl"`    // 建议 12h
     CookieSecure bool      `yaml:"cookie_secure"`  // 内网 http 必须 false
-    AdminOpenID  string    `yaml:"admin_open_id"`  // 飞书侧管理员：历史数据归属 + 管理员标记
     Local        LocalAuth `yaml:"local"`          // 项目自有账号，字段与校验见步骤 2.10
 }
 
@@ -474,13 +473,14 @@ if options.IncludeAuth {
 }
 ```
 
-**历史数据归属**：已有的 `conversations` 行 `owner_id` 会是空串。迁移后手动执行一次：
+**历史数据归属**：已有的 `conversations` 行 `owner_id` 会是空串。迁移后执行一次：
 
-```sql
-UPDATE conversations SET owner_id = 'feishu:<admin_open_id>' WHERE owner_id = '';
+```bash
+go run ./cmd/session-migrate -claim-owner=feishu:<open_id>
 ```
 
-也可写进 `cmd/session-migrate`。
+（已落成 `internal/session/mysql.go` 的 `ClaimLegacySessions`。**不要手写 UPDATE** —— 绕过代码路径，
+且原先示例里的 `admin_open_id` 字段已废弃删除，见步骤 2.2 的说明。）
 
 **验收**：`make db-migrate` 连跑**两次**都成功（第二次不报 `Duplicate column name`）；`conversations` 多一列 `owner_id` 与一个索引。
 
@@ -1330,7 +1330,7 @@ go run ./cmd/user-admin -create -username=admin -admin   # 口令走 stdin 交�
 - [ ] `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_REDIRECT_URL` 通过环境变量注入，**不在仓库中**
 - [ ] `REDIRECT_URL` 与飞书开发者后台登记的**完全一致**（含端口与路径）
 - [ ] `CookieSecure` 与部署协议匹配（内网 http 必须 `false`，否则浏览器不保存 Cookie）
-- [ ] 管理员 `AdminOpenID` 已配置，本地后门可用
+- [ ] 历史会话已用 `go run ./cmd/session-migrate -claim-owner=<owner>` 归属（**不要用 `admin_open_id`，该字段已废弃删除**；迁移路径见 RUNBOOK 第 293 行附近）
 - [ ] 备份定时任务已生效，`restore-check` 至少跑过一次
 - [ ] `make check` 全绿
 

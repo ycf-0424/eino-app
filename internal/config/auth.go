@@ -8,6 +8,11 @@ import (
 )
 
 // Auth 是登录认证配置；关闭时服务以单用户模式运行，与改造前行为一致。
+//
+// 这里没有「管理员 open_id」字段：曾计划用 auth.admin_open_id 承担历史数据归属
+// 与管理员标记，但实际归属由 cmd/session-migrate -claim-owner 完成，管理员标记
+// 由 auth_local_users.is_admin 承担，该字段全项目零使用点。留着一个什么都不做的
+// 配置项比没有更坏 —— 它会让人以为后门存在。
 type Auth struct {
 	Enabled      bool      `yaml:"enabled"`
 	Provider     string    `yaml:"provider"`      // 仅支持 "feishu"
@@ -16,7 +21,6 @@ type Auth struct {
 	RedirectURL  string    `yaml:"redirect_url"`  // 必须与飞书后台登记值完全一致
 	SessionTTL   Duration  `yaml:"session_ttl"`   // 登录态有效期，缺省 12h
 	CookieSecure bool      `yaml:"cookie_secure"` // 内网 http 部署必须为 false
-	AdminOpenID  string    `yaml:"admin_open_id"` // 飞书侧管理员：历史数据归属与管理标记
 	Local        LocalAuth `yaml:"local"`         // 项目自有账号
 }
 

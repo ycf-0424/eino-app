@@ -76,7 +76,6 @@ auth:
   redirect_url: ""         # 必须与飞书后台登记值完全一致；FEISHU_REDIRECT_URL
   session_ttl: 12h
   cookie_secure: false     # 内网 http 部署必须 false，否则浏览器不保存 Cookie
-  admin_open_id: ""        # 飞书侧管理员，同时是历史会话数据的归属人
   # 项目自有账号（例外通道）：仅管理员用 go run ./cmd/user-admin 建号，无注册接口。
   # 与 auth.enabled 独立；auth.enabled 为 true 时它是飞书之外的另一条登录入口，
   # 只启用它、不填飞书凭据也是合法组合。

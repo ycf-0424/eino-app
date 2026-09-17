@@ -55,10 +55,12 @@ auth:
   redirect_url: ""         # 必须与飞书后台登记值完全一致；FEISHU_REDIRECT_URL
   session_ttl: 12h
   cookie_secure: false     # 内网 http 部署必须 false，否则浏览器不保存 Cookie
-  admin_open_id: ""        # 飞书侧管理员，同时是历史会话数据的归属人
   # 项目自有账号（例外通道）：仅管理员用 go run ./cmd/user-admin 建号，无注册接口。
   # 与 auth.enabled 独立；auth.enabled 为 true 时它是飞书之外的另一条登录入口，
-  # 只启用它、不填飞书凭据也是合法组合。
+  # 只启用它、不填飞书凭据也是合法组合 —— 但这条「合法」有个副作用：
+  # 上面三个飞书字段为空时服务照常启动，登录页只是静默少了飞书按钮，不报任何错。
+  # 容器里要真拿到凭据，必须靠 docker-compose.milvus.yml 的 app.environment 透传
+  # （compose 读 .env 只做变量插值，不会把变量注入容器）。
   local:
     enabled: true
     min_password_length: 8   # 口令长度下限；上限固定 128 字节（防 PBKDF2 DoS）

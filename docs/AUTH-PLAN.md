@@ -103,9 +103,14 @@ type Auth struct {
     RedirectURL  string   `yaml:"redirect_url"`   // http://192.168.x.x:18180/auth/callback
     SessionTTL   Duration `yaml:"session_ttl"`    // 建议 12h
     CookieSecure bool     `yaml:"cookie_secure"`  // 内网 http 必须 false
-    AdminOpenID  string   `yaml:"admin_open_id"`  // 管理员后门
+    AdminOpenID  string   `yaml:"admin_open_id"`  // 管理员后门 ← 已作废删除，见下
 }
 ```
+
+> **归档注记（2026-09-17）**：本文件是设计阶段的证据链，保留原样不改写。其中
+> `admin_open_id` 最终**没有实现**，字段已从 `internal/config/auth.go` 与三份配置中删除：
+> 历史数据归属实际由 `cmd/session-migrate -claim-owner` 承担，管理员标记由
+> `auth_local_users.is_admin` 承担，该字段全项目零使用点。以 `docs/EXECUTION-PLAN.md` 为准。
 
 **`internal/config/config.go` 改动**
 
@@ -206,6 +211,11 @@ UPDATE conversations SET owner_id = '<admin_open_id>' WHERE owner_id = '';
 ```
 放在迁移后手动执行，或写进 `cmd/session-migrate`。
 
+> **归档注记（2026-09-17）**：最终选择了「写进 `cmd/session-migrate`」——
+> 归属逻辑落在 `internal/session/mysql.go` 的 `ClaimLegacySessions`，
+> 用 `go run ./cmd/session-migrate -claim-owner=<owner>` 调用。
+> 上面的裸 UPDATE 不要用：它绕过代码路径，且 owner 必须带 `feishu:` 前缀。
+
 ---
 
 ### C. 认证模块（全新 `internal/auth/`）
@@ -266,6 +276,12 @@ func OwnerFromContext(ctx context.Context) string {
 **State 校验（CSRF）**：`/auth/login` 生成随机 state 写进短时 Cookie（`HttpOnly` + `SameSite=Lax`），`/auth/callback` 比对后立即清除。不校验 state 等于开放登录 CSRF。
 
 **保留管理员后门**：`AdminOpenID` 对应的账号额外获得权限，且**在飞书不可用时保留一个本地账号密码入口**（`/auth/local`，仅在 `AdminOpenID` 为空或显式开启时注册）。理由：万一飞书认证服务故障或管理员被挡在门外，系统仍可进入。
+
+> **归档注记（2026-09-17）**：这条只实现了一半，且**实现方式与原文不同**。最终 `/auth/local`
+> 的开关是独立的 `auth.local.enabled`，与 `AdminOpenID` 无关（该字段已删除）；
+> 「额外获得权限」**没有实现** —— 全项目没有任何按管理员身份放行的分支，
+> `auth_local_users.is_admin` 目前只在 `user-admin -list` 里显示。
+> 「飞书故障时有本地入口」这个目标本身是达成的（见步骤 2.10–2.13）。
 
 ---
 
