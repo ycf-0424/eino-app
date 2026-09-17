@@ -10,7 +10,28 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"my-eino-app/internal/eino/observability"
 )
+
+// logWorkerFailure 记录后台任务失败的原因。
+//
+// 这里原本只打印 "(details withheld)"，一个字符的原因都不留。2026-09-17 实测
+// 停掉 MySQL 约 20 秒，日志里连刷 8 行「task failed」，却完全看不出是数据库不通、
+// 还是模型超时、还是数据有问题 —— 运维只能猜。
+//
+// 错误信息本身可能带上凭据或工具入参，所以不能原样打印；但「整条丢掉」和
+// 「脱敏后打印」并不是二选一。这里复用 observability.Redact，与工具失败事件
+// （internal/eino/agent/middleware.go）的脱敏口径保持一致，另外截断到 300 字符，
+// 避免一次异常把整段响应体灌进日志。
+func logWorkerFailure(prefix string, err error) {
+	msg := observability.Redact(err.Error())
+	const limit = 300
+	if runes := []rune(msg); len(runes) > limit {
+		msg = string(runes[:limit]) + "…"
+	}
+	log.Printf("%s: %s", prefix, msg)
+}
 
 type Engine struct {
 	Repo      *Repository
@@ -100,7 +121,7 @@ func (e *Engine) Start(parent context.Context) {
 					for ctx.Err() == nil {
 						worked, err := e.ProcessOne(ctx)
 						if err != nil {
-							log.Printf("memory worker: task failed (details withheld)")
+							logWorkerFailure("memory worker: task failed", err)
 						}
 						if !worked {
 							break
@@ -114,7 +135,7 @@ func (e *Engine) Start(parent context.Context) {
 	go func() {
 		defer e.wg.Done()
 		if err := e.Maintain(ctx); err != nil {
-			log.Print("memory maintenance failed")
+			logWorkerFailure("memory maintenance failed", err)
 		}
 		interval := time.Hour
 		if e.Repo.Config.CleanupInterval > 0 {
@@ -128,7 +149,7 @@ func (e *Engine) Start(parent context.Context) {
 				return
 			case <-ticker.C:
 				if err := e.Maintain(ctx); err != nil {
-					log.Print("memory maintenance failed")
+					logWorkerFailure("memory maintenance failed", err)
 				}
 			}
 		}
