@@ -1575,6 +1575,50 @@ powershell -File scripts/feishu-probe-secret.ps1 -Write       # 检出并写回 
 `Duplicate keys 'o' are not allowed in hash literals.`。形近字表必须用 `switch -CaseSensitive`，
 或改用 `New-Object System.Collections.Hashtable`（其默认比较器是大小写敏感的）。
 
+### 14.19 模型不调用工具却声称调用过；另有三处「中间态当成最终态」的前端缺陷
+
+**A. 模型侧实测（2026-09-17，本地 `qwen3.5:9b`）**
+
+同一句「现在几点？」，两个会话的工具调用行为**不一致**：
+
+| 会话 | 事件序列 | 模型输出 |
+|---|---|---|
+| `1552e0e4`（浏览器） | chunk×70 → `tool_started(current_time)` → `tool_completed`(8ms) → chunk×25 | 先给出幻觉日期 `2024-07-16`，调完工具才自我纠正为真实时间 |
+| `b90c2c52`（`cmd/console`） | chunk×43 → `run_completed`，**全程无 tool 事件** | 写「依据是调用 current_time 工具获取到的结果」，但时间是编的（19:10，实际 21:14） |
+
+问「星河系统使用什么技术栈?」的会话 `3c3b1931` 同样**全程无 tool 事件**，模型却回答
+「根据私有知识库查询结果，我目前无法找到关于⋯⋯的明确信息」。
+
+**判据**：`execution_events` 里没有 `tool_started` 就是没调用。**模型的自我陈述不能作为证据** ——
+它会明确写出「依据是调用 X 工具获取到的结果」，而那一轮根本没有工具事件。
+
+**顺带否掉一个假说**（「是不是向量库空了」）：不是。
+
+| 检查 | 结果 |
+|---|---|
+| `my_eino_knowledge` 实体数 | 2（`README.md-0`、`milvus-validation.md-0`） |
+| `go run ./cmd/retrieve "星河系统的技术栈是什么"` | `milvus-validation.md-0` score=**0.6479** > `score_threshold: 0.50` |
+| 该文档正文 | 含「系统名称：星河系统 / 技术栈：Go、Eino 和 Milvus」 |
+
+即**库里有答案、检索也能命中，是模型没去查**。`current_time` 实现同样正确
+（`time.Now().In(loc).Format(...)`，`internal/eino/tool/time.go`）。
+
+结论：这不是代码缺陷，属模型路由能力，与 14.6 / 14.7 记录的 `routing_accuracy` 偏低同源。
+代码侧只剩提示词可调，能否生效取决于模型；根治方向是换模型，或改为服务端按意图**强制预检索**
+（不依赖模型自主调用），**尚未立项**。
+
+**B. 三处前端缺陷（已修，提交 `891b2c0`）**
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 回答结束后「正在整理回答…」一直不消失 | `setStreamStatus` 无条件把状态条显示出来；`openSession` 经 `replayExecution` 回放历史事件时把**已结束**的消息重新点亮，此后不再有任何事件关闭它 | `renderEvent` 增加 `live` 参数，状态条只由本轮实时事件驱动，回放路径不改写 |
+| 正文里出现思考内容（表现为「先答错、再自我纠正」） | 模型只回吐 `</think>`（`<think>` 开标签由模板注入），「思考 + `</think>` + 正式回答」整段落在 `content` 里；`parseThink` 原本只处理成对标签与未闭合开标签 | 增加**孤立闭合标签**分支，其前内容归入思考块 |
+| 侧栏出现只能显示成 UUID 的条目 | 点「新对话」即 `POST /sessions` 签发落库，用户没提问就离开便留下零消息空会话，标题回退成 session id | `list` 加 `HAVING COUNT(m.conversation_id)>0`；前端取不到首条用户消息的行直接移除；`startNewChat` 在当前会话还没有消息时复用而不新建 |
+
+**验证方式**：`parseThink` 用临时脚本回放 6 个用例（含故障原文）全过；空会话过滤用等效 SQL 对照
+（`1552e0e4`/`3c3b1931`/`e3db1304`/`81bb26d6` → 过滤后只剩前两条）。前端没有测试基建，
+这类改动目前只能靠临时脚本加手动确认，**这是一处需要补的基础设施**。
+
 
 
 
