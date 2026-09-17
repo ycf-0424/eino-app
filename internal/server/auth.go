@@ -3,12 +3,14 @@ package server
 
 import (
 	"errors"
+	"html"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"my-eino-app/internal/auth"
+	"my-eino-app/internal/eino/observability"
 )
 
 // registerAuthRoutes 注册认证相关路由。auth.enabled 关闭时全部不注册，
@@ -105,37 +107,120 @@ func stripMarkedBlock(page, name string, keep bool) string {
 
 // handleAuthCallback 授权码换用户信息并签发登录态。
 // ⚠️ 授权码 5 分钟有效且只能用一次：先校验 state，再立即兑换，不做其他 I/O。
+//
+// 这是唯一一条「访问者一定是浏览器」的认证路由（飞书 302 过来）。失败时不回 JSON
+// 而回一张 HTML 错误页，理由见 renderCallbackError。
 func (s *Service) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if !auth.VerifyState(r, r.URL.Query().Get("state")) {
 		auth.ClearStateCookie(w)
-		writeJSON(w, http.StatusBadRequest, response{Error: "state mismatch"})
+		s.renderCallbackError(w, http.StatusBadRequest, "登录校验失败", "state mismatch")
 		return
 	}
 	auth.ClearStateCookie(w)
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		writeJSON(w, http.StatusBadRequest, response{Error: "missing code"})
+		s.renderCallbackError(w, http.StatusBadRequest, "登录校验失败", "missing code")
 		return
 	}
 	accessToken, err := s.authFeishu.Exchange(r.Context(), code)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, response{Error: err.Error()})
+		s.renderCallbackError(w, http.StatusBadGateway, "飞书授权码兑换失败", err.Error())
 		return
 	}
 	user, err := s.authFeishu.FetchUser(r.Context(), accessToken)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, response{Error: err.Error()})
+		s.renderCallbackError(w, http.StatusBadGateway, "获取飞书用户信息失败", err.Error())
 		return
 	}
 	// 用户档案落库失败不阻断登录：登录态在进程内，auth_users 只是档案记录。
 	_ = s.authUsers.UpsertFeishu(r.Context(), user)
 	token, _, err := s.authSessions.Create(auth.FeishuOwner(user.OpenID), user.Name, user.AvatarURL, "feishu")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, response{Error: err.Error()})
+		s.renderCallbackError(w, http.StatusInternalServerError, "签发登录态失败", err.Error())
 		return
 	}
 	auth.SetSessionCookie(w, token, s.authSessions.TTL(), s.cfg.Auth.CookieSecure)
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// callbackErrorHints 把错误原文映射成一句可执行的处置建议。
+// 逐条 Contains，首个命中即用 —— 各 match 串互不包含，无需排序。
+var callbackErrorHints = []struct {
+	match string
+	hint  string
+}{
+	{"invalid_client", "飞书不认这对 App ID / App Secret。回「凭证与基础信息」重新复制当前 App Secret，用 scripts/feishu-set-secret.ps1 先验证再写入 .env，然后重建容器（up -d --force-recreate app）。"},
+	{"20071", "redirect_uri 与飞书后台「安全设置 → 重定向 URL」的登记值不一致。两处必须逐字符相同（含协议、端口、路径），末尾不要带斜杠。"},
+	{"20027", "授权范围未开通或未生效。在「权限管理」开通 contact:user.base:readonly，并让应用发布（或切到测试版），配置才会生效。"},
+	{"20010", "当前账号不在应用的「可用范围」内。这一条后端日志里看不到，只能在飞书后台把账号加进可用范围。"},
+	{"20004", "授权码已过期（寿命只有几分钟）。请重新发起一次授权。"},
+	{"20003", "授权码不存在或已被使用过。请重新发起一次授权。"},
+	{"state mismatch", "state 校验失败，最常见两种成因：① 浏览器用的主机名与 FEISHU_REDIRECT_URL 不一致（localhost 与 127.0.0.1 在 Cookie 维度并不等价）；② 这一页是刷新出来的 —— state Cookie 在换 token 之前就已被清除。"},
+	{"missing code", "回调里没有 code。多半是直接打开了 /auth/callback，而不是从飞书授权页跳回来。"},
+}
+
+// renderCallbackError 把 /auth/callback 的失败渲染成一张给人看的 HTML 页。
+//
+// 这条路由的访问者一定是浏览器：飞书 302 到这里，失败时浏览器会把响应体原样显示。
+// 早先这里直接 writeJSON 吐裸 JSON —— 用户看到一屏 {"error":"..."}，既看不出断在
+// 哪一环，也没有「重新登录」的出口，唯一能做的动作是刷新，而刷新必然得到
+// state mismatch（state Cookie 在兑换之前就已清掉）。2026-09-17 实测为此连跑三趟
+// 浏览器才定位到根因：一屏 JSON 把「哪一环失败」这个信息整个丢掉了。
+//
+// HTTP 状态码保持不变（4xx/5xx 的语义仍然准确），只把响应体换成人可读的页面。
+func (s *Service) renderCallbackError(w http.ResponseWriter, status int, title, detail string) {
+	// detail 会嵌入飞书返回的原始响应体，属外部可控文本：先脱敏、再 HTML 转义。
+	detail = observability.Redact(detail)
+	hint := ""
+	for _, h := range callbackErrorHints {
+		if strings.Contains(detail, h.match) {
+			hint = h.hint
+			break
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">")
+	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+	b.WriteString("<meta name=\"color-scheme\" content=\"light\"><title>登录失败 · 星河系统</title>")
+	// 与登录页同一套变量与版式：静态资源在受保护路径下，未登录时加载不到，故内联。
+	b.WriteString(`<style>
+    :root { color-scheme: light; --page: #ffffff; --line: #e6e6e8; --text: #202123; --muted: #6f7075; --accent: #10a37f; --accent-hover: #0d8f70; --warn-line: #e8b339; --warn-bg: #fff9e8;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { display: grid; place-items: center; padding: 24px; background: #f7f7f8; color: var(--text); }
+    .card { width: min(560px, 100%); padding: 28px; border: 1px solid var(--line); border-radius: 14px; background: var(--page); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.06); }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; font-size: 15px; font-weight: 650; }
+    .brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 7px; background: var(--accent); color: #fff; font-weight: 750; }
+    h1 { margin: 0 0 8px; font-size: 18px; }
+    p.lead { margin: 0 0 4px; color: var(--muted); font-size: 14px; }
+    .tip { padding: 12px 14px; margin: 14px 0 0; border-left: 3px solid var(--warn-line); border-radius: 0 8px 8px 0; background: var(--warn-bg); font-size: 13.5px; line-height: 1.7; }
+    .label { margin: 20px 0 6px; color: var(--muted); font-size: 12px; }
+    pre { margin: 0; padding: 12px; border-radius: 8px; background: #f4f4f5; color: #3f4147; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+    .button { display: block; height: 44px; margin-top: 22px; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; line-height: 44px; text-align: center; text-decoration: none; }
+    .button:hover { background: var(--accent-hover); }
+  </style></head><body><main class="card">`)
+	b.WriteString(`<div class="brand"><span class="brand-mark">E</span><span>星河系统</span></div>`)
+	b.WriteString("<h1>" + html.EscapeString(title) + "</h1>")
+	b.WriteString(`<p class="lead">飞书已完成授权，但本系统没能把它换成登录态，所以没有进入主页面。</p>`)
+	if hint != "" {
+		b.WriteString(`<div class="tip">` + html.EscapeString(hint) + `</div>`)
+	}
+	b.WriteString(`<div class="tip">这个回调链接已经作废：授权码一次性、几分钟内过期，state Cookie 也已清除。<b>刷新本页不会好</b>，请点下面的按钮重新发起登录。</div>`)
+	b.WriteString(`<div class="label">错误详情（排查用）</div>`)
+	b.WriteString("<pre>" + html.EscapeString(detail) + "</pre>")
+	b.WriteString(`<a class="button" href="/auth/login">重新登录</a>`)
+	b.WriteString(`</main></body></html>`)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// 含外部来源文本：禁止缓存与内容嗅探，与登录页一致。
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	if _, err := w.Write([]byte(b.String())); err != nil {
+		return
+	}
 }
 
 // handleAuthLogout 注销登录态并清 Cookie，回登录入口。

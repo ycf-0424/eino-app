@@ -221,3 +221,77 @@ func TestAuthDisabledKeepsOldBehavior(t *testing.T) {
 		}
 	}
 }
+
+// TestCallbackErrorRendersHTMLPage 锁定失败页的形态：必须是给人看的 HTML，
+// 带处置建议与「重新登录」出口，而不是早先那屏把信息全丢掉的裸 JSON。
+func TestCallbackErrorRendersHTMLPage(t *testing.T) {
+	service := newAuthTestService(t)
+
+	rec := httptest.NewRecorder()
+	service.renderCallbackError(rec, http.StatusBadGateway, "飞书授权码兑换失败",
+		`feishu exchange: http 400: {"error":"invalid_client","error_description":"The client secret is invalid.","code":20002}`)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502（状态码语义保持不变）", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type=%q, want text/html", ct)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"重新登录", `href="/auth/login"`,
+		"feishu-set-secret.ps1", // invalid_client 对应的处置建议
+		"刷新本页不会好",               // 这一页最容易诱发的无效动作
+		"invalid_client",        // 原始错误串要保留，便于排查
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("失败页缺少 %q", want)
+		}
+	}
+}
+
+// TestCallbackErrorEscapesAndRedacts 覆盖失败页对外部文本的两道处理：
+// HTML 转义（防注入）与密钥脱敏（不把凭据渲染到页面上）。
+// detail 里嵌的是飞书返回的原始响应体，是本项目唯一一处外部可控的渲染输入。
+func TestCallbackErrorEscapesAndRedacts(t *testing.T) {
+	service := newAuthTestService(t)
+
+	rec := httptest.NewRecorder()
+	service.renderCallbackError(rec, http.StatusBadGateway, "兑换失败",
+		`{"msg":"<script>alert(1)</script>","client_secret":"SUPERSECRETVALUE"}`)
+	body := rec.Body.String()
+
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Error("外部文本未转义，原样落进了页面")
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Error("期望看到转义后的 &lt;script&gt;")
+	}
+	if strings.Contains(body, "SUPERSECRETVALUE") {
+		t.Error("client_secret 未被脱敏")
+	}
+}
+
+// TestAuthCallbackFailureIsHTML 走真实路由确认浏览器拿到的是页面而非 JSON。
+func TestAuthCallbackFailureIsHTML(t *testing.T) {
+	service := newAuthTestService(t)
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+
+	resp, err := server.Client().Get(server.URL + "/auth/callback?code=x&state=whatever")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("Content-Type=%q, want text/html（浏览器会原样显示响应体）", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "state mismatch") {
+		t.Error("页面应保留原始错误串，便于排查")
+	}
+}
