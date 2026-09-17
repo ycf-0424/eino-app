@@ -6,7 +6,7 @@
 >
 > **基线**：`92b2833`（2026-09-16 建立并推送）。**剩余 25 个 commit、6 次推送。**
 > **工作目录**：`E:\11\my-eino-app`
-> **外部依赖**：全流程只有一处——阶段 2 需要一个**飞书自建应用**（见第一节末）。其余阶段不需要任何项目之外的资源。
+> **外部依赖**：阶段 2 需要一个**飞书自建应用**（见第一节末），另需一次 **DBA 动作**给数据库加一个迁移账号（见 C5）。其余阶段不需要任何项目之外的资源。
 
 ---
 
@@ -40,7 +40,14 @@ Select-String -Path "skills\*\SKILL.md" -Pattern '^name:|^metadata:'
 
 ### 外部依赖（只有阶段 2 需要，但建议现在就准备）
 
-全流程只有一处需要项目之外的资源：**飞书自建应用**。阶段 2 的飞书登录链路（C4–C12）建立在它之上，没有它这些代码仍能写完，但 **2.15 验收里的「跨身份隔离」那组无法进行**。本地账号那部分（C13–C15 及其验收）**不依赖飞书**，可以先做。
+阶段 2 有两处需要项目之外的资源，**都已解决或可自行解决**：
+
+| 依赖 | 谁提供 | 影响范围 | 状态 |
+|---|---|---|---|
+| **飞书自建应用** | 飞书开放平台 | 飞书登录链路；2.15 的「跨身份隔离」验收 | 待你创建 |
+| **数据库迁移账号** | 用 root/DBA 执行一条 `GRANT` | C5、C13 的建表；`execution_runs` 缺失时服务起不来 | ✅ 已完成（`eino_migrate`，见 C5） |
+
+飞书那部分：阶段 2 的飞书登录链路（C4–C12）建立在它之上，没有它这些代码仍能写完，但 **2.15 验收里的「跨身份隔离」那组无法进行**。本地账号那部分（C13–C15 及其验收）**不依赖飞书**，可以先做。
 
 「飞书自建应用」= 在飞书开放平台（`open.feishu.cn`）注册、**只在你自己的组织内部使用**的应用。对本项目而言它只是一个**登录服务商**——等价于「用 GitHub 登录」里的 GitHub，不涉及任何业务逻辑。它提供三个值，正好对应步骤 2.1 的三个配置项：
 
@@ -284,6 +291,24 @@ git commit -m "feat(auth): 新增 auth 配置段与启动校验"
 - **新增**：`internal/session/migrations/004_auth.sql`（`auth_users` + `auth_sessions` 两张表）。
 - **修改**：`internal/session/mysql.go`——新增 `IncludeAuth` 选项，**`ALTER` 语句写在 Go 侧做幂等**（坑 B2：现有 `migrationTableRE` 只匹配 `CREATE TABLE IF NOT EXISTS`，`ALTER` 每次都会重跑，第二次报 `Duplicate column name`）。
 - **别忘了**：迁移后手工执行一次历史数据归属 `UPDATE conversations SET owner_id = 'feishu:<admin_open_id>' WHERE owner_id = '';`（**owner 带 `feishu:` 前缀**，理由见 C6；`auth_sessions` 的归属列名也是 `owner`）。
+
+> ⚠️ **本步的前置条件：DDL 权限。** 应用账号按设计只有 `SELECT/INSERT/UPDATE/DELETE`（`MigrationOptions` 的注释与 `IncludeMemoryIndexes` 的 opt-in 都基于这个前提），**建表、加列、加索引都会报 `Error 1142: CREATE command denied`**。所以本项目用**独立的迁移账号**：
+>
+> ```sql
+> -- 用 DBA/root 执行一次
+> CREATE USER IF NOT EXISTS 'eino_migrate'@'%' IDENTIFIED BY '<强口令>';
+> GRANT SELECT,INSERT,UPDATE,DELETE,CREATE,ALTER,INDEX,REFERENCES ON eino.* TO 'eino_migrate'@'%';
+> FLUSH PRIVILEGES;
+> ```
+>
+> 然后把这组凭据写进 `.env`（已被 `.gitignore` 排除）：
+>
+> ```
+> MYSQL_MIGRATE_USER=eino_migrate
+> MYSQL_MIGRATE_PASSWORD=<强口令>
+> ```
+>
+> `cmd/session-migrate` 会**优先使用这组凭据**（仅本命令，应用进程仍用 `MYSQL_USER`），因此 `make db-migrate` 开箱可用；未配置时回落到应用账号，适用于应用账号本身持有 DDL 权限的部署。
 
 ```powershell
 cd E:\11\my-eino-app

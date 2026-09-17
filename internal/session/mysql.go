@@ -87,13 +87,19 @@ type MigrationOptions struct {
 	// IncludeMemoryIndexes requires ALTER privilege and is therefore opt-in.
 	// The application account normally has DML-only access.
 	IncludeMemoryIndexes bool
+	// IncludeAuth creates the login tables and adds conversations.owner_id.
+	// Unlike the execution/memory schemas this is not a feature toggle: owner_id
+	// is part of the session table itself and every session read/write filters on
+	// it, so a missing column breaks the core path rather than one optional
+	// subsystem. Callers therefore pass true whenever auth may ever be enabled.
+	IncludeAuth bool
 }
 
 // Migrate is the backwards-compatible full migration entry point. Commands
 // that know the active configuration should prefer MigrateWithOptions so a
 // disabled optional subsystem does not require its tables or CREATE privilege.
 func (s *Store) Migrate() error {
-	return s.MigrateWithOptions(MigrationOptions{IncludeExecution: true, IncludeMemory: true})
+	return s.MigrateWithOptions(MigrationOptions{IncludeExecution: true, IncludeMemory: true, IncludeAuth: true})
 }
 
 // MigrateWithOptions is the explicit schema initialization entry point; the
@@ -109,6 +115,9 @@ func (s *Store) MigrateWithOptions(options MigrationOptions) error {
 	}
 	if options.IncludeMemory {
 		migrations = append(migrations, memoryMigrationSQL)
+	}
+	if options.IncludeAuth {
+		migrations = append(migrations, authMigrationSQL)
 	}
 	for _, migration := range migrations {
 		for _, statement := range strings.Split(migration, ";") {
@@ -161,10 +170,73 @@ func (s *Store) MigrateWithOptions(options MigrationOptions) error {
 			}
 		}
 	}
+	if options.IncludeAuth {
+		if err := s.migrateAuthColumns(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateAuthColumns 补齐 conversations 的归属列与索引。
+//
+// ALTER 不能写进 004_auth.sql：迁移循环用 migrationTableRE 判断是否跳过，而该正则只匹配
+// CREATE TABLE IF NOT EXISTS，ALTER 每次迁移都会重跑，第二次报 Duplicate column name。
+// 因此这里按「先查 information_schema，再做」的方式手工幂等。
+func (s *Store) migrateAuthColumns() error {
+	for _, item := range []struct {
+		table, name, ddl string
+		column           bool
+	}{
+		{table: "conversations", name: "owner_id", column: true,
+			ddl: "ALTER TABLE conversations ADD COLUMN owner_id VARCHAR(64) NOT NULL DEFAULT ''"},
+		{table: "conversations", name: "idx_conversations_owner", column: false,
+			ddl: "ALTER TABLE conversations ADD INDEX idx_conversations_owner(owner_id, updated_at)"},
+	} {
+		var exists int
+		var err error
+		if item.column {
+			err = s.mysql.db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?", item.table, item.name).Scan(&exists)
+		} else {
+			err = s.mysql.db.QueryRow("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name=? AND index_name=?", item.table, item.name).Scan(&exists)
+		}
+		if err != nil {
+			return fmt.Errorf("check auth migration %s: %w", item.name, err)
+		}
+		if exists > 0 {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		_, err = s.mysql.db.ExecContext(ctx, item.ddl)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("apply auth migration %s: %w", item.name, err)
+		}
+	}
 	return nil
 }
 
 var migrationTableRE = regexp.MustCompile(`(?is)^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+([a-zA-Z0-9_]+)\s*\(`)
+
+// ClaimLegacySessions 把 owner_id 为空的历史会话一次性归属给指定 owner。
+//
+// 接入认证前写入的会话没有归属，多用户隔离上线后会变成「谁都看不到」的孤儿数据。
+// owner 应带命名空间前缀（如 feishu:ou_xxx / local:<uuid>），与运行期写法保持一致。
+func (s *Store) ClaimLegacySessions(owner string) (int64, error) {
+	if s.mysql == nil {
+		return 0, fmt.Errorf("claim legacy owner requires mysql")
+	}
+	if strings.TrimSpace(owner) == "" {
+		return 0, fmt.Errorf("claim legacy owner must not be empty")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := s.mysql.db.ExecContext(ctx, "UPDATE conversations SET owner_id=? WHERE owner_id=''", owner)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
 
 // 初始版本使用独立消息行和完整 payload，避免工具字段在迁移时丢失。
 // 新版本应追加迁移，不能通过修改已部署的 CREATE TABLE 语句升级旧表。
@@ -179,6 +251,11 @@ var executionMigrationSQL string
 
 //go:embed migrations/003_memory.sql
 var memoryMigrationSQL string
+
+// 004 增加登录认证表；conversations.owner_id 的 ALTER 在 Go 侧另做（见 migrateAuthColumns）。
+//
+//go:embed migrations/004_auth.sql
+var authMigrationSQL string
 
 func (s *mysqlStore) load(id string) ([]*schema.Message, error) {
 	if err := validateID(id); err != nil {
