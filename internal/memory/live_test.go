@@ -4,7 +4,7 @@ import (
 	"context"
 	openaiembedding "github.com/cloudwego/eino-ext/components/embedding/openai"
 	"my-eino-app/internal/config"
-	modelset "my-eino-app/internal/model"
+	modelset "my-eino-app/internal/eino/model"
 	"os"
 	"strings"
 	"testing"

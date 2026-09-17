@@ -7,8 +7,8 @@ import (
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 
+	toolset "my-eino-app/internal/eino/tool"
 	"my-eino-app/internal/execution"
-	toolset "my-eino-app/internal/tool"
 )
 
 func runMiddleware(t *testing.T, endpoint compose.InvokableToolEndpoint) []execution.Event {

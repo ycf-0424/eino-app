@@ -10,9 +10,9 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
+	"my-eino-app/internal/eino/prompt"
+	"my-eino-app/internal/eino/rag"
 	"my-eino-app/internal/output"
-	"my-eino-app/internal/prompt"
-	"my-eino-app/internal/rag"
 )
 
 // Input 是固定 RAG 流程的输入。

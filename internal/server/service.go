@@ -19,17 +19,17 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cloudwego/eino/schema"
-	"my-eino-app/internal/agent"
 	"my-eino-app/internal/auth"
 	"my-eino-app/internal/checkpoint"
 	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino/agent"
+	modelset "my-eino-app/internal/eino/model"
+	"my-eino-app/internal/eino/rag"
+	toolset "my-eino-app/internal/eino/tool"
 	"my-eino-app/internal/execution"
 	"my-eino-app/internal/memory"
-	modelset "my-eino-app/internal/model"
-	"my-eino-app/internal/rag"
 	"my-eino-app/internal/session"
 	"my-eino-app/internal/skill"
-	toolset "my-eino-app/internal/tool"
 )
 
 // Service 类型。

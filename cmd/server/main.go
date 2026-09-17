@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino/observability"
 	"my-eino-app/internal/health"
-	"my-eino-app/internal/observability"
 	appserver "my-eino-app/internal/server"
 )
 

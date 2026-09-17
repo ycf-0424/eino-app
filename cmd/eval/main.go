@@ -11,12 +11,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"my-eino-app/internal/chain"
 	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino/chain"
+	"my-eino-app/internal/eino/model"
+	"my-eino-app/internal/eino/rag"
 	"my-eino-app/internal/evaluation"
 	"my-eino-app/internal/health"
-	"my-eino-app/internal/model"
-	"my-eino-app/internal/rag"
 )
 
 func main() {

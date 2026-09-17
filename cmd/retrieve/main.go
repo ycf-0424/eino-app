@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino/rag"
 	"my-eino-app/internal/health"
-	"my-eino-app/internal/rag"
 )
 
 func main() {

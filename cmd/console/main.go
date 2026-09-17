@@ -20,18 +20,18 @@ import (
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/google/uuid"
 
-	"my-eino-app/internal/agent"
-	"my-eino-app/internal/chain"
 	"my-eino-app/internal/checkpoint"
 	"my-eino-app/internal/config"
+	"my-eino-app/internal/eino/agent"
+	"my-eino-app/internal/eino/chain"
+	"my-eino-app/internal/eino/model"
+	"my-eino-app/internal/eino/observability"
+	"my-eino-app/internal/eino/rag"
+	toolset "my-eino-app/internal/eino/tool"
 	"my-eino-app/internal/health"
-	"my-eino-app/internal/model"
-	"my-eino-app/internal/observability"
-	"my-eino-app/internal/rag"
 	appserver "my-eino-app/internal/server"
 	"my-eino-app/internal/session"
 	"my-eino-app/internal/skill"
-	toolset "my-eino-app/internal/tool"
 )
 
 // consoleOwner 是控制台 CLI 的会话归属。

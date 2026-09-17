@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"my-eino-app/internal/session"
 	"os"
 	"strings"
 	"time"
@@ -21,10 +20,11 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
+	"my-eino-app/internal/eino/observability"
+	"my-eino-app/internal/eino/prompt"
+	toolset "my-eino-app/internal/eino/tool"
 	"my-eino-app/internal/execution"
-	"my-eino-app/internal/observability"
-	"my-eino-app/internal/prompt"
-	toolset "my-eino-app/internal/tool"
+	"my-eino-app/internal/session"
 )
 
 // ChatAgent 持有 Runner 和当前会话历史。

@@ -10,9 +10,9 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/google/uuid"
 
+	"my-eino-app/internal/eino/observability"
+	toolset "my-eino-app/internal/eino/tool"
 	"my-eino-app/internal/execution"
-	"my-eino-app/internal/observability"
-	toolset "my-eino-app/internal/tool"
 )
 
 // toolTimeout 是单个工具调用的上限，防止工具永久阻塞 Agent。

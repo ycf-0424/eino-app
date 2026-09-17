@@ -10,8 +10,8 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/cloudwego/eino/schema"
 
+	"my-eino-app/internal/eino/rag"
 	"my-eino-app/internal/execution"
-	"my-eino-app/internal/rag"
 )
 
 // KnowledgeInput 类型。

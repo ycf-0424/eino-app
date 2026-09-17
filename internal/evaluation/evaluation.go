@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode"
 
-	"my-eino-app/internal/chain"
+	"my-eino-app/internal/eino/chain"
 )
 
 // Case 类型。
