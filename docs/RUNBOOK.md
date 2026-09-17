@@ -290,7 +290,8 @@ git commit -m "feat(auth): 新增 auth 配置段与启动校验"
 
 - **新增**：`internal/session/migrations/004_auth.sql`（`auth_users` + `auth_sessions` 两张表）。
 - **修改**：`internal/session/mysql.go`——新增 `IncludeAuth` 选项，**`ALTER` 语句写在 Go 侧做幂等**（坑 B2：现有 `migrationTableRE` 只匹配 `CREATE TABLE IF NOT EXISTS`，`ALTER` 每次都会重跑，第二次报 `Duplicate column name`）。
-- **别忘了**：迁移后手工执行一次历史数据归属 `UPDATE conversations SET owner_id = 'feishu:<admin_open_id>' WHERE owner_id = '';`（**owner 带 `feishu:` 前缀**，理由见 C6；`auth_sessions` 的归属列名也是 `owner`）。
+- **别忘了**：迁移后执行一次历史数据归属 —— `go run ./cmd/session-migrate -claim-owner=<owner>`（**owner 带 `feishu:` 前缀**，理由见 C6；`auth_sessions` 的归属列名也是 `owner`）。归属逻辑在 `internal/session/mysql.go` 的 `ClaimLegacySessions`，**不要手写 UPDATE 绕过它**。
+  - 原文档此处写的是 `UPDATE conversations SET owner_id = 'feishu:<admin_open_id>' WHERE owner_id = '';` —— 那个 `auth.admin_open_id` 配置字段**全项目零使用点，已于本轮删除**（详见第十四章 14.10）。
 
 > ⚠️ **本步的前置条件：DDL 权限。** 应用账号按设计只有 `SELECT/INSERT/UPDATE/DELETE`（`MigrationOptions` 的注释与 `IncludeMemoryIndexes` 的 opt-in 都基于这个前提），**建表、加列、加索引都会报 `Error 1142: CREATE command denied`**。所以本项目用**独立的迁移账号**：
 >
@@ -813,7 +814,7 @@ git push          # = P5
 - [ ] `REDIRECT_URL` 与飞书开发者后台登记的**完全一致**（含端口与路径）
 - [ ] 飞书后台**已完成「发布」**，且**可用范围**包含所有要用的人（否则报 20010）
 - [ ] `CookieSecure` 与部署协议匹配（内网 http 必须 `false`，否则浏览器不保存 Cookie）
-- [ ] 管理员 `AdminOpenID` 已配置
+- [ ] 历史会话已用 `go run ./cmd/session-migrate -claim-owner=<owner>` 归属（**不是 `AdminOpenID`** —— 该字段已于 2026-09-17 删除，见 14.10）
 - [ ] 备份定时任务已生效，`restore-check` 至少跑过一次
 - [ ] `make check` 全绿
 
@@ -959,7 +960,8 @@ Milvus 停掉后实测空转 **18 分钟、零输出、CPU 占用 ≈ 0**——�
 
 **定时备份**
 ```powershell
-# Windows 任务计划：每 6 小时
+# Windows 任务计划：每 6 小时（⚠️ 必须在**以管理员身份运行**的终端里执行）
+# /RL HIGHEST 要求提权，普通终端下 schtasks 会直接失败，任务不会被创建。
 schtasks /Create /TN "eino-backup" /SC HOURLY /MO 6 /RL HIGHEST ^
   /TR "powershell -NoProfile -ExecutionPolicy Bypass -File E:\11\my-eino-app\scripts\backup.ps1"
 ```
@@ -967,6 +969,14 @@ schtasks /Create /TN "eino-backup" /SC HOURLY /MO 6 /RL HIGHEST ^
 # Linux（本机 Ollama/Milvus 不在容器里时同样适用）
 0 */6 * * * cd /srv/my-eino-app && make backup >> /var/log/eino-backup.log 2>&1
 ```
+
+创建后核对与撤销：
+```powershell
+schtasks /Query  /TN "eino-backup" /FO LIST      # 确认真的建上了
+schtasks /Delete /TN "eino-backup" /F            # 撤销
+```
+`backup.ps1` 自己读 `.env` 取凭据（`Read-DotEnv`），所以定时任务**不需要额外注入环境变量**。
+Docker 引擎没起来时它会以非零码退出并打印原因，不会产出「看起来成功」的空备份。
 
 ### C25 的前置阻塞项（`auth.enabled` / 飞书）
 
@@ -988,10 +998,12 @@ schtasks /Create /TN "eino-backup" /SC HOURLY /MO 6 /RL HIGHEST ^
 
 > 第十三章记录的是「代码写完了没有」，本章记录的是「**真跑起来是什么结果**」。
 > Docker 引擎恢复可用后补做的实测：C20 评测、C21 优雅停机、C22 限流、C23 备份/恢复、C24 健康检查。
-> 实测共 **9 处「只有真跑才暴露」的修复**，分布是：限流脚本请求体字段写错 1（14.1）、
+> 实测共 **10 处「只有真跑才暴露」的修复**，分布是：限流脚本请求体字段写错 1（14.1）、
 > 备份链 4（14.2）、AI 侧整轮硬失败路径 2（14.5）、构建缓存导致「重建了但产物没换」1（14.3）、
-> 后台任务失败日志丢原因 1（14.9）。
-> **14.1–14.6 是第一轮**（发现问题的过程），**14.8 是镜像修正后的第二轮**（四项全部通过）。
+> 后台任务失败日志丢原因 1（14.8）、评测指标里 16/22 题的「正确」恒为真 1（14.14）。
+> **14.1–14.6 是第一轮**（发现问题的过程），**14.7 是镜像修正后的第二轮**（四项全部通过），
+> **14.12 是认证态补测**，**14.13–14.14 是 debug/生产两态对照与它暴露的评测缺陷**。
+> **14.10–14.11 记的是方案自身与部署接线的缺陷**（不是执行遗漏）。
 
 ### 14.1 C22 限流实测 ✅
 
@@ -1179,7 +1191,7 @@ err=file is outside the allowed local directories or does not exist`。
 > 但答案与引用完全达标。它要么是冗余的，要么需要与 `knowledge_search` 合并 —— 登记为待定项，
 > 不在阶段 4 内处理。
 
-### 14.8 第二轮实测（镜像修正后）：C21 / C22 / C23 / C24 全部通过 ✅
+### 14.7 第二轮实测（镜像修正后）：C21 / C22 / C23 / C24 全部通过 ✅
 
 修掉 14.3 的构建缓存问题、并把容器换成新镜像后，四项验收一次性跑通。
 
@@ -1211,7 +1223,7 @@ err=file is outside the allowed local directories or does not exist`。
 `memory worker: task failed`（06:50:50–06:51:09），MySQL 恢复后**自动停止**，
 不需要人工干预。memory worker 的失败是「本轮跳过、下轮再取」，不是终态失败。
 
-### 14.9 顺手修掉的第 5 个缺陷：后台任务失败日志把原因整条丢弃
+### 14.8 顺手修掉的第 5 个缺陷：后台任务失败日志把原因整条丢弃
 
 上面那 8 行 `memory worker: task failed` 后面原本跟着的是 **`(details withheld)`** ——
 `internal/memory/worker.go` 只打印这句话，**一个字符的原因都不留**。停库期间运维看到的
@@ -1225,13 +1237,163 @@ err=file is outside the allowed local directories or does not exist`。
 
 > 「脱敏后打印」和「整条丢弃」不是二选一；后者只是把风险换成了盲区。
 
-### 14.7 仍未完成 / 需外部条件
+### 14.10 方案自身的缺陷：`auth.admin_open_id` 已删除（这是方案漏写，不是执行漏做）
+
+**现象**：`auth.admin_open_id` 在 `internal/config/auth.go` 有声明、三份配置都写了（都是空值），
+但 `grep -rn AdminOpenID --include=*.go` **只命中声明本身，零使用点**。
+而上线前最终检查里有一项是「管理员 `AdminOpenID` 已配置，本地后门可用」——
+**33 个步骤里没有任何一步要求实现它**，这一项永远打不了勾。
+
+**为什么删而不是补**：补实现等于新增一份「飞书侧管理员能做什么」的功能定义，方案里没有这个需求，
+属于超范围。而且留着一个什么都不做的配置项**比没有更坏**——它让人以为后门存在。
+
+**处置**（字段与两处清单项一起改，避免只改一半）：
+
+| 原设计职责 | 现在实际由谁承担 |
+|---|---|
+| 历史数据归属 | `go run ./cmd/session-migrate -claim-owner=<owner>`（`internal/session/mysql.go` 的 `ClaimLegacySessions`） |
+| 管理员标记 | `auth_local_users.is_admin` + `cmd/user-admin -admin` |
+
+具体改动：删 `internal/config/auth.go` 的字段、三份 `config.*.yaml` 的 `admin_open_id` 行、
+`EXECUTION-PLAN.md` 里的结构体示例；两处清单项（`EXECUTION-PLAN.md` 与 `RUNBOOK.md` 各一份，
+是重复内容）都改成指向 `-claim-owner`。
+
+**顺带修掉一个会误导人的示例**：C5 与 `EXECUTION-PLAN.md` 步骤 2.2 原文写的是裸 SQL
+`UPDATE conversations SET owner_id = 'feishu:<admin_open_id>' WHERE owner_id = '';`。
+裸 SQL 绕过 `ClaimLegacySessions`，而且它没提 owner 必须带 `feishu:` 前缀 —— 已换成 `-claim-owner` 命令。
+
+**归档文档不改写**：`docs/AUTH-PLAN.md` 是设计阶段的证据链，只在两处加了「归档注记」说明最终实现
+与原文的差异。其中 D 节「保留管理员后门」**只实现了一半**：`/auth/local` 的开关最终是独立的
+`auth.local.enabled`，与 `AdminOpenID` 无关；「额外获得权限」**没有实现**。
+
+> **遗留**：`auth_local_users.is_admin` 同样没有任何授权用途，只在 `user-admin -list` 里显示。
+> 它不像 `admin_open_id` 那样暗示一个不存在的后门，先保留。
+
+### 14.11 飞书凭据的接线缺口：compose 没有透传 `FEISHU_*`
+
+**这是照着文档做会静默失败的一环。**
+
+`docker-compose.milvus.yml` 的 `app.environment` 原先只透传 `SESSION_STORE` 与 `MYSQL_*`，
+**没有 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_REDIRECT_URL`**。
+
+关键机制：**compose 读 `.env` 只用于变量插值，不会把变量注入容器。**
+所以「按文档把凭据写进 `.env`」这一步在容器里读到的仍是空值。
+
+后果不会报错：`ValidateAuth` 只在「飞书凭据不全 **且** `auth.local.enabled=false`」时拒绝启动。
+本项目 `auth.local.enabled=true`，于是服务照常起来，只剩登录页**静默少了飞书按钮**。
+实测证据 —— `/health` 回传的登录方式：
+
+```json
+{"data":{"debug":false,"login":{"feishu":false,"local":true},"status":"ok"}}
+```
+
+`feishu:false` 就是「凭据没进来」的唯一信号，除此外一切正常。
+
+**修法**：在 `app.environment` 显式透传三个变量（`docker-compose.milvus.yml`），
+并在 `config.docker.yaml` 与 `.env.example` 写明这个坑。
+
+> 同类教训与 14.3 一样：**「配置写对了」不等于「运行态拿到了」**。
+> 判读方式是看 `/health` 的 `login.feishu`，不是看 `.env` 里有没有值。
+
+### 14.12 认证态补测：per-owner 限流 ✅
+
+`config.yaml` 的 `auth.enabled` 是 `false`，所以之前 14.1 只测到了 **per-IP 回落路径**。
+补测的做法是起一个**认证态的本地实例**（`data/verify-auth/config.yaml`，data/ 已 gitignore）：
+`auth.enabled=true` + `auth.local.enabled=true` + `session.store=mysql`（`ValidateAuth` 强制），
+模型仍指向死端口 —— 放行的那几次立刻失败返回，**429 在到达 handler 之前就产生，本来就不需要模型**。
+
+**实验一：per-owner 计数生效**（`scripts/ratelimit-check.ps1 -Cookie ...`，40 次）
+
+```
+2xx=0 other4xx5xx=14 throttled=26 first_throttle=14 retry_after_missing=0
+status_by_index: 1:500 ... 13:500 14:429 15:429 ... 40:429
+sample Retry-After: 1
+OK: 限流行为与预期一致
+```
+
+**实验二：同 IP 下两个 owner 的桶互不影响**（这是「per-owner」的定义，也是 `TestThrottleKeysByOwner`
+的单测在运行态的对照）。先打空 admin 的桶，**紧接着**用另一个账号跑同一脚本：
+
+| 阶段 | 结果 |
+|---|---|
+| A：`admin`（`local:8288b1c8-…`）40 次 | `throttled=26 first_throttle=14`，桶已打空 |
+| B：`rlcheck`（`local:19677696-…`）紧接 40 次 | `throttled=26 first_throttle=14`，**又是从满桶开始** |
+
+判读：如果限流 key 是 `ip:`，B 的第 1 次就该被拒，脚本会以「第 1 次请求即被拒 —— 新 key 未从满桶开始」
+退出 1。**B 通过，即证明 key 是 `user:<owner>` 而不是 IP。**
+
+> 验证用的 `rlcheck` 账号是临时建的，**已停用**（`user-admin -disable`），未删除——`user-admin` 没有删除操作。
+
+
+### 14.13 生产模式（`debug: false`）路由准确率：0.125 —— 并且否证了原先的猜测
+
+之前只有 `debug: true` 下的数（`routing_accuracy=0.0625`），并推测「debug 模式的
+`exposureRule` 会劝模型别调 `load_skills`，所以这个数不能外推到部署态」。
+本轮把 `config.yaml` 的 `debug` 临时翻成 `false` 跑完整一轮（22 题，15 分 19 秒），
+**这个推测被否证了**：
+
+| 指标 | `debug: true`（14.6） | `debug: false`（本轮） |
+|---|---|---|
+| `correct_rate`（旧口径，分母 22） | 0.9545 | 1.0 |
+| `citation_rate` / `refusal_rate` | 1.0 / 1.0 | 1.0 / 1.0 |
+| `routing_total` | 16 | 16 |
+| **`routing_accuracy`** | **0.0625**（1/16） | **0.125**（2/16） |
+
+⇒ **路由准确率低不是 debug 门禁造成的**，两种模式下都接近 0：本地 `qwen3.5:9b`
+（Q4_K_M，9.7B）**基本不会主动调用 `load_skills`**。这与 14.6 的结论一致，现在有了
+对照实验。
+
+**路由失败的样子值得单独记下来**：模型不加载技能时，答案不是「不会」，而是
+**装作会**——「请提供具体的文件路径」「请把您想分析的表格数据发给我」
+「当前未接入 PDF 解析工具」。也就是说路由不准的直接用户可见后果是
+**助手把该干活的事推回给用户**，而不是明确拒绝。
+
+### 14.14 顺带挖出的评测缺陷：22 题里有 16 题的「正确」恒为真
+
+上面那轮的全量答案里，`correct_rate=1.0`。但把它当成「答案质量满分」是错的。
+
+判定逻辑在 `internal/evaluation/evaluation.go`：`Correct = strings.Contains(answer, expected)`，
+而 **Go 的 `strings.Contains(x, "")` 恒为真**。16 道执行类题只声明 `expect_skills`、
+不声明 `expected`（`expected: ""`），于是它们的 `Correct` **永远不可能失败**。
+
+本轮实测的分布：
+
+| | 题数 | 说明 |
+|---|---|---|
+| 有可判定断言（`should_refuse` 或 `expected` 非空） | **6** | 全是知识问答题 |
+| 无断言（执行类：写报告 / 读文件 / 模板 / 表格 / 演示） | **16** | `correct` 结构性恒真 |
+| 其中**直接拒答**却被判 correct 的 | **12** | 有一道耗时仅 **46ms**，没走完一次模型往返 |
+
+所以旧口径的 `correct_rate=1.0` 里，16 个分子是白送的；真实可测的只有 6 道。
+同理 `citation_rate` / `refusal_rate` 的分母本来就只数声明了 `must_cite` /
+`should_refuse` 的题（6 道），那两项才是可信的。
+
+**修法**（与同文件既有做法一致——`RunRouting` 本就「没有声明期望的题目既不执行也不计分」，
+这次把同一条原则补到答案维度）：
+
+- 新增 `Case.Asserted()`：`should_refuse` 或 `expected` 非空白才算「可判定」。
+- 新增 `Report.AssertedTotal`，`CorrectRate` 的分母改成它。
+- 新增 `CaseResult.Asserted`，逐题标出是否被真正判定，避免读到 `correct=false` 时误判为答错。
+- 新增单测 `TestCaseAssertedRequiresAJudgementCriterion`（五种组合）。
+
+> ⚠️ 这条改动**只可能让数字更保守，不会让任何指标变好**：本轮按新口径重算是 `6/6 = 1.0`，
+> 与旧口径同为 1.0，但现在的分母是**能失败的**。重算是按逐题判定结果离线算的，
+> 不是重跑；下一次 `make eval` 的 JSON 里会多出 `asserted_total` 字段。
+
+**遗留**：16 道执行类题目前只有路由维度可判。要让答案维度也真正可测，需要给它们补
+可判定的断言（例如「输出里必须出现报告结构的中文小标题」「不得以『请提供文件路径』结尾」）。
+这是评测集的设计工作，登记为后续项。
+
+### 14.15 仍未完成 / 需外部条件
 
 | 项 | 状态 | 阻塞因素 |
 |---|---|---|
-| C25 飞书凭据 | ⏸ | 需要飞书开发者后台 + 已发布应用，代码侧无法完成 |
-| 生产模式（`debug: false`）路由准确率 | ⏸ | 需再跑一轮 15 分钟评测 |
-| `auth.enabled: true` 下的 **per-owner 限流**实测 | ⏸ | 容器侧已验证路由与 503/200 分离；per-owner 计数需先有可登录账号（库里有 `auth_local_users=1`，但口令未知），当前只实测了 per-IP 回落路径 |
+| C25 飞书凭据 | ⏸ | 需要飞书开发者后台 + 已发布应用；**代码侧接线已补齐（14.11），只差凭据本身** |
+| 生产模式路由准确率 | ✅ | 已测（14.13）：`0.125`，debug 与生产两态都接近 0 |
+| **路由准确率本身** | ⏸ | 本地 `qwen3.5:9b` 不主动 `load_skills`；要提升得换模型或改提示词策略，另立项 |
+| 16 道执行类题的答案断言 | ⏸ | 见 14.14 遗留：目前只有路由维度可判，需要补可判定的断言 |
+| 备份定时任务（`schtasks`） | ⏸ | 命令需在**提权终端**执行（`/RL HIGHEST`），本环境无法代为创建 |
+| `admin` / `admin123` 口令 | ⚠️ | 简单口令，**上线前必须改**：`go run ./cmd/user-admin -passwd -username=admin` |
 | 多副本限流 / token 预算 | ⏸ | 方案明确不做，需换 Redis，另立项 |
 | `knowledge_qa` 技能的存废 | ⏸ | 见 14.6 附带结论 |
 
