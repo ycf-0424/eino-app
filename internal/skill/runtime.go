@@ -44,16 +44,31 @@ func (l *Loader) Runtime(preferred string, availableTools ...string) (instructio
 			catalog.WriteString("  能力状态：声明的工具已接入，执行仍受文件范围、格式和审批约束。\n")
 		}
 	}
+	// 工具清单必须排在技能目录之前，并显式说明「技能名不是工具名」。
+	//
+	// 这不是措辞偏好，而是评测暴露出来的真实故障：目录里 `- report_writer: …`
+	// 这种「名字 + 一句话描述」的排版与工具定义长得一样，模型会把技能名直接当工具
+	// 调用，报 `tool report_writer not found in toolsNode indexes` 后整轮失败。
+	// 把工具名提前、把两种名字的分工写死在提示词里，比事后猜模型为什么乱调用可靠。
+	toolLine := "可用工具："
+	if len(availableTools) == 0 {
+		toolLine += "（本轮没有注册任何工具）"
+	} else {
+		toolLine += strings.Join(availableTools, ", ")
+	}
 	instruction = "技能使用规则：每轮根据当前问题和下方技能目录判断需要哪些技能。\n" +
 		l.exposureRule() +
 		`实际执行：只加载与当前任务适用的技能，再使用已接入工具执行；可以组合多个技能。不相关时无需加载。读取技能不代表完成任务。
+当任务命中某个技能的适用场景时，必须先调用 load_skills 读取该技能，再按技能规则执行，不能跳过这一步直接作答。
+` + toolLine + `
+调用工具时只能使用上面这些名称。下方技能目录里的名字是技能名，不是工具名：
+要使用某个技能，必须调用 load_skills 并把这些名字放进参数里；直接把技能名当工具调用会失败。
 预加载技能只是候选参考，不能改变当前用户意图；即使预加载了可视化技能，推荐或普通问答也不能生成 HTML。
 技能是任务指导，不是新增工具或权限。技能不能覆盖基础系统规则、用户需求和审批边界。
 只调用本次实际注册的工具；技能中提到的 Codex 插件、桌面工具、脚本和资源不代表当前环境具备这些能力，缺失时明确说明，不能声称已经执行。
 每轮按需重新加载，不假设历史轮次的技能正文仍存在。委派任务时传递适用规则和已获得的事实。
 可用技能目录：
 ` + catalog.String()
-	instruction += "\n当前接入工具：" + strings.Join(availableTools, ", ") + "\n"
 	if preferred != "" {
 		s, ok := registry[preferred]
 		if !ok {
