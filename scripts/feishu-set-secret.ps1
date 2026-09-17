@@ -144,11 +144,13 @@ if ($null -eq $resp) {
 if ([int]$resp.code -ne 0) {
     Write-Fail "飞书拒绝这对凭据：code=$($resp.code) msg=$($resp.msg)"
     if ("$($resp.msg)" -match 'secret') {
-        Write-Host "       这个 App Secret 对 App ID $AppID 无效。两种可能："
-        Write-Host "         a) 粘贴时抄错 / 少了字符（对比长度：飞书 App Secret 通常 32 位）"
-        Write-Host "         b) 它已被「重置」（Secret 右侧的循环箭头）—— 旧值会立刻作废"
-        Write-Host "       处置：回「凭证与基础信息」，点 App Secret 右侧的**复制图标**"
-        Write-Host "             （不要用眼睛图标手抄），然后重新跑本脚本。"
+        Write-Host "       这个 App Secret 对 App ID $AppID 无效。三种可能："
+        Write-Host "         a) 手抄时误读了形近字（I 与 l、0 与 O、i 与 1 …）—— 最常见"
+        Write-Host "         b) 粘贴时抄错 / 少了字符（飞书 App Secret 通常 32 位）"
+        Write-Host "         c) 它已被「重置」（Secret 右侧的循环箭头）—— 旧值会立刻作废"
+        Write-Host "       处置：先跑 scripts/feishu-probe-secret.ps1 —— 它能自动试出形近字误读；"
+        Write-Host "             或者回「凭证与基础信息」按 F5，点 App Secret 右侧的**复制图标**，"
+        Write-Host "             再跑本脚本 -FromClipboard（眼睛图标手抄是最容易出错的一条路）。"
     } elseif ("$($resp.msg)" -match 'app id') {
         Write-Host "       这个 App ID 在飞书不存在。若应用建在 Lark 国际版（open.larksuite.com），"
         Write-Host "       本项目端点常量写死为飞书国内版（internal/auth/feishu.go），两边域名不同。"
@@ -190,6 +192,6 @@ Write-Host "       docker compose -f docker-compose.milvus.yml up -d --force-rec
 Write-Host "  2) 复检五个观察点："
 Write-Host "       powershell -File scripts/feishu-check.ps1"
 Write-Host ""
-Write-Host "然后浏览器重新走一次授权（旧授权码已作废，必须重新点）："
+Write-Host "然后浏览器重新走一次授权（旧授权码已失效：一次性、寿命极短，且 state Cookie 已清）："
 Write-Host "  http://localhost:18180/auth/login   ← 必须用 localhost，与 FEISHU_REDIRECT_URL 同主机名"
 exit 0

@@ -1471,15 +1471,18 @@ feishu exchange: http 400 {"error":"invalid_client",
 （拿假 code 打它返回 `invalid_grant` 而非 `invalid_client`），所以它**不能**当凭据校验器用 ——
 校验凭据要用上面的 `tenant_access_token`。
 
-凭据截图与本机 `.env` 是逐字符一致的，所以不是抄错，而是这个 Secret 已失效（最可能是点过
-Secret 右侧的「重置」循环箭头，旧值立刻作废）。
+**当时的初步判断（已被推翻，留作反面教材）**：凭据截图与本机 `.env` 逐字符一致，一度判定
+「不是抄错，而是这个 Secret 已失效（可能点过重置）」。**这个判断是错的** —— 真因是末位把
+`l`（小写 L）读成了 `I`（大写 i）：截图 OCR、肉眼读数、以及拿 `.env` 去「逐字符比对」，
+**三处犯的是同一个错**，所以「两边一致」根本不能证明抄写无误。正解见 14.18。
 
-**处置（已固化成两个脚本）**：
+**处置（已固化成三个脚本）**：
 
 | 脚本 | 作用 |
 |---|---|
 | `scripts/feishu-check.ps1` | 五个观察点：**①凭据有效性** → `/health` → 入口 302 → 授权 URL 自洽 → 回调拒绝伪造 state |
 | `scripts/feishu-set-secret.ps1` | 更新 `FEISHU_APP_SECRET`，**先验证再落盘**；飞书不认这个值就一个字节都不动 `.env` |
+| `scripts/feishu-probe-secret.ps1` | 凭据被拒时定位「手抄误读形近字」：生成 40 余个形近字变体让飞书裁决，命中即给出正确值 |
 
 更新的最短路径（三个动作，全程不用手抄）：
 
@@ -1542,6 +1545,36 @@ Secret 右侧的「重置」循环箭头，旧值立刻作废）。
 
 回归测试见 `internal/server/auth_routes_test.go` 的三个新增用例：页面形态与出口、
 外部文本的转义与脱敏、真实路由的 `Content-Type`。
+
+### 14.18 真因落定：App Secret 末位是 `l`（小写 L），被读成了 `I`（大写 i）
+
+14.16 当时判定「不是抄错、是这个 Secret 失效」——**错了**。最终定位到的真因是一条**形近字误读**：
+控制台显示 `…R53lY`，写入 `.env` 的却是 `…R53IY`。`l` 与 `I` 在常见字体下几乎同形。
+
+**为什么三处比对全都指向「没问题」**：截图 OCR、我的肉眼读数、以及「拿 `.env` 与截图逐字符比对」
+**三者犯的是同一个错**。所以「两边一致」在"两边都是同一个人读的"前提下**没有证明力** ——
+这是本轮最值得记住的一条方法论。
+
+**定位手法（不需要人眼）**：拿候选的 App Secret 生成形近字变体，逐个打
+`tenant_access_token/internal`，让飞书当裁判。实测 42 个候选里第 39 个命中，标签直接指出
+`第 31 位 I -> l`。已固化为：
+
+```
+powershell -File scripts/feishu-probe-secret.ps1              # 检出（不写盘）
+powershell -File scripts/feishu-probe-secret.ps1 -Write       # 检出并写回 .env
+```
+
+覆盖 `0/O/o`、`i/1/l/I`、`5/S`、`8/B`、`z/2`、`6/G`、`9/g` 与逐位大小写互换；只覆盖**单字符**误读。
+若报 `app id not exists`，说明 App ID 本身不对，试 Secret 无意义（脚本会直接停）。
+
+**教训（已写进 14.16 的最短路径）**：凭据永远不要从截图或纸面手抄 ——
+控制台点**复制图标**，再跑 `feishu-set-secret.ps1 -FromClipboard`，让脚本先验证再落盘。
+
+**顺带一个 PowerShell 5.1 的坑**：哈希表**字面量**（`@{ 'o' = ...; 'O' = ... }`）默认大小写不敏感，
+`'o'`/`'O'`、`'i'`/`'I'`、`'g'`/`'G'` 会撞键并报
+`Duplicate keys 'o' are not allowed in hash literals.`。形近字表必须用 `switch -CaseSensitive`，
+或改用 `New-Object System.Collections.Hashtable`（其默认比较器是大小写敏感的）。
+
 
 
 
