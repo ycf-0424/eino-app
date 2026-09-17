@@ -1,7 +1,8 @@
 ---
 scenarios: ["浏览器页面检查和交互"]
 not_for: ["当前未接入浏览器控制工具；不能实际访问或操作页面"]
-description: "Control the in-app Browser for opening, navigating, inspecting visible or interactive page state, clicking, typing, screenshots, and local web testing. It can have existing signed-in sessions. For semantic operations on linked resources, prefer a purpose-built connector, API, or CLI when available."
+description: 说明浏览器页面检查与交互的实现方案；当前未接入浏览器控制工具，不能访问或操作页面
+required_tools: [browser_control]
 ---
 
 # Browser

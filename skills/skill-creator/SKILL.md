@@ -1,7 +1,8 @@
 ---
 scenarios: ["设计新的技能规则"]
 not_for: ["当前没有技能目录写入工具，只能给出规则草稿"]
-description: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources.
+description: 设计技能规则草稿与元数据（description、scenarios、not_for、required_tools）；当前未接入技能目录写入工具，不能直接创建技能
+required_tools: [skill_write]
 ---
 
 # Skill Creator

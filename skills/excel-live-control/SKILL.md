@@ -1,7 +1,8 @@
 ---
 scenarios: ["控制已打开的 Excel 工作簿"]
 not_for: ["当前未接入 Excel 会话，不能操作活动工作簿"]
-description: "Control an open or active Microsoft Excel workbook through the ChatGPT add-in or connected session. Use when the user tags the Microsoft Excel app in Codex or follows up on an established live Excel task. Do not use for standalone spreadsheet files or Google Sheets."
+description: 说明活动 Excel 工作簿的操作方案；当前未接入 Excel 会话，不能操作已打开的工作簿
+required_tools: [excel_session]
 ---
 
 # Excel Live Control

@@ -1,7 +1,8 @@
 ---
 scenarios: ["解释流程、比较方案、设计图表"]
-not_for: ["普通问答和技能推荐不生成 HTML；当前未接入交互可视化展示工具"]
-description: "Create visualizations and interactive tools directly in conversation. Proactively use to show how something works; explore 'what happens when', 'what changes', or 'help me understand'; compare or inspect; create simulations, maps, charts, graphs, and mockups. Use standard tools for static scientific figures."
+not_for: ["普通问答和技能推荐不生成 HTML；当前未接入交互可视化展示工具", "技能推荐与普通问答不得生成可视化"]
+description: 在对话中解释流程、比较方案、给出图表结构设计；不生成 HTML 页面，当前未接入可视化渲染工具
+required_tools: [artifact_render]
 ---
 
 # Visualize

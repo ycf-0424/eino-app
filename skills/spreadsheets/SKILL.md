@@ -1,7 +1,8 @@
 ---
 scenarios: ["分析表格数据；设计表格和公式"]
-not_for: ["当前未接入工作簿读写工具，可分析用户提供的文本数据"]
-description: "Create, edit, analyze, and verify standalone spreadsheet files or Google Sheets-ready workbooks, including .xlsx, .xls, .csv, and .tsv. Do not use for live controlling Microsoft Excel app or a live Excel session."
+not_for: ["当前未接入工作簿读写工具，可分析用户提供的文本数据", "活动 Excel 工作簿应走 excel-live-control；表格视觉设计应走 visualize"]
+description: 分析用户提供的表格文本数据，设计表格结构与公式；当前未接入工作簿读写工具，不能打开或产出表格文件
+required_tools: [workbook_read, workbook_write]
 ---
 
 # Spreadsheets skill

@@ -1,7 +1,8 @@
 ---
 scenarios: ["设计可复用的文档或表格模板"]
-not_for: ["当前没有模板文件写入工具，只能提供模板内容和设计建议"]
-description: Create or update a reusable personal Codex artifact-template skill. Use when the user invokes $template-creator or asks in natural language to create a reusable template from a reference document, presentation, spreadsheet, Google Docs, Slides, or Sheets link, ImageGen or Product Design image, email, Slack message, or Site project, or explicitly asks to edit or update a passed artifact-template skill. Do not use for one-off creation from an existing template.
+not_for: ["当前没有模板文件写入工具，只能提供模板内容和设计建议", "一次性产出内容不属于模板设计；应走 documents / spreadsheets / presentations"]
+description: 设计可复用的文档或表格模板内容与结构；当前未接入模板文件写入工具，不能落盘模板文件
+required_tools: [template_write]
 ---
 
 # Template Creator

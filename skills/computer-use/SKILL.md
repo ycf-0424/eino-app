@@ -1,7 +1,8 @@
 ---
 scenarios: ["操作 Windows 桌面应用"]
-not_for: ["当前未接入桌面控制工具；不能实际点击应用"]
-description: Control Windows apps from ChatGPT
+not_for: ["当前未接入桌面控制工具；不能实际点击应用", "网页内的操作应走 control-in-app-browser"]
+description: 说明 Windows 桌面自动化的实现方案；当前未接入桌面控制工具，不能实际操作应用
+required_tools: [desktop_control]
 ---
 
 # Computer Use

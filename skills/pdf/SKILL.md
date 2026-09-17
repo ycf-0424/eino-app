@@ -1,7 +1,8 @@
 ---
 scenarios: ["提取或总结 PDF；制作 PDF 文档"]
-not_for: ["当前未接入 PDF 解析和生成工具，可讨论方案或处理用户粘贴的文本"]
-description: "Read, create, inspect, render, and verify PDF files where visual layout matters, including fillable AcroForms. Use Poppler rendering plus Python tools such as reportlab, pdfplumber, and pypdf for generation and extraction."
+not_for: ["当前未接入 PDF 解析和生成工具，可讨论方案或处理用户粘贴的文本", "用户粘贴的文本或 DOCX 正文不属于 pdf，应走 documents"]
+description: 讨论 PDF 的解析与生成方案，处理用户直接粘贴的文本；当前未接入 PDF 读写工具，不能读取或产出 PDF 文件
+required_tools: [pdf_render, pdf_extract]
 ---
 
 # PDF Skill

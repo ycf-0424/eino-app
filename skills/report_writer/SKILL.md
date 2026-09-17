@@ -1,7 +1,8 @@
 ---
-description: "基于已有事实撰写中文报告"
+description: 基于已获得的事实撰写中文结构化报告，可写入笔记（需人工审批）；缺少事实依据时不编造内容
 scenarios: ["基于已有事实撰写中文报告"]
 not_for: ["缺少事实时不能编造；保存笔记需要审批"]
+required_tools: [local_file_read, write_note]
 ---
 
 # 报告写作技能

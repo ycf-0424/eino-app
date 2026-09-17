@@ -1,7 +1,8 @@
 ---
 scenarios: ["安装技能"]
 not_for: ["当前没有安装工具，不能声称已安装技能"]
-description: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).
+description: 说明技能安装流程与来源要求；当前未接入安装工具，不能安装或声明已安装技能
+required_tools: [skill_install]
 ---
 
 # Skill Installer
