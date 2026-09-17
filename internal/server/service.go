@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"my-eino-app/internal/agent"
+	"my-eino-app/internal/auth"
 	"my-eino-app/internal/checkpoint"
 	"my-eino-app/internal/config"
 	"my-eino-app/internal/execution"
@@ -40,8 +42,14 @@ type Service struct {
 	sessions    *session.Store
 	skills      *skill.Loader
 	// executions 在执行事件关闭或后端不可用时为 nil。
-	executions    execution.Store
-	execCfg       config.ExecutionEvents
+	executions execution.Store
+	execCfg    config.ExecutionEvents
+	// 认证组件在 cfg.Auth.Enabled 时由 NewService 装配；零值时 authEnabled()
+	// 为 false，路由不注册、请求不需要登录。
+	authSessions  *auth.Sessions
+	authFeishu    *auth.FeishuClient
+	authUsers     *auth.UserStore
+	authMW        *auth.Middleware
 	lockMu        sync.Mutex
 	locks         map[string]chan struct{}
 	concurrency   chan struct{}
@@ -102,6 +110,18 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 		return nil, err
 	}
 	service.executions = executionStore
+	if cfg.Auth.Enabled {
+		// ValidateAuth 已保证 session.store=mysql 且至少一种登录方式可用。
+		service.authSessions = auth.NewSessions(time.Duration(cfg.Auth.SessionTTL))
+		service.authSessions.StartJanitor(ctx)
+		service.authFeishu = auth.NewFeishuClient(cfg.Auth)
+		var userDB *sql.DB
+		if cfg.Session.Store == "mysql" {
+			userDB = sessions.DB()
+		}
+		service.authUsers = auth.NewUserStore(userDB)
+		service.authMW = auth.NewMiddleware(service.authSessions)
+	}
 	if cfg.Memory.Enabled {
 		// Reuse the already-loaded chat model for the background extractor. Creating
 		// a second local llama server can exhaust GPU memory; an override model is

@@ -37,24 +37,30 @@ type executionSnapshot struct {
 
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
-	// API 与前端同源提供，浏览器无需额外配置 CORS 或单独启动前端服务。
-	mux.Handle("GET /", webHandler())
-	// /health 回传 debug 状态，前端据此决定是否显示技能入口。
+	// 认证路由（auth.enabled 关闭时为 no-op）：/auth/login、/auth/callback、
+	// /auth/logout 免认证；/auth/me 需要登录。
+	s.registerAuthRoutes(mux)
+	// 前端与 API 同源提供，浏览器无需额外配置 CORS 或单独启动前端服务。
+	// 需要登录：未登录的浏览器导航会被 302 到 /auth/login。
+	mux.Handle("GET /", s.protected(webHandler()))
+	// /health 回传 debug 状态，前端据此决定是否显示技能入口。免认证白名单。
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, response{Data: map[string]any{"status": "ok", "debug": s.debugEnabled()}})
 	})
-	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, response{Data: s.Stats()}) })
+	mux.Handle("GET /metrics", s.protected(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, response{Data: s.Stats()}) })))
 	// 技能目录属于内部实现，非调试模式不注册该路由，请求直接 404。
 	if s.debugEnabled() {
-		mux.HandleFunc("GET /skills", s.handleSkills)
+		mux.Handle("GET /skills", s.protected(http.HandlerFunc(s.handleSkills)))
 	}
-	mux.HandleFunc("POST /chat", s.handleChat)
-	mux.HandleFunc("GET /sessions", s.handleSessions)
-	mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
-	mux.HandleFunc("GET /sessions/{id}/execution", s.handleExecution)
-	mux.HandleFunc("DELETE /sessions/{id}", s.handleDeleteSession)
-	mux.HandleFunc("POST /sessions/{id}/approval", s.handleApproval)
-	mux.HandleFunc("GET /ws", s.handleWebSocket)
+	mux.Handle("POST /chat", s.protected(http.HandlerFunc(s.handleChat)))
+	mux.Handle("GET /sessions", s.protected(http.HandlerFunc(s.handleSessions)))
+	mux.Handle("GET /sessions/{id}", s.protected(http.HandlerFunc(s.handleGetSession)))
+	mux.Handle("GET /sessions/{id}/execution", s.protected(http.HandlerFunc(s.handleExecution)))
+	mux.Handle("DELETE /sessions/{id}", s.protected(http.HandlerFunc(s.handleDeleteSession)))
+	mux.Handle("POST /sessions/{id}/approval", s.protected(http.HandlerFunc(s.handleApproval)))
+	// WebSocket 认证只能靠 Cookie（浏览器无法自定义 Header）；
+	// 中间件包在 mux 内部，最外层的超时豁免不受影响。
+	mux.Handle("GET /ws", s.protected(http.HandlerFunc(s.handleWebSocket)))
 	s.registerMemoryRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// WebSocket 是长连接；其他 HTTP 请求统一受 runtime.request_timeout 控制。

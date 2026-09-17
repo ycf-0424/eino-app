@@ -5,7 +5,7 @@ import (
 )
 
 func (s *Service) registerMemoryRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /memory/facts", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /memory/facts", s.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.memoryAvailable(w) {
 			return
 		}
@@ -15,8 +15,8 @@ func (s *Service) registerMemoryRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, 200, response{Data: facts})
-	})
-	mux.HandleFunc("GET /memory/turns/{turn_id}", func(w http.ResponseWriter, r *http.Request) {
+	})))
+	mux.Handle("GET /memory/turns/{turn_id}", s.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.memoryAvailable(w) {
 			return
 		}
@@ -26,8 +26,8 @@ func (s *Service) registerMemoryRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, 200, response{Data: status})
-	})
-	mux.HandleFunc("DELETE /memory/facts/{id}", func(w http.ResponseWriter, r *http.Request) {
+	})))
+	mux.Handle("DELETE /memory/facts/{id}", s.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.memoryAvailable(w) {
 			return
 		}
@@ -36,8 +36,8 @@ func (s *Service) registerMemoryRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, 200, response{Data: map[string]any{"revoked": true, "vector_cleanup": "queued"}})
-	})
-	mux.HandleFunc("POST /memory/jobs/{id}/retry", func(w http.ResponseWriter, r *http.Request) {
+	})))
+	mux.Handle("POST /memory/jobs/{id}/retry", s.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.memoryAvailable(w) {
 			return
 		}
@@ -46,7 +46,7 @@ func (s *Service) registerMemoryRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, 200, response{Data: map[string]bool{"queued": true}})
-	})
+	})))
 }
 func (s *Service) memoryAvailable(w http.ResponseWriter) bool {
 	if s.memories == nil {

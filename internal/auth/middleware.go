@@ -28,7 +28,7 @@ func NewMiddleware(sessions *Sessions) *Middleware {
 // WebSocket 升级请求走 401 —— 浏览器无法对 302 自动跟随升级，前端应转登录页。
 func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sess, ok := m.sessions.Get(tokenFromCookie(r))
+		sess, ok := m.sessions.Get(TokenFromCookie(r))
 		if !ok {
 			if wantsHTML(r) {
 				http.Redirect(w, r, "/auth/login", http.StatusFound)
@@ -48,8 +48,9 @@ func wantsHTML(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
-// tokenFromCookie 取登录 token；无 Cookie 时返回空串。
-func tokenFromCookie(r *http.Request) string {
+// TokenFromCookie 取登录 token；无 Cookie 时返回空串。
+// 供登出、/auth/me 等需要读取会话的服务端代码使用。
+func TokenFromCookie(r *http.Request) string {
 	c, err := r.Cookie(CookieName)
 	if err != nil {
 		return ""
