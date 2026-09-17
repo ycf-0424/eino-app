@@ -96,7 +96,10 @@ feishu exchange: http 400 {"error":"invalid_client",
   "error_description":"The client secret is invalid.","code":20002}
 ```
 
-此时**授权码已被消费**，必须重新点一次授权，白跑一趟浏览器。所以用脚本先验再填：
+此时**授权码已作废** —— 实测拿到后 3 分半即报 `20004 code has expired`；而且回调一被处理，
+服务端就立刻清掉 `state` Cookie（失败路径也清，见 `internal/server/auth.go` 的 `ClearStateCookie`），
+**刷新那页只会得到 400 `state mismatch`**。所以只能回 `/auth/login` 重新发起，白跑一趟浏览器。
+用脚本先验再填：
 
 ```powershell
 # 先验证再落盘：飞书不认这个值就一个字节都不动 .env（交互式粘贴，不回显）

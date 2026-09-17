@@ -4,7 +4,9 @@
 #   /health 的 login.feishu 只反映三个值非空（值错也照样 true）；
 #   授权页能正常打开、能授权、能回跳；直到服务端换 token 那一步才回
 #     {"error":"invalid_client","error_description":"The client secret is invalid.","code":20002}
-#   而那时授权码已被消费，必须重新点一次授权 —— 一次浏览器往返很贵（2026-09-17 实测踩过）。
+#   而那时授权码已作废 —— 实测拿到后 3 分半即报 20004 "code has expired"，
+#   且回调一被处理就立刻清掉 state Cookie，刷新那页只会得到 400 state mismatch
+#   —— 只能回 /auth/login 重新发起，一次浏览器往返很贵（2026-09-17 实测踩过）。
 # 本脚本把「验证」放到「写入」之前：飞书不认这个值，就一个字节都不动 .env。
 #
 # 用法：

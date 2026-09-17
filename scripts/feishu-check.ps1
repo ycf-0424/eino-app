@@ -130,7 +130,8 @@ if (-not $SkipCredCheck) {
         $credProblems | ForEach-Object { Write-Host "       - $_" }
         Write-Host ""
         Write-Host "注意：这一项不过时，后面四项可能**全过** —— 真人授权到换 token 那一步才会"
-        Write-Host "      炸出 invalid_client，且那时授权码已被消费，必须重新点一次授权。先修这里。"
+        Write-Host "      炸出 invalid_client。那时授权码已作废（过期 + state Cookie 已被清），"
+        Write-Host "      刷新回调页只会得到 400 state mismatch，只能回 /auth/login 重新发起。先修这里。"
         exit 1
     }
 } else {
