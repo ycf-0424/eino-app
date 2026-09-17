@@ -48,7 +48,15 @@ function Get-StatusCode($Headers) {
     return [int]$parts[1]
 }
 
-Write-Step "目标 $BaseUrl"
+# 探测用哪个主机名都行（curl 眼里 localhost 与 127.0.0.1 等价），但**浏览器不行**：
+# state 走 Cookie、按主机名隔离，浏览器必须用与 FEISHU_REDIRECT_URL 相同的那一个。
+$browseBase = $BaseUrl
+if (-not [string]::IsNullOrEmpty($ExpectedRedirectURL)) {
+    $u = [System.Uri]$ExpectedRedirectURL
+    $browseBase = "$($u.Scheme)://$($u.Authority)"
+}
+
+Write-Step "探测地址 $BaseUrl（仅 API 探测；浏览器请用 $browseBase）"
 
 # ---------- 1/4 服务可达 + login 状态 ----------
 $healthRaw = & curl.exe -s --max-time $Timeout "$BaseUrl/health" 2>$null
@@ -151,12 +159,12 @@ Write-Host ""
 Write-Pass "四个观察点全过 —— 链路已通电，剩下的只能靠浏览器"
 Write-Host ""
 Write-Host "接下来手工做的（脚本代替不了）："
-Write-Host "  1) 浏览器打开 $BaseUrl/auth/login —— 应看到「飞书」按钮（现在是静默少了它）"
+Write-Host "  1) 浏览器打开 $browseBase/auth/login —— 应看到「飞书」按钮（配好前是静默少了它）"
 Write-Host "  2) 点它并在飞书授权 —— 回跳后应落到首页，不报 state mismatch"
 Write-Host "  3) 查落库：SELECT open_id, name FROM auth_users;"
 Write-Host "  4) 查归属：应为 feishu:<open_id>，会话/记忆/执行记录都挂这个 owner"
 Write-Host ""
-Write-Host "注意：全程用同一个主机名（localhost 或 127.0.0.1，选一个用到底）。"
-Write-Host "      state 走 Cookie 按主机名隔离，混用会得到 400 state mismatch，"
-Write-Host "      且现象看起来像「飞书后台配错了」。"
+Write-Host "⚠️ 浏览器必须用 $browseBase —— 不要换成另一个等价写法。"
+Write-Host "   state 走 Cookie、按主机名隔离：用 127.0.0.1 打开登录页、回调却跳到 localhost，"
+Write-Host "   Cookie 落不到同一个域 → 400 state mismatch，且现象看起来像「飞书后台配错了」。"
 exit 0
