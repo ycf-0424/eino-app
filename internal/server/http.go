@@ -110,6 +110,33 @@ func (s *Service) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, response{Data: map[string]string{"id": id}})
 }
 
+// throttle 对单次请求做 per-user 限流（步骤 5.2）。
+//
+// 必须包在 protected 内部：owner 由认证中间件注入 context，包在外面
+// 就只能按 IP 限流，同一出口 IP 后面的所有人会互相挤掉配额。
+//
+// ⚠️ 这是单副本限流，计数在进程内。多副本部署时每个副本各算一份配额，
+// 需要换成 Redis 计数器 —— 当前不部署多副本，登记为后续项。
+func (s *Service) throttle(h http.Handler) http.Handler {
+	if s.chatLimiter == nil {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := "user:" + auth.OwnerFromContext(r.Context())
+		if key == "user:" {
+			// 认证关闭（或白名单路径）时没有身份，退回 IP 维度。
+			// 不采信 X-Forwarded-For：它由客户端任意伪造，采信等于把配额让给攻击者。
+			key = "ip:" + clientIP(r)
+		}
+		if ok, retryAfter := s.chatLimiter.Allow(key); !ok {
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds()+0.999)))
+			writeJSON(w, http.StatusTooManyRequests, response{Error: "请求过于频繁，请稍后再试"})
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	// 认证路由（auth.enabled 关闭时为 no-op）：/auth/login、/auth/callback、
@@ -132,12 +159,18 @@ func (s *Service) Handler() http.Handler {
 			},
 		}})
 	})
+	// /health/ready 是 readiness：逐项探测 MySQL / Milvus / Ollama，任一不通返回 503，
+	// 供 compose 的 app 服务健康检查使用（Dockerfile 的 HEALTHCHECK 仍打 /health）。
+	// 与 /health 一样免认证。
+	mux.HandleFunc("GET /health/ready", s.handleReady)
 	mux.Handle("GET /metrics", s.protected(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, response{Data: s.Stats()}) })))
 	// 技能目录属于内部实现，非调试模式不注册该路由，请求直接 404。
 	if s.debugEnabled() {
 		mux.Handle("GET /skills", s.protected(http.HandlerFunc(s.handleSkills)))
 	}
-	mux.Handle("POST /chat", s.protected(http.HandlerFunc(s.handleChat)))
+	// 只有这两条路由会真正调用模型（也就是真正花钱、真正占并发），
+	// 其余路由是只读或轻量，不挂限流。throttle 在 protected 内部。
+	mux.Handle("POST /chat", s.protected(s.throttle(http.HandlerFunc(s.handleChat))))
 	mux.Handle("GET /sessions", s.protected(http.HandlerFunc(s.handleSessions)))
 	// 会话 id 由服务端签发：前端不再自己造 id（app.js 的 makeSessionId 已移除）。
 	mux.Handle("POST /sessions", s.protected(http.HandlerFunc(s.handleCreateSession)))

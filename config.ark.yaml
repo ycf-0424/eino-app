@@ -42,6 +42,14 @@ runtime:
   # 原来 2 是为保护本机推理资源。云端不受此限，
   # 企业内部多人同时用时会成为瓶颈，先提到 8 观察。
   max_concurrency: 8
+  # per-user（未认证时 per-IP）限流，只作用于 POST /chat 与 GET /ws（步骤 5.2）。
+  # 单副本、进程内计数；多副本部署需换成 Redis。
+  # 云端按量计费，这里的 max_concurrency: 8 意味着一个脚本能同时打满 8 路计费调用，
+  # 限流是这条配置的必要配套。
+  rate_limit:
+    enabled: true
+    per_minute: 30
+    burst: 10
 
 # Agent 只能读取 roots 中的 UTF-8 文本或 DOCX 正文，不能越界、写入或执行文件。
 local_files:

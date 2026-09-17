@@ -53,6 +53,9 @@ type Service struct {
 	// 两者为 nil 时 POST /auth/local 不注册（404）。
 	localAccounts *auth.LocalStore
 	loginLimiter  *rateLimiter
+	// chatLimiter 是 /chat 与 /ws 的 per-user 限流（步骤 5.2），
+	// runtime.rate_limit.enabled 为 false 时保持 nil，middleware 直接透传。
+	chatLimiter   *rateLimiter
 	lockMu        sync.Mutex
 	locks         map[string]chan struct{}
 	concurrency   chan struct{}
@@ -131,6 +134,11 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 			// 每分钟 10 次、突发 10 次：正常人手速远低于此，爆破者会立刻撞墙。
 			service.loginLimiter = newRateLimiter(loginRatePerMinute, loginBurst)
 		}
+	}
+	if cfg.Runtime.RateLimit.Enabled {
+		// key 与登录限流分开两套：登录按「IP + 用户名」，这里按「owner（或 IP）」。
+		// 共用一个限流器会让一次登录失败扣掉聊天的配额，两者语义不同。
+		service.chatLimiter = newRateLimiter(cfg.Runtime.RateLimit.PerMinute, cfg.Runtime.RateLimit.Burst)
 	}
 	if cfg.Memory.Enabled {
 		// Reuse the already-loaded chat model for the background extractor. Creating

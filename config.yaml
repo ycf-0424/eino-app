@@ -23,6 +23,12 @@ skills:
 runtime:
   request_timeout: 180s
   max_concurrency: 2
+  # per-user（未认证时 per-IP）限流，只作用于 POST /chat 与 GET /ws（步骤 5.2）。
+  # 单副本、进程内计数；多副本部署需换成 Redis。
+  rate_limit:
+    enabled: true
+    per_minute: 30
+    burst: 10
 
 # Agent 只能读取 roots 中的 UTF-8 文本或 DOCX 正文，不能越界、写入或执行文件。
 # 如需读取其他系统目录，请在 roots 中显式添加绝对路径，例如 C:\Users\Administrator\Documents。

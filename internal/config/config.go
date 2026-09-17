@@ -72,6 +72,20 @@ type LocalFiles struct {
 type Runtime struct {
 	RequestTimeout Duration `yaml:"request_timeout"`
 	MaxConcurrency int      `yaml:"max_concurrency"`
+	// RateLimit 是 per-user（未认证时 per-IP）的请求限流，步骤 5.2 新增。
+	RateLimit RateLimit `yaml:"rate_limit"`
+}
+
+// RateLimit 是进程内令牌桶限流的配置。
+//
+// 只作用于两条会真正调用模型的路由（POST /chat 与 GET /ws），其余路由是
+// 只读或轻量，限流只会给正常使用添麻烦。
+type RateLimit struct {
+	Enabled bool `yaml:"enabled"`
+	// PerMinute 是每个 key 每分钟允许的请求数，也是令牌的补充速率。
+	PerMinute int `yaml:"per_minute"`
+	// Burst 是桶容量，即允许的瞬时突发量。
+	Burst int `yaml:"burst"`
 }
 
 // Skills 类型。
@@ -264,6 +278,16 @@ func (c *Config) Validate() error {
 	}
 	if c.Runtime.MaxConcurrency < 1 {
 		return fmt.Errorf("runtime.max_concurrency must be greater than zero")
+	}
+	if c.Runtime.RateLimit.Enabled {
+		// 只在开启时补默认值：关闭时保持零值，便于判断「未启用」，
+		// 也让关闭状态下 newRateLimiter 不会被误创建。
+		if c.Runtime.RateLimit.PerMinute <= 0 {
+			c.Runtime.RateLimit.PerMinute = 30
+		}
+		if c.Runtime.RateLimit.Burst <= 0 {
+			c.Runtime.RateLimit.Burst = 10
+		}
 	}
 	if c.LocalFiles.Enabled {
 		if len(c.LocalFiles.Roots) == 0 {

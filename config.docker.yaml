@@ -22,6 +22,12 @@ skills:
 runtime:
   request_timeout: 180s
   max_concurrency: 2
+  # per-user（未认证时 per-IP）限流，只作用于 POST /chat 与 GET /ws（步骤 5.2）。
+  # 单副本、进程内计数；多副本部署需换成 Redis。
+  rate_limit:
+    enabled: true
+    per_minute: 30
+    burst: 10
 
 # 容器只能看到已挂载目录；workspace-files 由 Compose 挂载到应用工作目录。
 local_files:
