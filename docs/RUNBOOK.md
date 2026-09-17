@@ -1479,7 +1479,16 @@ Secret 右侧的「重置」循环箭头，旧值立刻作废）。
 | 脚本 | 作用 |
 |---|---|
 | `scripts/feishu-check.ps1` | 五个观察点：**①凭据有效性** → `/health` → 入口 302 → 授权 URL 自洽 → 回调拒绝伪造 state |
-| `scripts/feishu-set-secret.ps1` | 交互式更新 `FEISHU_APP_SECRET`，**先验证再落盘**；飞书不认这个值就一个字节都不动 `.env` |
+| `scripts/feishu-set-secret.ps1` | 更新 `FEISHU_APP_SECRET`，**先验证再落盘**；飞书不认这个值就一个字节都不动 `.env` |
+
+更新的最短路径（三个动作，全程不用手抄）：
+
+1. 飞书后台点 App Secret 右侧的**复制图标**
+2. `powershell -File scripts/feishu-set-secret.ps1 -FromClipboard`
+3. `docker compose -f docker-compose.milvus.yml up -d --force-recreate app`
+
+`-FromClipboard` 直接读剪贴板（实测 32 字符原样传入），失败时给出成因；传空串则回退到交互式粘贴。
+不用它也行：直接回车同样会读剪贴板。
 
 **顺带记两个本机 / PowerShell 5.1 的坑**：
 
@@ -1490,6 +1499,50 @@ Secret 右侧的「重置」循环箭头，旧值立刻作废）。
   可保住其余行与混合行尾；正则要用 `[ \t]` 而不是 `\s`（多行模式下 `\s` 会跨行吃掉键名前的空行），
   行尾停在 `[^\r\n]*` 且**不带 `$`**（带 `$` 会吞掉 CRLF 的 `\r`）。实测结果：只改目标 1 行、
   CRLF/LF 计数不变、二次替换幂等。
+
+### 14.17 「授权通过」不等于「登录完成」：回跳之后还有 6 步（失败页已改成人可读）
+
+**现象**：飞书侧显示授权成功、地址栏也带着 `code=...` 回到 `/auth/callback`，但页面停在一屏错误。
+用户会合理地认为「授权都通过了，为什么没进主页面」。
+
+**机制**：飞书只回答「这个人是谁」。登录是否完成，取决于**我们服务端**在回跳之后做完这几步
+（`internal/server/auth.go` 的 `handleAuthCallback`，顺序是硬的）：
+
+| # | 动作 | 失败时 |
+|---|---|---|
+| 1 | 校验 `state` 与 Cookie | 400 |
+| 2 | 取 `code`，空则拒 | 400 |
+| 3 | **拿 code 去飞书换 token** ← 凭据无效时就断在这 | 502 |
+| 4 | 拿 token 取用户信息 | 502 |
+| 5 | 用户档案落库（注释写明「档案不阻断登录」） | — |
+| 6 | 签发会话 + 种 Cookie | 500 |
+| 7 | `http.Redirect(w, r, "/", http.StatusFound)` → 主页面 | — |
+
+前 6 步任一失败，浏览器拿到的就是错误响应；**「进主页面」是最后一行，永远轮不到**。
+
+**为什么刷新那一页没用（两条互不相关的机制）**：
+
+1. 授权码寿命极短且一次性 —— 实测拿到后 3 分半已 `20004 The authorization code has expired.`；
+2. `auth.ClearStateCookie(w)` 在**换 token 之前**执行 —— 成功路径清、**失败路径也清**。所以刷新
+   同一 URL 必然得到 `400 state mismatch`。
+
+> 别混淆 `20003`（`The authorization code is not found.`，码不存在/已用掉）与 `20004`
+> （`The authorization code has expired.`，码还在、只是过期）。实测那次失败的换 token
+> **并未消费掉授权码**，所以「失败即已消费」的说法不成立。
+
+**改动**：`/auth/callback` 是本项目唯一「访问者一定是浏览器」的认证路由。失败时原先直接
+`writeJSON` 吐裸 JSON，用户看到的是一屏 `{"error":"..."}` —— 既看不出断在哪一环，也没有出口，
+唯一会做的动作是刷新（必然失败）。现改为 HTML 错误页（`renderCallbackError`）：
+
+- 原始错误串保留（便于排查），但先经 `observability.Redact` 脱敏、再做 HTML 转义 ——
+  它是**外部可控文本**（内嵌飞书返回的响应体）；
+- 按错误特征给一句可执行的处置建议（`invalid_client` / `20071` / `20027` / `20010` / `20003` / `20004` / `state mismatch`）；
+- 明确写出「刷新本页不会好」+ 一个「重新登录」按钮指向 `/auth/login`；
+- **HTTP 状态码保持不变**（4xx/5xx 的语义仍准确），只换响应体。
+
+回归测试见 `internal/server/auth_routes_test.go` 的三个新增用例：页面形态与出口、
+外部文本的转义与脱敏、真实路由的 `Content-Type`。
+
 
 
 
