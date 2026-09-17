@@ -118,9 +118,19 @@ func (s *Service) Handler() http.Handler {
 	// 前端与 API 同源提供，浏览器无需额外配置 CORS 或单独启动前端服务。
 	// 需要登录：未登录的浏览器导航会被 302 到 /auth/login。
 	mux.Handle("GET /", s.protected(webHandler()))
-	// /health 回传 debug 状态，前端据此决定是否显示技能入口。免认证白名单。
+	// /health 回传 debug 状态，前端据此决定是否显示技能入口；同时回传可用的
+	// 登录方式，登录页据此只渲染已启用的入口。免认证白名单。
+	// 两项都必须是「当前真的可用」：feishu 还要求 auth.enabled，
+	// 否则会出现「页面显示飞书入口、点进去 404」。
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, response{Data: map[string]any{"status": "ok", "debug": s.debugEnabled()}})
+		writeJSON(w, 200, response{Data: map[string]any{
+			"status": "ok",
+			"debug":  s.debugEnabled(),
+			"login": map[string]bool{
+				"feishu": s.authEnabled() && s.feishuReady(),
+				"local":  s.localLoginEnabled(),
+			},
+		}})
 	})
 	mux.Handle("GET /metrics", s.protected(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, response{Data: s.Stats()}) })))
 	// 技能目录属于内部实现，非调试模式不注册该路由，请求直接 404。

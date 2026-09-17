@@ -34,16 +34,73 @@ func (s *Service) registerAuthRoutes(mux *http.ServeMux) {
 	// 不做注册路由（D12：仅管理员建号），也不做改密路由（D15：改密走 cmd/user-admin）。
 }
 
-// handleAuthLogin 302 到飞书授权页，并种下 CSRF state Cookie。
-// 未配置飞书凭据时返回 400：该场景下 ValidateAuth 已保证自有账号开启，
-// 由前端登录页（步骤 2.14）承接。
+// handleAuthLogin 是登录入口，承担两件事：
+//
+//   - 显式要求飞书（?provider=feishu），或根本没有可用的自有账号 →
+//     302 到飞书授权页（与改造前完全一致的行为）；
+//   - 否则渲染登录页，页面上并列「飞书登录」与「账号登录」两个入口，
+//     各自按启用状态显隐。
+//
+// 用 query 参数而不是新增 /auth/feishu 路由：登录页上的飞书按钮需要一个能
+// 「明确指向飞书」的地址，而 /auth/login 在启用自有账号时已经变成了页面本身，
+// 再给它加一条路由只会让两处逻辑分叉。
 func (s *Service) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
-	if !s.feishuReady() {
-		writeJSON(w, http.StatusBadRequest, response{Error: "feishu login is not configured"})
+	if r.URL.Query().Get("provider") == "feishu" || !s.localLoginEnabled() {
+		if !s.feishuReady() {
+			writeJSON(w, http.StatusBadRequest, response{Error: "feishu login is not configured"})
+			return
+		}
+		state := auth.NewState(w)
+		http.Redirect(w, r, s.authFeishu.AuthorizeURL(state), http.StatusFound)
 		return
 	}
-	state := auth.NewState(w)
-	http.Redirect(w, r, s.authFeishu.AuthorizeURL(state), http.StatusFound)
+	s.renderLoginPage(w)
+}
+
+// renderLoginPage 输出登录页，并按其启用状态裁剪掉不可用的入口。
+//
+// 页面由这里直接返回而不是走静态目录：静态资源挂在受保护的根路径下，
+// 未登录时会被中间件重定向，登录页反而加载不出来。
+//
+// 未启用的登录方式整块移除（而不是让前端隐藏）：入口连标记都不下发，
+// 就不存在「被 JS 意外显示」或「点进去 404」的可能，页面源码本身就说明了
+// 有哪些登录方式。因此这里不需要模板引擎，只需要按注释标记切块。
+func (s *Service) renderLoginPage(w http.ResponseWriter) {
+	page, err := webFiles.ReadFile("web/login.html")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{Error: "login page is unavailable"})
+		return
+	}
+	body := string(page)
+	body = stripMarkedBlock(body, "provider:feishu", s.feishuReady())
+	body = stripMarkedBlock(body, "provider:local", s.localLoginEnabled())
+	// 「或」这条分隔线只在两个入口同时存在时才有意义。
+	body = stripMarkedBlock(body, "both:divider", s.feishuReady() && s.localLoginEnabled())
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// 登录页涉及凭据输入：禁止缓存，也禁止浏览器内容嗅探。
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if _, err := w.Write([]byte(body)); err != nil {
+		return
+	}
+}
+
+// stripMarkedBlock 删除 <!--name--> 与 <!--/name--> 之间的内容；keep 为 true 时原样保留。
+func stripMarkedBlock(page, name string, keep bool) string {
+	if keep {
+		return page
+	}
+	open, closing := "<!--"+name+"-->", "<!--/"+name+"-->"
+	start := strings.Index(page, open)
+	if start < 0 {
+		return page
+	}
+	end := strings.Index(page[start:], closing)
+	if end < 0 {
+		return page
+	}
+	return page[:start] + page[start+end+len(closing):]
 }
 
 // handleAuthCallback 授权码换用户信息并签发登录态。

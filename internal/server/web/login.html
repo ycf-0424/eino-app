@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>登录 · 星河系统</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <!-- 本页由 /auth/login 直接返回并内联全部样式与脚本：
+       静态资源挂在受保护的根路径下，未登录时加载不到，登录页不能依赖它们。 -->
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #ffffff;
+      --line: #e6e6e8;
+      --text: #202123;
+      --muted: #6f7075;
+      --accent: #10a37f;
+      --accent-hover: #0d8f70;
+      --danger: #c2413a;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { display: grid; place-items: center; padding: 24px; background: #f7f7f8; color: var(--text); }
+    .card {
+      width: min(380px, 100%);
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--page);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.06);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; font-size: 15px; font-weight: 650; }
+    .brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 7px; background: var(--accent); color: #fff; font-weight: 750; }
+    .provider[hidden], .message[hidden], .hint[hidden] { display: none; }
+    .divider { display: flex; align-items: center; gap: 10px; margin: 18px 0; color: var(--muted); font-size: 12px; }
+    .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+    label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+    input {
+      width: 100%;
+      height: 40px;
+      margin-bottom: 14px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--page);
+      color: var(--text);
+      font: inherit;
+    }
+    input:focus { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: -1px; }
+    button, .button {
+      display: block;
+      width: 100%;
+      height: 44px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      line-height: 44px;
+      text-align: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    button:hover, .button:hover { background: var(--accent-hover); }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .message { margin: 14px 0 0; color: var(--danger); font-size: 13px; }
+    .hint { margin: 16px 0 0; color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">
+      <span class="brand-mark">E</span>
+      <span>星河系统</span>
+    </div>
+
+    <!-- 未启用的登录方式由服务端在渲染时整块移除（见 renderLoginPage）：
+         入口连标记都不下发，而不是靠 CSS/JS 隐藏。 -->
+    <!--provider:feishu-->
+    <section class="provider" id="feishuBox">
+      <a class="button" href="/auth/login?provider=feishu">使用飞书登录</a>
+    </section>
+    <!--/provider:feishu-->
+
+    <!--both:divider-->
+    <div class="divider">或</div>
+    <!--/both:divider-->
+
+    <!--provider:local-->
+    <section class="provider" id="localBox">
+      <form id="localForm">
+        <label for="username">账号</label>
+        <input id="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+        <label for="password">口令</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button id="submitButton" type="submit">登录</button>
+      </form>
+    </section>
+    <!--/provider:local-->
+
+    <p class="message" id="message" hidden></p>
+    <p class="hint">账号由管理员统一创建。</p>
+  </main>
+
+  <script>
+    const ui = {
+      form: document.getElementById("localForm"),
+      username: document.getElementById("username"),
+      password: document.getElementById("password"),
+      submit: document.getElementById("submitButton"),
+      message: document.getElementById("message"),
+    };
+
+    function showMessage(text) {
+      ui.message.textContent = text;
+      ui.message.hidden = !text;
+    }
+
+    // 账号登录入口未启用时，表单区块不会下发到页面，这里也就没有可绑定的事件。
+    if (ui.form) {
+      ui.form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        showMessage("");
+        ui.submit.disabled = true;
+        try {
+          const response = await fetch("/auth/local", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: ui.username.value.trim(), password: ui.password.value }),
+          });
+          if (response.ok) {
+            location.replace("/");
+            return;
+          }
+          // 429 与 401 分开提示：前者是限流（等一会儿再来），后者是凭据不对。
+          showMessage(response.status === 429 ? "登录尝试过于频繁，请稍后再试。" : "用户名或密码错误。");
+          ui.password.value = "";
+          ui.password.focus();
+        } catch {
+          showMessage("网络异常，请稍后重试。");
+        } finally {
+          ui.submit.disabled = false;
+        }
+      });
+      ui.username.focus();
+    }
+  </script>
+</body>
+</html>

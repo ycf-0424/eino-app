@@ -50,3 +50,27 @@ func TestWebAssetsElementIDsMatch(t *testing.T) {
 		t.Error("app.js 未绑定登出按钮")
 	}
 }
+
+// 登录页的入口块靠成对的注释标记裁剪（renderLoginPage 的 stripMarkedBlock）：
+// 标记写错会导致「未启用的入口仍然显示」或者整块被吞掉，且不会报错。
+func TestLoginPageProviderMarkersAreBalanced(t *testing.T) {
+	page, err := os.ReadFile("web/login.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(page)
+	for _, name := range []string{"provider:feishu", "provider:local", "both:divider"} {
+		opening := strings.Count(body, "<!--"+name+"-->")
+		closing := strings.Count(body, "<!--/"+name+"-->")
+		if opening != 1 || closing != 1 {
+			t.Errorf("标记 %s 出现次数 open=%d close=%d，应为 1/1", name, opening, closing)
+		}
+	}
+	// 表单必须有提交去处，且页面不能出现注册入口（D12）。
+	if !strings.Contains(body, `"/auth/local"`) {
+		t.Error("login.html 未引用 /auth/local")
+	}
+	if strings.Contains(body, "注册") {
+		t.Error("login.html 出现了注册相关字样")
+	}
+}
