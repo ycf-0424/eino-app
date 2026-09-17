@@ -859,3 +859,126 @@ git push          # = P5
 | **本手册（RUNBOOK）** | **怎么走**——顺序、命令、commit message、推送点、回滚、进度勾选 |
 
 两份文档内容**不重复**：手册里出现的数字（行号、计数）仅用于「定位」，与方案冲突时**以 `EXECUTION-PLAN.md` 为准**。
+
+---
+
+## 十三、执行记录：阶段 4–5（2026-09-17）
+
+> 本章记录**实际执行结果**与**对上面步骤的偏离**。上面章节仍是操作说明；本章是「实际发生了什么」。
+> 与方案冲突时，优先看这里的偏离理由——它们是执行中才暴露出来的。
+
+### 阶段 4（C19–C20）
+
+| 步骤 | 状态 | 说明 |
+|---|---|---|
+| C19 路由评测维度 | ✅ 代码完成 | 见下方 3 条偏离 |
+| C20 评测集 ≥20 题 | ✅ 22 题已落 | 路由准确率实测见本节末 |
+
+**偏离 1：不经过 `ChatWithSink`，改为按服务端口径直接装配 Agent。**
+方案写的是「用 `execution.NewRecorder(0)` 挂到 `ChatWithSink`」，但 `cmd/eval` 从不构造
+`server.Service`——那会把 MySQL、Memory 一整套依赖拖进一个只做离线评测的命令里。
+实际做法是照 `internal/server/service.go:341-355` 的方式自建 Agent（不落库，
+`checkpoint` 只给目录、不接 session），再用
+`execution.NewSession(runID, sessionID, nil /*store*/, recorder /*sink*/, ...)` 取事件。
+
+⚠️ **`execution.Recorder` 本身不是 `execution.Emitter`**（它只有 `Push`/`Events`，缺
+`RunID`/`SessionID`/`NextSequence`/`Emit`）。所以不能直接
+`execution.WithEmitter(ctx, recorder)`；`NewSession` 才是 Emitter，Recorder 是它的 sink。
+
+**偏离 2：`cmd/eval` 原先没把「已注册工具」告诉技能目录。**
+`skill.Loader.Runtime(preferred, availableTools...)` 的第二个参数决定目录里每个技能的
+「能力状态」。`internal/server` 传了（`service.go:341-349`），`cmd/eval` 与 `cmd/console`
+都没传 → 目录里**每个**技能都被标注「缺少工具 … 只可提供说明或替代方案，不能承诺执行」。
+这等于在提示词里劝模型不要加载技能，路由评测会失真。已按服务端口径修正 `cmd/eval`。
+
+**偏离 3（评测发现的真实缺陷）：技能名被模型当成工具名调用。**
+首轮实测（4 题，显式点名技能）出现 `[NodeRunError] tool report_writer not found in
+toolsNode indexes` —— 目录里 `- report_writer: 组织演示大纲…` 这种「名字 + 一句话描述」
+的排版与工具定义长得一样，模型直接把技能名当工具调用，整轮失败。
+
+修法（`internal/skill/runtime.go`）：
+1. 把「可用工具：…」提到技能目录**之前**；
+2. 显式写明「技能目录里的名字是技能名，不是工具名；要使用技能必须调用 `load_skills`」；
+3. 补一条正向规则：「命中技能适用场景时必须先 `load_skills` 再执行」。
+
+**附带修复：`cmd/eval` 在向量库不可达时会无限期挂住。**
+Milvus 停掉后实测空转 **18 分钟、零输出、CPU 占用 ≈ 0**——检索调用在连接断开时不是返回
+错误，而是一直阻塞。已在开跑前加 5 秒 TCP 探测（`probeVectorStore`），12 秒内明确报错。
+
+**新增测试**：`internal/evaluation/routing_test.go`（6 条，覆盖覆盖式断言、跳过无期望题、
+分母只算可评题等）。
+
+### 阶段 5（C21–C25）
+
+| 步骤 | 状态 | 说明 |
+|---|---|---|
+| C21 SIGTERM 优雅停机 | ✅ | `cmd/server/main.go` 已加 `syscall.SIGTERM` |
+| C22 限流 | ✅ 代码 + 单测完成 | 见下方偏离 |
+| C23 备份与恢复演练 | ✅ 脚本完成 | 实测需 Docker 引擎在运行 |
+| C24 liveness / readiness 分离 | ✅ 代码 + 单测完成 | 实测需 Docker 引擎在运行 |
+| C25 上线前配置切换 | ⏸ 待办 | **前置：飞书凭据未配置**（见下） |
+
+**C22 偏离：未认证时退回 `RemoteAddr`，不采信 `X-Forwarded-For`。**
+方案 5.2 写的是「`X-Forwarded-For` 优先，回退 `RemoteAddr`」。实际沿用步骤 2.13 已有的
+`clientIP()`（`internal/server/auth.go:252`）：**只信 `RemoteAddr`**。XFF 是客户端可任意
+伪造的头，采信它等于把 IP 维度的配额直接让给攻击者（每次换个假 IP 就绕开）。
+已在 `throttle` 的注释里写明，并有单测锁定（伪造 XFF 仍需继续被拒）。
+
+**C22 实现要点**
+- `RateLimit{Enabled, PerMinute, Burst}` 加进 `config.Runtime`；三份配置均为
+  `enabled: true / per_minute: 30 / burst: 10`。
+- 限流中间件 `Service.throttle` **包在 `protected` 内部**：owner 由认证中间件注入，
+  包在外面就只能按 IP 限流，同一出口 IP 后的人会互相挤配额。
+- 只挂在 `POST /chat` 与 `GET /ws`；登录限流（`loginLimiter`）与它**分开两套桶**，
+  共用一套会让一次登录失败扣掉聊天配额。
+- 边界已写进注释：**单副本**、进程内计数，多副本需换 Redis；**不做 token 预算**。
+
+**C24 实现要点**
+- `/health` 保持 liveness（静态 ok + `debug` + `login`）；`Dockerfile` 的 HEALTHCHECK 不动。
+- 新增 `GET /health/ready`（免认证）：MySQL 用 `PingContext`、Milvus 用 TCP 建连、
+  Ollama 用 `GET /api/tags`；单项超时 2 秒，并发执行，逐项返回 `name/ok/latency_ms/error`。
+- 只探测**本次实际装配了的**依赖：`session.store=file` 不探 MySQL，`rag.enabled=false`
+  不探 Milvus/Ollama。未装配任何依赖时返回 200 + 空列表（ready 退化为 liveness）。
+- compose 的 `app` 服务健康检查改用 `/health/ready`（与 Dockerfile 语义不同，两者并存）。
+
+**顺带修掉的缺陷**：`health.OllamaTagsURL` 原先「先剥 `/v1` 再剥尾斜杠」，
+输入 `…/v1/` 会拼出 `…/v1/api/tags`（必然 404）。单测抓到，已改为先剥尾斜杠。
+
+**C23 脚本设计要点（与方案的三处偏离）**
+1. **MySQL 用 `mysqldump` 而不是打包数据卷**：运行中的 InnoDB 数据目录随时在写，
+   直接 tar 出来不是一致性快照。方案原文也是 mysqldump，此处只是明确原因。
+2. **dump 不带 `--databases`**：带了它，dump 内会含 `CREATE DATABASE` / `USE`，
+   恢复演练就没法把同一份 dump 导进 `eino_restore_check`——那些语句会把数据写回生产库。
+   代价是灾难恢复时要先手工 `CREATE DATABASE`。
+3. **容器名与卷名都不硬编码**：容器 id 问 `docker compose ps -q mysql`；
+   Milvus 卷按 `*_milvus-data` 等后缀在 `docker volume ls` 里匹配（项目名随目录名变化）。
+4. `restore-check` 先校验 **SHA256** 再恢复：归档损坏必须在连数据库之前发现，
+   否则会把「文件坏了」误判成「恢复逻辑坏了」。
+5. 两个脚本都是 **UTF-8 with BOM**。PowerShell 5.1 对无 BOM 的 UTF-8 `.ps1` 按 ANSI
+   解码，中文注释会变成乱码，极端情况下会把引号吃掉导致脚本解析失败。
+
+**定时备份**
+```powershell
+# Windows 任务计划：每 6 小时
+schtasks /Create /TN "eino-backup" /SC HOURLY /MO 6 /RL HIGHEST ^
+  /TR "powershell -NoProfile -ExecutionPolicy Bypass -File E:\11\my-eino-app\scripts\backup.ps1"
+```
+```bash
+# Linux（本机 Ollama/Milvus 不在容器里时同样适用）
+0 */6 * * * cd /srv/my-eino-app && make backup >> /var/log/eino-backup.log 2>&1
+```
+
+### C25 的前置阻塞项（`auth.enabled` / 飞书）
+
+`config.docker.yaml` 的 `auth.enabled` 与 `memory.identity_mode` **已于早前单独切换**
+（commit `209bde1`：`auth.enabled: true` + `identity_mode: multi_user`），当时用的
+是**本地账号**入口，已实测完整登录链路。
+
+⚠️ **仍未完成的是飞书凭据**：`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_REDIRECT_URL`
+是外部凭据，需要飞书开发者后台 + 已发布的应用，**无法由代码侧完成**。
+在补齐之前：
+
+- 飞书入口不渲染（登录页只显示账号登录）—— 这是 `feishuReady()` 的正确行为，不是 bug；
+- `/health` 的 `login.feishu=false`，`login.local=true`；
+- **本地账号是此刻唯一的入口，不要把它关掉。**
+
