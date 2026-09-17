@@ -1,10 +1,7 @@
 ---
 scenarios: ["安装技能"]
 not_for: ["当前没有安装工具，不能声称已安装技能"]
-name: skill-installer
 description: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path. Use when a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).
-metadata:
-  short-description: Install curated skills from openai/skills or other repos
 ---
 
 # Skill Installer

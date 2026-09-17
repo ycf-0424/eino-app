@@ -1,7 +1,6 @@
 ---
 scenarios: ["组织演示大纲；制作幻灯片"]
 not_for: ["当前未接入 PPTX 生成工具，不能承诺交付幻灯片文件"]
-name: Presentations
 description: Read, create or edit PowerPoint or Google Slides decks. Use for presentation, slide deck, PowerPoint, PPT, PPTX, or Google Slides requests.
 ---
 

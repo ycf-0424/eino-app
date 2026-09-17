@@ -1,7 +1,6 @@
 ---
 scenarios: ["操作 Windows 桌面应用"]
 not_for: ["当前未接入桌面控制工具；不能实际点击应用"]
-name: computer-use
 description: Control Windows apps from ChatGPT
 ---
 

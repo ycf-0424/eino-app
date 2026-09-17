@@ -1,7 +1,6 @@
 ---
 scenarios: ["提取或总结 PDF；制作 PDF 文档"]
 not_for: ["当前未接入 PDF 解析和生成工具，可讨论方案或处理用户粘贴的文本"]
-name: "pdf"
 description: "Read, create, inspect, render, and verify PDF files where visual layout matters, including fillable AcroForms. Use Poppler rendering plus Python tools such as reportlab, pdfplumber, and pypdf for generation and extraction."
 ---
 

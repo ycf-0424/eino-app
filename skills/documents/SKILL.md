@@ -1,7 +1,6 @@
 ---
 scenarios: ["读取和总结 Word 工单；组织文档内容"]
 not_for: ["当前 local_file_read 仅支持授权路径下的文本和 DOCX 读取，不支持生成或编辑 Word 文件"]
-name: documents
 description: Create, edit, redline, and comment on `.docx`, Word, and Google Docs-targeted document artifacts inside the container, with a strict render-and-verify workflow. Use `render_docx.py` to generate page PNGs (and optional PDF) for visual QA, then iterate until layout is flawless before delivering the final document.
 ---
 

@@ -1,7 +1,6 @@
 ---
 scenarios: ["解释流程、比较方案、设计图表"]
 not_for: ["普通问答和技能推荐不生成 HTML；当前未接入交互可视化展示工具"]
-name: visualize
 description: "Create visualizations and interactive tools directly in conversation. Proactively use to show how something works; explore 'what happens when', 'what changes', or 'help me understand'; compare or inspect; create simulations, maps, charts, graphs, and mockups. Use standard tools for static scientific figures."
 ---
 

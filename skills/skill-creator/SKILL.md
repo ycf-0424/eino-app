@@ -1,10 +1,7 @@
 ---
 scenarios: ["设计新的技能规则"]
 not_for: ["当前没有技能目录写入工具，只能给出规则草稿"]
-name: skill-creator
 description: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources.
-metadata:
-  short-description: Create or update a skill
 ---
 
 # Skill Creator
