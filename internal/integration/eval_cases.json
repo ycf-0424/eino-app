@@ -1,13 +1,13 @@
 [
-  {"question":"星河系统的幸运数字是什么？","expected":"7319","must_cite":"milvus-validation.md","expect_skills":["knowledge_qa"]},
-  {"question":"星河系统使用什么技术栈？","expected":"Go、Eino 和 Milvus","must_cite":"milvus-validation.md","expect_skills":["knowledge_qa"]},
-  {"question":"星河系统首席财务官是谁？","expected":"","must_cite":"","should_refuse":true,"expect_skills":["knowledge_qa"]},
-  {"question":"星河系统的默认管理员是谁？","expected":"张三","must_cite":"milvus-validation.md","expect_skills":["knowledge_qa"]},
-  {"question":"星河系统的生产部署区域在哪里？","expected":"上海","must_cite":"milvus-validation.md","expect_skills":["knowledge_qa"]},
-  {"question":"星河系统的内部版本号是什么？","expected":"XH-2026-09","must_cite":"milvus-validation.md","expect_skills":["knowledge_qa"]},
+  {"question":"星河系统的幸运数字是什么？","expected":"7319","must_cite":"milvus-validation.md"},
+  {"question":"星河系统使用什么技术栈？","expected":"Go、Eino 和 Milvus","must_cite":"milvus-validation.md"},
+  {"question":"星河系统首席财务官是谁？","expected":"","must_cite":"","should_refuse":true},
+  {"question":"星河系统的默认管理员是谁？","expected":"张三","must_cite":"milvus-validation.md"},
+  {"question":"星河系统的生产部署区域在哪里？","expected":"上海","must_cite":"milvus-validation.md"},
+  {"question":"星河系统的内部版本号是什么？","expected":"XH-2026-09","must_cite":"milvus-validation.md"},
 
   {"question":"请读取 workspace-files 目录下的文档并总结要点。","expected":"","must_cite":"","expect_skills":["documents"]},
-  {"question":"把 workspace-files 里的 README.md 读出来做个摘要。","expected":"","must_cite":"","expect_skills":["documents"]},
+  {"question":"把 workspace-files 里的 README.txt 读出来做个摘要。","expected":"","must_cite":"","expect_skills":["documents"]},
   {"question":"这份 DOCX 工单里写了什么？请读取正文并总结。","expected":"","must_cite":"","expect_skills":["documents"]},
   {"question":"我需要一份工单内容的摘要，请从授权目录里读取文件。","expected":"","must_cite":"","expect_skills":["documents"]},
 
@@ -18,6 +18,7 @@
 
   {"question":"下面是一段表格数据，帮我分析它的结构并设计对应的公式。","expected":"","must_cite":"","expect_skills":["spreadsheets"]},
   {"question":"我想把这份数据整理成一份 Excel 表格文件，该按什么思路做？","expected":"","must_cite":"","expect_skills":["spreadsheets"]},
+
   {"question":"解释一下这个流程，并给出对比两个方案的图表结构设计。","expected":"","must_cite":"","expect_skills":["visualize"]},
   {"question":"帮我组织一份季度汇报的演示大纲和叙事结构。","expected":"","must_cite":"","expect_skills":["presentations"]},
   {"question":"这份 PDF 里的文字要怎么提取出来？","expected":"","must_cite":"","expect_skills":["pdf"]},
