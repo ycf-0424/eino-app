@@ -162,10 +162,17 @@ func (e *Engine) ProcessOne(parent context.Context) (bool, error) {
 	}
 	return true, errors.Join(err, finishErr)
 }
+
+// process 执行单个 job。
+//
+// job 自带 owner（Claim 不再按 owner 过滤），因此这里必须按 job 的归属派生
+// Repository 再处理：所有读写都以「这条 job 是谁的」为准，而不是服务端配置里的
+// owner —— 否则要么查不到数据，要么把结果写到错误的用户名下。
 func (e *Engine) process(ctx context.Context, j *Job) error {
+	repo := e.Repo.For(j.Owner)
 	switch j.Kind {
 	case "extract":
-		t, err := e.Repo.LoadTurn(ctx, j.Target)
+		t, err := repo.LoadTurn(ctx, j.Target)
 		if err != nil {
 			return err
 		}
@@ -174,7 +181,7 @@ func (e *Engine) process(ctx context.Context, j *Job) error {
 		}
 		var cs []Candidate
 		if !t.Suppressed {
-			t.Input.Existing, err = e.Repo.List(ctx)
+			t.Input.Existing, err = repo.List(ctx)
 			if err != nil {
 				return err
 			}
@@ -184,14 +191,14 @@ func (e *Engine) process(ctx context.Context, j *Job) error {
 			cs, err = e.Extractor.Extract(ctx, t.Input)
 			if err != nil {
 				if err.Error() == "parse_error" {
-					return e.Repo.MarkIgnored(ctx, j, t, "parse_error")
+					return repo.MarkIgnored(ctx, j, t, "parse_error")
 				}
 				return err
 			}
 		}
-		return e.Repo.Apply(ctx, j, t, cs)
+		return repo.Apply(ctx, j, t, cs)
 	case "index":
-		f, err := e.Repo.Get(ctx, j.Target)
+		f, err := repo.Get(ctx, j.Target)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -199,7 +206,7 @@ func (e *Engine) process(ctx context.Context, j *Job) error {
 			return err
 		}
 		id := f.ID + "_" + itoa(j.Version) + "_" + j.Generation
-		if j.Generation != e.Repo.Generation {
+		if j.Generation != repo.Generation {
 			return nil
 		}
 		if f.State != "active" || f.Version != j.Version || f.Generation != j.Generation || f.ExpiresAt != nil && !f.ExpiresAt.After(time.Now()) {
@@ -209,14 +216,14 @@ func (e *Engine) process(ctx context.Context, j *Job) error {
 			return err
 		}
 		// Recheck after IO: deletion or a new revision may have committed meanwhile.
-		current, err := e.Repo.Get(ctx, f.ID)
+		current, err := repo.Get(ctx, f.ID)
 		if err != nil {
 			return err
 		}
 		if current.State != "active" || current.Version != f.Version || current.Generation != f.Generation {
 			return e.Index.DeleteVersions(ctx, []string{id})
 		}
-		_, err = e.Repo.DB.ExecContext(ctx, "UPDATE memory_facts SET index_state='indexed' WHERE id=? AND version=? AND generation=? AND state='active'", f.ID, f.Version, f.Generation)
+		_, err = repo.DB.ExecContext(ctx, "UPDATE memory_facts SET index_state='indexed' WHERE id=? AND version=? AND generation=? AND state='active'", f.ID, f.Version, f.Generation)
 		return err
 	case "delete":
 		return e.Index.DeleteVersions(ctx, []string{j.Target})
@@ -251,20 +258,22 @@ func (e *Engine) snapshotMaintenance(ctx context.Context) (maintenanceSnapshot, 
 		return snapshot, err
 	}
 	rows.Close()
+	// 快照是全局运维统计：多用户下必须覆盖所有 owner，
+	// 按 Config.OwnerID 过滤会让统计只反映配置里的那一个 owner。
 	if err = e.Repo.DB.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM memory_facts
-		WHERE owner_id=? AND state='active'
-		  AND (expires_at IS NULL OR expires_at>NOW(6))`, e.Repo.Config.OwnerID).Scan(&snapshot.ActiveFacts); err != nil {
+		WHERE state='active'
+		  AND (expires_at IS NULL OR expires_at>NOW(6))`).Scan(&snapshot.ActiveFacts); err != nil {
 		return snapshot, err
 	}
 	if err = e.Repo.DB.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM memory_jobs
-		WHERE owner_id=? AND status IN ('pending','running')`, e.Repo.Config.OwnerID).Scan(&snapshot.PendingJobs); err != nil {
+		WHERE status IN ('pending','running')`).Scan(&snapshot.PendingJobs); err != nil {
 		return snapshot, err
 	}
 	if err = e.Repo.DB.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM memory_jobs
-		WHERE owner_id=? AND status IN ('succeeded','failed')`, e.Repo.Config.OwnerID).Scan(&snapshot.TerminalJobs); err != nil {
+		WHERE status IN ('succeeded','failed')`).Scan(&snapshot.TerminalJobs); err != nil {
 		return snapshot, err
 	}
 	return snapshot, nil
@@ -298,26 +307,30 @@ func (e *Engine) Maintain(ctx context.Context) (err error) {
 			log.Printf("memory maintenance report failed: %v", marshalErr)
 		}
 	}()
-	rows, err := e.Repo.DB.QueryContext(ctx, "SELECT id FROM memory_facts WHERE owner_id=? AND state='active' AND expires_at<=NOW(6)", e.Repo.Config.OwnerID)
+	// 过期回收同样跨 owner。逐个 fact 按它自己的 owner 派生 Repo 再回收：
+	// Repo.Get 会校验归属，用固定的 Config.OwnerID 会让其他人的 fact 查不到
+	// （ErrNoRows），结果就是「只有配置里那个用户的过期 fact 会被回收」。
+	rows, err := e.Repo.DB.QueryContext(ctx, "SELECT id,owner_id FROM memory_facts WHERE state='active' AND expires_at<=NOW(6)")
 	if err != nil {
 		return fmt.Errorf("find expired facts: %w", err)
 	}
-	ids := []string{}
+	type expiredFact struct{ id, owner string }
+	expired := []expiredFact{}
 	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
+		var item expiredFact
+		if err = rows.Scan(&item.id, &item.owner); err != nil {
 			rows.Close()
 			return err
 		}
-		ids = append(ids, id)
+		expired = append(expired, item)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
 		return fmt.Errorf("read expired facts: %w", err)
 	}
-	for _, id := range ids {
-		if err = e.Repo.Revoke(ctx, id); err != nil {
+	for _, item := range expired {
+		if err = e.Repo.For(item.owner).Revoke(ctx, item.id); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
@@ -329,18 +342,20 @@ func (e *Engine) Maintain(ctx context.Context) (err error) {
 	if batch < 1 {
 		batch = 500
 	}
+	// 以下清理全部去掉 owner 过滤：保留期管理是全局运维行为，
+	// 按单一 owner 过滤会导致「只清理默认用户的数据，其他人的无限增长」。
 	err = e.maintenanceExec(ctx, report, "deleted", "memory_decisions", `DELETE FROM memory_decisions
 		WHERE created_at<TIMESTAMPADD(DAY,?,NOW(6))
-		  AND EXISTS (SELECT 1 FROM memory_turns t WHERE t.turn_id=memory_decisions.turn_id AND t.owner_id=?)
-		ORDER BY created_at LIMIT ?`, -e.Repo.Config.RetentionDays, e.Repo.Config.OwnerID, batch)
+		  AND EXISTS (SELECT 1 FROM memory_turns t WHERE t.turn_id=memory_decisions.turn_id)
+		ORDER BY created_at LIMIT ?`, -e.Repo.Config.RetentionDays, batch)
 	if err != nil {
 		return fmt.Errorf("cleanup decisions: %w", err)
 	}
-	err = e.maintenanceExec(ctx, report, "redacted", "memory_turns", `UPDATE memory_turns SET input=JSON_OBJECT('message',JSON_OBJECT('id',source_message_id,'role','user','text','')) WHERE owner_id=? AND state IN ('processed','deleted','failed','cancelled') AND updated_at<TIMESTAMPADD(DAY,?,NOW(6)) LIMIT ?`, e.Repo.Config.OwnerID, -e.Repo.Config.TurnRetentionDays, batch)
+	err = e.maintenanceExec(ctx, report, "redacted", "memory_turns", `UPDATE memory_turns SET input=JSON_OBJECT('message',JSON_OBJECT('id',source_message_id,'role','user','text','')) WHERE state IN ('processed','deleted','failed','cancelled') AND updated_at<TIMESTAMPADD(DAY,?,NOW(6)) LIMIT ?`, -e.Repo.Config.TurnRetentionDays, batch)
 	if err != nil {
 		return fmt.Errorf("redact turn snapshots: %w", err)
 	}
-	err = e.maintenanceExec(ctx, report, "deleted", "memory_turns", `DELETE FROM memory_turns WHERE owner_id=? AND state IN ('processed','deleted','failed','cancelled') AND updated_at<TIMESTAMPADD(DAY,?,NOW(6)) AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.kind='extract' AND j.target=memory_turns.turn_id AND j.status IN ('pending','running')) AND NOT EXISTS (SELECT 1 FROM memory_decisions d WHERE d.turn_id=memory_turns.turn_id) LIMIT ?`, e.Repo.Config.OwnerID, -e.Repo.Config.TurnRetentionDays, batch)
+	err = e.maintenanceExec(ctx, report, "deleted", "memory_turns", `DELETE FROM memory_turns WHERE state IN ('processed','deleted','failed','cancelled') AND updated_at<TIMESTAMPADD(DAY,?,NOW(6)) AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.kind='extract' AND j.target=memory_turns.turn_id AND j.status IN ('pending','running')) AND NOT EXISTS (SELECT 1 FROM memory_decisions d WHERE d.turn_id=memory_turns.turn_id) LIMIT ?`, -e.Repo.Config.TurnRetentionDays, batch)
 	if err != nil {
 		return err
 	}
@@ -372,11 +387,11 @@ func (e *Engine) Maintain(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("cleanup failed index jobs: %w", err)
 	}
-	err = e.maintenanceExec(ctx, report, "deleted", "memory_jobs.terminal_succeeded", `DELETE FROM memory_jobs WHERE owner_id=? AND kind IN ('extract','delete') AND status='succeeded' AND updated_at<TIMESTAMPADD(DAY,?,NOW(6)) LIMIT ?`, e.Repo.Config.OwnerID, -e.Repo.Config.JobSuccessDays, batch)
+	err = e.maintenanceExec(ctx, report, "deleted", "memory_jobs.terminal_succeeded", `DELETE FROM memory_jobs WHERE kind IN ('extract','delete') AND status='succeeded' AND updated_at<TIMESTAMPADD(DAY,?,NOW(6)) LIMIT ?`, -e.Repo.Config.JobSuccessDays, batch)
 	if err != nil {
 		return fmt.Errorf("cleanup succeeded jobs: %w", err)
 	}
-	err = e.maintenanceExec(ctx, report, "deleted", "memory_jobs.terminal_failed", `DELETE FROM memory_jobs WHERE owner_id=? AND kind IN ('extract','delete') AND status='failed' AND attempts>=? AND updated_at<TIMESTAMPADD(DAY,?,NOW(6)) LIMIT ?`, e.Repo.Config.OwnerID, e.Repo.Config.MaxAttempts, -e.Repo.Config.JobFailedDays, batch)
+	err = e.maintenanceExec(ctx, report, "deleted", "memory_jobs.terminal_failed", `DELETE FROM memory_jobs WHERE kind IN ('extract','delete') AND status='failed' AND attempts>=? AND updated_at<TIMESTAMPADD(DAY,?,NOW(6)) LIMIT ?`, e.Repo.Config.MaxAttempts, -e.Repo.Config.JobFailedDays, batch)
 	if err != nil {
 		return fmt.Errorf("cleanup failed jobs: %w", err)
 	}
@@ -398,11 +413,11 @@ func (e *Engine) cleanupIndexJobs(ctx context.Context, batch, retentionDays int,
 		LEFT JOIN memory_facts f ON f.id=j.target AND f.owner_id=j.owner_id AND f.state='active' AND f.version=j.version
 		LEFT JOIN memory_versions v ON v.memory_id=j.target AND v.version=j.version
 		LEFT JOIN memory_jobs d ON d.owner_id=j.owner_id AND d.kind='delete' AND d.target=CONCAT(j.target,'_',j.version,'_',j.generation) AND d.status='succeeded'
-		WHERE j.owner_id=? AND j.kind='index' AND j.status=? AND j.updated_at<TIMESTAMPADD(DAY,?,NOW(6))
+		WHERE j.kind='index' AND j.status=? AND j.updated_at<TIMESTAMPADD(DAY,?,NOW(6))
 		  AND (j.status='succeeded' OR j.attempts>=?)
 		  AND ((f.id IS NOT NULL AND f.index_state='indexed') OR v.memory_id IS NULL OR d.id IS NOT NULL)
 		GROUP BY j.id ORDER BY j.updated_at LIMIT ?`
-	rows, err := tx.QueryContext(ctx, query, e.Repo.Config.OwnerID, status, -retentionDays, e.Repo.Config.MaxAttempts, batch)
+	rows, err := tx.QueryContext(ctx, query, status, -retentionDays, e.Repo.Config.MaxAttempts, batch)
 	if err != nil {
 		return 0, err
 	}
@@ -440,22 +455,23 @@ func (e *Engine) cleanupVersions(ctx context.Context, batch, keep int) (int64, i
 		return 0, 0, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT v.memory_id,v.version
+	rows, err := tx.QueryContext(ctx, `SELECT v.memory_id,v.version,f.owner_id
 		FROM memory_versions v
-		JOIN memory_facts f ON f.id=v.memory_id AND f.owner_id=?
+		JOIN memory_facts f ON f.id=v.memory_id
 		WHERE v.version <= f.version-?
-		ORDER BY v.memory_id,v.version LIMIT ?`, e.Repo.Config.OwnerID, keep, batch)
+		ORDER BY v.memory_id,v.version LIMIT ?`, keep, batch)
 	if err != nil {
 		return 0, 0, err
 	}
 	type versionKey struct {
 		id      string
 		version int64
+		owner   string
 	}
 	keys := make([]versionKey, 0, batch)
 	for rows.Next() {
 		var k versionKey
-		if err = rows.Scan(&k.id, &k.version); err != nil {
+		if err = rows.Scan(&k.id, &k.version, &k.owner); err != nil {
 			rows.Close()
 			return 0, 0, err
 		}
@@ -470,13 +486,13 @@ func (e *Engine) cleanupVersions(ctx context.Context, batch, keep int) (int64, i
 	queued := int64(0)
 	for _, k := range keys {
 		var pending int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_jobs WHERE owner_id=? AND kind='index' AND target=? AND version=? AND status IN ('pending','running')`, e.Repo.Config.OwnerID, k.id, k.version).Scan(&pending); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_jobs WHERE kind='index' AND target=? AND version=? AND status IN ('pending','running')`, k.id, k.version).Scan(&pending); err != nil {
 			return deleted, queued, err
 		}
 		if pending > 0 {
 			continue
 		}
-		indexRows, err := tx.QueryContext(ctx, `SELECT generation FROM memory_jobs WHERE owner_id=? AND kind='index' AND target=? AND version=?`, e.Repo.Config.OwnerID, k.id, k.version)
+		indexRows, err := tx.QueryContext(ctx, `SELECT generation FROM memory_jobs WHERE kind='index' AND target=? AND version=?`, k.id, k.version)
 		if err != nil {
 			return deleted, queued, err
 		}
@@ -497,7 +513,8 @@ func (e *Engine) cleanupVersions(ctx context.Context, batch, keep int) (int64, i
 		}
 		indexRows.Close()
 		for _, generation := range generations {
-			if err = e.Repo.enqueue(ctx, tx, "delete", k.id+"_"+itoa(k.version)+"_"+generation, k.version, generation); err != nil {
+			// 删除任务必须挂在 fact 所属 owner 下，否则会写出一条 owner 错误的 job。
+			if err = e.Repo.For(k.owner).enqueue(ctx, tx, "delete", k.id+"_"+itoa(k.version)+"_"+generation, k.version, generation); err != nil {
 				return deleted, queued, err
 			}
 			queued++
@@ -508,7 +525,7 @@ func (e *Engine) cleanupVersions(ctx context.Context, batch, keep int) (int64, i
 		if _, err = tx.ExecContext(ctx, "DELETE FROM memory_versions WHERE memory_id=? AND version=?", k.id, k.version); err != nil {
 			return deleted, queued, err
 		}
-		if _, err = tx.ExecContext(ctx, "DELETE FROM memory_jobs WHERE owner_id=? AND kind='index' AND target=? AND version=? AND status NOT IN ('pending','running')", e.Repo.Config.OwnerID, k.id, k.version); err != nil {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM memory_jobs WHERE kind='index' AND target=? AND version=? AND status NOT IN ('pending','running')", k.id, k.version); err != nil {
 			return deleted, queued, err
 		}
 		deleted++
@@ -533,11 +550,11 @@ func (e *Engine) cleanupSources(ctx context.Context, batch, retentionDays int) (
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `SELECT s.memory_id,s.version,s.source_message_id
 		FROM memory_sources s
-		LEFT JOIN memory_facts f ON f.id=s.memory_id AND f.owner_id=?
+		LEFT JOIN memory_facts f ON f.id=s.memory_id
 		LEFT JOIN memory_turns t ON t.turn_id=s.turn_id
 		WHERE (f.id IS NULL OR f.state<>'active' OR f.version<>s.version)
 		  AND (t.turn_id IS NULL OR t.updated_at<TIMESTAMPADD(DAY,?,NOW(6)))
-		ORDER BY s.memory_id,s.version,s.source_message_id LIMIT ?`, e.Repo.Config.OwnerID, -retentionDays, batch)
+		ORDER BY s.memory_id,s.version,s.source_message_id LIMIT ?`, -retentionDays, batch)
 	if err != nil {
 		return 0, err
 	}

@@ -22,6 +22,20 @@ type Repository struct {
 	Generation, Model string
 }
 
+// For 返回绑定到指定 owner 的 Repository 副本。
+//
+// Config 是值类型，副本之间互不影响，可安全并发使用。选择「派生副本」而不是
+// 「给每个方法加 owner 参数」，是因为本包非测试代码里有 31 处直接读
+// r.Config.OwnerID，派生一次就能让它们全部拿到正确的 owner，一行都不用改。
+//
+// 多用户模式下 owner 来自登录态，调用方必须用 For(owner) 派生后再访问数据；
+// 直接使用 Engine.Repo 只会拿到配置里的 owner_id（单用户模式的身份）。
+func (r *Repository) For(ownerID string) *Repository {
+	cfg := r.Config // 值拷贝
+	cfg.OwnerID = ownerID
+	return &Repository{DB: r.DB, Config: cfg, Generation: r.Generation, Model: r.Model}
+}
+
 func (r *Repository) scope(kind string) Scope {
 	id := r.Config.ProjectID
 	if kind == "user" {
@@ -153,6 +167,13 @@ func (r *Repository) enqueue(ctx context.Context, tx *sql.Tx, kind, target strin
 	_, e := tx.ExecContext(ctx, `INSERT IGNORE INTO memory_jobs(id,owner_id,project_id,kind,target,version,generation,dedupe_key) VALUES(?,?,?,?,?,?,?,?)`, uuid.NewString(), r.Config.OwnerID, r.Config.ProjectID, kind, target, version, generation, dedupe)
 	return e
 }
+
+// Claim 领取一个待处理 job。
+//
+// 只按 project_id 过滤，不按 owner_id 过滤：worker 是全局的，而原实现把
+// 「当前配置的 owner」写死在 SQL 里，多用户上线后其他用户产生的抽取 job
+// 永远不会被领走 —— 表现是「对方没有任何报错，但记忆功能静默失效」。
+// job 行自带 owner_id，处理阶段用 job.Owner 派生出正确的 Repository。
 func (r *Repository) Claim(ctx context.Context) (*Job, error) {
 	tx, e := r.DB.BeginTx(ctx, nil)
 	if e != nil {
@@ -160,12 +181,12 @@ func (r *Repository) Claim(ctx context.Context) (*Job, error) {
 	}
 	defer tx.Rollback()
 	// Expired leases may be reclaimed only within the configured attempt limit.
-	_, e = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='failed',last_error_code='lease_exhausted' WHERE owner_id=? AND project_id=? AND attempts>=? AND status='running' AND lease_until<NOW(6)`, r.Config.OwnerID, r.Config.ProjectID, r.Config.MaxAttempts)
+	_, e = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='failed',last_error_code='lease_exhausted' WHERE project_id=? AND attempts>=? AND status='running' AND lease_until<NOW(6)`, r.Config.ProjectID, r.Config.MaxAttempts)
 	if e != nil {
 		return nil, e
 	}
 	j := &Job{}
-	e = tx.QueryRowContext(ctx, `SELECT id,kind,target,version,generation,attempts FROM memory_jobs WHERE owner_id=? AND project_id=? AND attempts<? AND ((status='pending' AND available_at<=NOW(6)) OR (status='running' AND lease_until<NOW(6))) ORDER BY available_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`, r.Config.OwnerID, r.Config.ProjectID, r.Config.MaxAttempts).Scan(&j.ID, &j.Kind, &j.Target, &j.Version, &j.Generation, &j.Attempts)
+	e = tx.QueryRowContext(ctx, `SELECT id,owner_id,project_id,kind,target,version,generation,attempts FROM memory_jobs WHERE project_id=? AND attempts<? AND ((status='pending' AND available_at<=NOW(6)) OR (status='running' AND lease_until<NOW(6))) ORDER BY available_at,id LIMIT 1 FOR UPDATE SKIP LOCKED`, r.Config.ProjectID, r.Config.MaxAttempts).Scan(&j.ID, &j.Owner, &j.Project, &j.Kind, &j.Target, &j.Version, &j.Generation, &j.Attempts)
 	if errors.Is(e, sql.ErrNoRows) {
 		return nil, nil
 	}

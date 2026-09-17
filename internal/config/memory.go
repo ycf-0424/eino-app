@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -56,12 +57,27 @@ func (c *Config) ValidateMemory() error {
 	if c.Session.Store != "mysql" {
 		return fmt.Errorf("memory requires session.store=mysql")
 	}
-	if m.IdentityMode != "local_single_user" {
-		return fmt.Errorf("memory.identity_mode must be local_single_user; multi-user authentication is not implemented")
+	if m.IdentityMode != "local_single_user" && m.IdentityMode != "multi_user" {
+		return fmt.Errorf("memory.identity_mode must be local_single_user or multi_user")
 	}
-	for _, id := range []string{m.OwnerID, m.ProjectID} {
-		if strings.TrimSpace(id) == "" || len(id) > 64 {
-			return fmt.Errorf("memory owner_id and project_id must be 1..64 bytes")
+	if m.IdentityMode == "multi_user" {
+		// 多用户模式下 owner 来自登录态（auth.OwnerFromContext），配置里的 owner_id
+		// 不再是身份来源。没有认证就没有 owner，记忆隔离会退化成「所有人共用一份」，
+		// 因此这里要求 auth.enabled=true 而不是静默降级。
+		if !c.Auth.Enabled {
+			return fmt.Errorf("memory.identity_mode=multi_user requires auth.enabled=true")
+		}
+		if strings.TrimSpace(m.OwnerID) != "" {
+			log.Printf("memory: identity_mode=multi_user, memory.owner_id=%q is ignored (owner comes from the logged-in session)", m.OwnerID)
+		}
+	}
+	// project_id 在两种模式下都是必填；owner_id 只在单用户模式下作为身份来源。
+	if id := strings.TrimSpace(m.ProjectID); id == "" || len(id) > 64 {
+		return fmt.Errorf("memory project_id must be 1..64 bytes")
+	}
+	if m.IdentityMode == "local_single_user" {
+		if id := strings.TrimSpace(m.OwnerID); id == "" || len(id) > 64 {
+			return fmt.Errorf("memory owner_id must be 1..64 bytes")
 		}
 	}
 	if !c.RAG.Enabled || c.RAG.Embedding.Model == "" || c.RAG.Dimension <= 0 {

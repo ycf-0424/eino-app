@@ -319,7 +319,9 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 	// 已取消之后才被调用，那时再读 context 已经取不到值。
 	owner := auth.OwnerFromContext(ctx)
 	if s.memories != nil {
-		if err := s.memories.Repo.CheckBinding(ctx, id); err != nil {
+		// 记忆的归属校验与检索都必须按当前登录身份派生 Repository，
+		// 否则会读到配置里那个 owner 的数据（多用户下就是串号）。
+		if err := s.memories.Repo.For(owner).CheckBinding(ctx, id); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -352,7 +354,7 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 	// 持久化完整历史；只有传给模型的上下文才会压缩。
 	chat.SetHistory(history)
 	if s.memories != nil {
-		chat.SetMemoryContext(s.memories.Context)
+		chat.SetMemoryContext(s.memories.ContextFor(owner))
 	}
 	chat.SetPersistence(func(messages []*schema.Message) error { return s.sessions.Save(owner, id, messages) }, s.cfg.Session.MaxMessages, s.cfg.Session.MaxChars)
 	return chat, preloaded, nil

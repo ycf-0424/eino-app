@@ -53,8 +53,11 @@ type Fact struct {
 }
 type Job struct {
 	ID, Kind, Target, Generation, Token string
-	Version                             int64
-	Attempts                            int
+	// Owner 与 Project 来自 job 行本身。worker 是全局的，可能领到任意用户的
+	// job，处理时必须按 job 自带的归属派生 Repository，不能用服务端配置里的 owner。
+	Owner, Project string
+	Version        int64
+	Attempts       int
 }
 type Turn struct {
 	ID, SessionID, State string
