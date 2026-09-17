@@ -87,6 +87,34 @@ Select-String -Path "skills\*\SKILL.md" -Pattern '^name:|^metadata:'
 - **但跨身份那组必须两者都有**：验证「本地账号看不到飞书账号的数据」（D14）至少需要 1 个可用的飞书账号。
 - 本地账号之间的用例完全不依赖飞书是否就绪 —— **飞书应用还没批下来时就能先跑一半**。
 
+**凭据填完先验一遍，别急着开浏览器**（2026-09-17 实测踩过的坑）
+
+`/health` 的 `login.feishu` 只反映**三个值非空**，不反映**值正确**。App Secret 抄错、或后台点过 Secret 右侧的「重置」（循环箭头）后旧值立刻作废，这两种情况下链路会**一路绿灯**：`/health` 报 true、授权页正常打开、能授权、能回跳 —— 直到服务端换 token 那一步才炸：
+
+```
+feishu exchange: http 400 {"error":"invalid_client",
+  "error_description":"The client secret is invalid.","code":20002}
+```
+
+此时**授权码已被消费**，必须重新点一次授权，白跑一趟浏览器。所以用脚本先验再填：
+
+```powershell
+# 先验证再落盘：飞书不认这个值就一个字节都不动 .env（交互式粘贴，不回显）
+powershell -File scripts/feishu-set-secret.ps1
+
+# 五个观察点一次过：凭据有效性 → /health → 入口 302 → 授权 URL 自洽 → 回调拒绝伪造 state
+powershell -File scripts/feishu-check.ps1
+```
+
+两个脚本都用 `tenant_access_token/internal` 校验凭据，该端点会**区分失败维度**（实测对照）：
+
+| 请求 | 返回 |
+|---|---|
+| 真 app_id + 假 secret | `10014 app secret invalid` |
+| 假 app_id + 真 secret | `10014 app id not exists` |
+
+所以报错能直接定位到具体是哪一件凭据错。另注意：App Secret 是**逐字符敏感**的，从网页复制常带尾部空白 —— `feishu-set-secret.ps1` 会自动 trim，并对比新值与 `.env` 原值：若**完全一致**，说明不是抄错而是这个 Secret 已失效。
+
 ---
 
 ## 二、提交与推送节奏
@@ -990,13 +1018,25 @@ Docker 引擎没起来时它会以非零码退出并打印原因，不会产出�
 （commit `209bde1`：`auth.enabled: true` + `identity_mode: multi_user`），当时用的
 是**本地账号**入口，已实测完整登录链路。
 
-⚠️ **仍未完成的是飞书凭据**：`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_REDIRECT_URL`
-是外部凭据，需要飞书开发者后台 + 已发布的应用，**无法由代码侧完成**。
-在补齐之前：
+⚠️ **飞书凭据的当前状态（2026-09-17 晚，实测）**：三行**已写入 `.env`**
+（`len=20/32/36`；`docker exec my-eino-app-app-1 env` 与 `.env` 逐项长度一致 → 透传链路已验证），
+`/health` 的 `login.feishu` 已是 `true`。**但 App Secret 被飞书判为无效**：
 
-- 飞书入口不渲染（登录页只显示账号登录）—— 这是 `feishuReady()` 的正确行为，不是 bug；
-- `/health` 的 `login.feishu=false`，`login.local=true`；
-- **本地账号是此刻唯一的入口，不要把它关掉。**
+- `tenant_access_token` 返回 `10014 app secret invalid`；
+- 真人在浏览器走完授权、回跳后换 token 报 `20002 invalid_client / The client secret is invalid.`；
+- **App ID 侧已确认正确** —— 假 app_id 会返回 `app id not exists`，我们这对返回的是 secret 那条。
+
+凭据截图与本机 `.env` 逐字符一致，所以不是抄错，而是这个 Secret 已失效（最可能是在后台
+点过 Secret 右侧的「重置」循环箭头 —— 旧值立刻作废）。处置：回「凭证与基础信息」复制当前
+Secret → `powershell -File scripts/feishu-set-secret.ps1` → 重建容器。
+
+在 App Secret 修好之前：
+
+- 登录页**已能渲染飞书按钮**（凭据非空即渲染），点击也能走到飞书授权页并成功回跳；
+- 但回跳后换 token 必失败，**飞书登录仍不可用**；
+- **`login.feishu=true` 不代表凭据可用** —— 判据要换成 `scripts/feishu-check.ps1` 的第 1 项
+  （或 `feishu-set-secret.ps1 -DryRun`）；
+- **本地账号仍是可用入口，不要把它关掉**（坑 B10）。
 
 ---
 
@@ -1394,7 +1434,7 @@ OK: 限流行为与预期一致
 
 | 项 | 状态 | 阻塞因素 |
 |---|---|---|
-| C25 飞书凭据 | ⏸ | 需要飞书开发者后台 + 已发布应用；**代码侧接线已补齐（14.11），只差凭据本身** |
+| C25 飞书凭据 | ⏸ | 凭据**已写入**（三值非空、透传已验证），但 **App Secret 被判无效**（见 14.16）；只差换一个能用的 Secret |
 | 生产模式路由准确率 | ✅ | 已测（14.13）：`0.125`，debug 与生产两态都接近 0 |
 | **路由准确率本身** | ⏸ | 本地 `qwen3.5:9b` 不主动 `load_skills`；要提升得换模型或改提示词策略，另立项 |
 | 16 道执行类题的答案断言 | ⏸ | 见 14.14 遗留：目前只有路由维度可判，需要补可判定的断言 |
@@ -1402,6 +1442,51 @@ OK: 限流行为与预期一致
 | `admin` / `admin123` 口令 | ⚠️ | 简单口令，**上线前必须改**：`go run ./cmd/user-admin -passwd -username=admin` |
 | 多副本限流 / token 预算 | ⏸ | 方案明确不做，需换 Redis，另立项 |
 | `knowledge_qa` 技能的存废 | ⏸ | 见 14.6 附带结论 |
+
+### 14.16 飞书跑穿路上的判定点：`login.feishu=true` **不等于**凭据可用（已工具化）
+
+**现象（本轮真实过程）**：凭据写入 `.env` → `login.feishu` 变 `true` → 授权页能打开 → 能授权 →
+**回跳时炸**：
+
+```
+feishu exchange: http 400 {"error":"invalid_client",
+  "error_description":"The client secret is invalid.","code":20002}
+```
+
+**根因**：`/health` 的 `login.feishu` 只断言「三个值非空」（`feishuReady()` 逐项判空），
+**不校验值本身**。所以 App Secret 抄错或已失效时，除最后一步之外全链路没有任何异常信号。
+
+**定位过程（可复用）**：直接拿凭据打 `tenant_access_token/internal`，该端点**区分失败维度**：
+
+| 请求 | 返回 |
+|---|---|
+| 真 app_id + 假 secret | `10014 app secret invalid` |
+| 假 app_id + 真 secret | `10014 app id not exists` |
+| **本项目凭据** | `10014 app secret invalid` → **App ID 正确，Secret 无效** |
+
+另一个易混点：本项目换 token 用的 `accounts.feishu.cn/oauth/v3/token` **先验 code、再验 client**
+（拿假 code 打它返回 `invalid_grant` 而非 `invalid_client`），所以它**不能**当凭据校验器用 ——
+校验凭据要用上面的 `tenant_access_token`。
+
+凭据截图与本机 `.env` 是逐字符一致的，所以不是抄错，而是这个 Secret 已失效（最可能是点过
+Secret 右侧的「重置」循环箭头，旧值立刻作废）。
+
+**处置（已固化成两个脚本）**：
+
+| 脚本 | 作用 |
+|---|---|
+| `scripts/feishu-check.ps1` | 五个观察点：**①凭据有效性** → `/health` → 入口 302 → 授权 URL 自洽 → 回调拒绝伪造 state |
+| `scripts/feishu-set-secret.ps1` | 交互式更新 `FEISHU_APP_SECRET`，**先验证再落盘**；飞书不认这个值就一个字节都不动 `.env` |
+
+**顺带记两个本机 / PowerShell 5.1 的坑**：
+
+- `$PSScriptRoot` 在 `param()` 的**默认值表达式**里是空的（只在脚本体里有值），会在参数绑定阶段
+  就抛 `Split-Path : Cannot bind argument to parameter 'Path' because it is an empty string`。
+  凡是要按脚本位置定位文件，路径解析必须挪进脚本体。
+- 改 `.env` 用「读原文 + 单行正则替换 + `New-Object System.Text.UTF8Encoding $false` 写回」，
+  可保住其余行与混合行尾；正则要用 `[ \t]` 而不是 `\s`（多行模式下 `\s` 会跨行吃掉键名前的空行），
+  行尾停在 `[^\r\n]*` 且**不带 `$`**（带 `$` 会吞掉 CRLF 的 `\r`）。实测结果：只改目标 1 行、
+  CRLF/LF 计数不变、二次替换幂等。
 
 
 
