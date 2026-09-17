@@ -52,7 +52,7 @@ local_files:
   max_bytes: 10485760
 
 execution_events:
-  enabled: false
+  enabled: true
   queue_size: 256
   retention_days: 7
   max_events_per_run: 5000

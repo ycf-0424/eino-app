@@ -6,7 +6,7 @@ openai:
   model: "qwen3.5:9b"                               # 本地模型名；方舟填 doubao-seed-evolving
   base_url: "http://localhost:11434/v1"             # 方舟填 https://ark.cn-beijing.volces.com/api/v3
   reasoning_effort: "none"                          # 关闭本地思考模型的隐藏推理，降低简单问答延迟
-  max_completion_tokens: 512                        # 限制单次输出，避免请求长期占用本机资源
+  max_completion_tokens: 1024                       # 限制单次输出，避免请求长期占用本机资源
 
 # 对话历史保存目录；程序重启后可通过 --session 恢复
 session_dir: "data/sessions"
@@ -37,7 +37,7 @@ local_files:
 # P8 实时执行进度与执行记录；默认关闭，关闭时行为与 P7 完全一致。
 # 关闭状态下不采集、不传输、不落库，可在出现问题时不改代码直接回滚。
 execution_events:
-  enabled: false
+  enabled: true
   queue_size: 256          # WebSocket 出站队列容量；满时中间事件可丢，终态必须送达
   retention_days: 7        # 执行记录保留天数
   max_events_per_run: 5000 # 单个 run 落库的事件上限

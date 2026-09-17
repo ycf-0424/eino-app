@@ -5,7 +5,7 @@ openai:
   model: "qwen3.5:9b"
   base_url: "http://host.docker.internal:11434/v1"
   reasoning_effort: "none"
-  max_completion_tokens: 512
+  max_completion_tokens: 2048
 
 session_dir: "data/sessions"
 session:
@@ -32,7 +32,7 @@ local_files:
 
 # P8 实时执行进度；默认关闭，Compose 可通过环境变量或配置文件灰度开启。
 execution_events:
-  enabled: false
+  enabled: true
   queue_size: 256
   retention_days: 7
   max_events_per_run: 5000
