@@ -25,8 +25,11 @@ type Case struct {
 
 // CaseResult 类型。
 type CaseResult struct {
-	Question   string `json:"question"`
-	Answer     string `json:"answer"`
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+	// Asserted 表示这道题是否被真正判定过。expected 与 should_refuse 都为空时
+	// 这道题没有任何可判定的断言，Correct 恒为 true —— 它不能计入正确率。
+	Asserted   bool   `json:"asserted"`
 	Correct    bool   `json:"correct"`
 	Cited      bool   `json:"cited"`
 	Refused    bool   `json:"refused"`
@@ -34,9 +37,23 @@ type CaseResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// Asserted 表示这道题有没有可判定的答案断言。
+//
+// 为什么需要它：判据是 strings.Contains(answer, expected)，而
+// strings.Contains(任意字符串, "") **恒为真**。执行类题目（写报告、读文件、
+// 设计模板）只声明 expect_skills、不声明 expected，于是它们的 Correct 永远是
+// true —— 哪怕模型只回一句「请提供文件路径」。把这些题算进正确率的分母，
+// 等于让一个永远不可能失败的分母去稀释指标。
+func (c Case) Asserted() bool {
+	return c.ShouldRefuse || strings.TrimSpace(c.Expected) != ""
+}
+
 // Report 类型。
 type Report struct {
-	Total             int          `json:"total"`
+	Total int `json:"total"`
+	// AssertedTotal 是**可判定**的题目数（见 Case.Asserted）。
+	// CorrectRate 的分母是它，不是 Total —— 否则执行类题目会稀释指标。
+	AssertedTotal     int          `json:"asserted_total"`
 	CorrectRate       float64      `json:"correct_rate"`
 	CitationRate      float64      `json:"citation_rate"`
 	RefusalRate       float64      `json:"refusal_rate"`
@@ -63,7 +80,7 @@ func LoadCases(path string) ([]Case, error) {
 // Run 逐题执行真实 RAG Chain。指标使用固定规则计算，结果可重复比较。
 func Run(ctx context.Context, runner *chain.RAGChain, cases []Case, input func(string) chain.Input) Report {
 	report := Report{Total: len(cases)}
-	correct, citationRequired, cited, refusalRequired, refused, totalMS := 0, 0, 0, 0, 0, int64(0)
+	correct, asserted, citationRequired, cited, refusalRequired, refused, totalMS := 0, 0, 0, 0, 0, 0, int64(0)
 	for _, item := range cases {
 		// 指标分母由评测集定义，不能因为一次请求报错就跳过，否则会虚高。
 		if item.MustCite != "" {
@@ -72,9 +89,11 @@ func Run(ctx context.Context, runner *chain.RAGChain, cases []Case, input func(s
 		if item.ShouldRefuse {
 			refusalRequired++
 		}
+		// 没有断言的题目不计入正确率（见 Case.Asserted）。
+		assertedCase := item.Asserted()
 		started := time.Now()
 		answer, err := runner.Run(ctx, input(item.Question))
-		result := CaseResult{Question: item.Question, Answer: answer.Answer, DurationMS: time.Since(started).Milliseconds()}
+		result := CaseResult{Question: item.Question, Answer: answer.Answer, Asserted: assertedCase, DurationMS: time.Since(started).Milliseconds()}
 		totalMS += result.DurationMS
 		if err != nil {
 			result.Error = err.Error()
@@ -82,7 +101,7 @@ func Run(ctx context.Context, runner *chain.RAGChain, cases []Case, input func(s
 			result.Refused = strings.Contains(answer.Answer, "无法确认") || strings.Contains(answer.Answer, "不知道") || strings.Contains(answer.Answer, "未知") || strings.Contains(answer.Answer, "无足够依据")
 			if item.ShouldRefuse {
 				result.Correct = result.Refused
-			} else {
+			} else if assertedCase {
 				result.Correct = strings.Contains(normalize(answer.Answer), normalize(item.Expected))
 			}
 			if item.MustCite != "" {
@@ -93,8 +112,11 @@ func Run(ctx context.Context, runner *chain.RAGChain, cases []Case, input func(s
 					}
 				}
 			}
-			if result.Correct {
-				correct++
+			if assertedCase {
+				asserted++
+				if result.Correct {
+					correct++
+				}
 			}
 			if result.Cited {
 				cited++
@@ -107,9 +129,12 @@ func Run(ctx context.Context, runner *chain.RAGChain, cases []Case, input func(s
 		}
 		report.Cases = append(report.Cases, result)
 	}
+	report.AssertedTotal = asserted
 	if report.Total > 0 {
-		report.CorrectRate = float64(correct) / float64(report.Total)
 		report.AverageDurationMS = float64(totalMS) / float64(report.Total)
+	}
+	if asserted > 0 {
+		report.CorrectRate = float64(correct) / float64(asserted)
 	}
 	if citationRequired > 0 {
 		report.CitationRate = float64(cited) / float64(citationRequired)
