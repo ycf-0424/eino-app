@@ -64,11 +64,14 @@ func main() {
 		// optional execution-events schema is disabled and absent.
 		// IncludeAuth 例外地无条件为 true：conversations.owner_id 是会话表本身的
 		// 结构，不是可关掉的子系统，缺少它会让接入认证后的会话读写直接失败。
+		// IncludeLocalUsers 同样无条件为 true：auth_local_users 是自有账号的落点，
+		// 建号工具与登录路径都直接写读它，缺表时没有降级路径。
 		if err = dst.MigrateWithOptions(session.MigrationOptions{
 			IncludeExecution:     cfg.ExecutionEvents.Enabled,
 			IncludeMemory:        cfg.Memory.Enabled,
 			IncludeMemoryIndexes: *indexes,
 			IncludeAuth:          true,
+			IncludeLocalUsers:    true,
 		}); err != nil {
 			fail(err)
 		}

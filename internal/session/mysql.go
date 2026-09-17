@@ -94,13 +94,21 @@ type MigrationOptions struct {
 	// it, so a missing column breaks the core path rather than one optional
 	// subsystem. Callers therefore pass true whenever auth may ever be enabled.
 	IncludeAuth bool
+	// IncludeLocalUsers creates auth_local_users. 与 IncludeAuth 同样当作
+	// 「不是可选子系统」处理：表缺失时登录路径直接报错，而建号工具本来就要写它。
+	IncludeLocalUsers bool
 }
 
 // Migrate is the backwards-compatible full migration entry point. Commands
 // that know the active configuration should prefer MigrateWithOptions so a
 // disabled optional subsystem does not require its tables or CREATE privilege.
 func (s *Store) Migrate() error {
-	return s.MigrateWithOptions(MigrationOptions{IncludeExecution: true, IncludeMemory: true, IncludeAuth: true})
+	return s.MigrateWithOptions(MigrationOptions{
+		IncludeExecution:  true,
+		IncludeMemory:     true,
+		IncludeAuth:       true,
+		IncludeLocalUsers: true,
+	})
 }
 
 // MigrateWithOptions is the explicit schema initialization entry point; the
@@ -119,6 +127,9 @@ func (s *Store) MigrateWithOptions(options MigrationOptions) error {
 	}
 	if options.IncludeAuth {
 		migrations = append(migrations, authMigrationSQL)
+	}
+	if options.IncludeLocalUsers {
+		migrations = append(migrations, localUsersMigrationSQL)
 	}
 	for _, migration := range migrations {
 		for _, statement := range strings.Split(migration, ";") {
@@ -257,6 +268,12 @@ var memoryMigrationSQL string
 //
 //go:embed migrations/004_auth.sql
 var authMigrationSQL string
+
+// 005 增加项目自有账号表（auth_local_users）。纯 CREATE TABLE IF NOT EXISTS，
+// 天然幂等，不需要 Go 侧的 ALTER 兜底。
+//
+//go:embed migrations/005_local_users.sql
+var localUsersMigrationSQL string
 
 func (s *mysqlStore) load(owner, id string) ([]*schema.Message, error) {
 	if err := validateID(id); err != nil {
