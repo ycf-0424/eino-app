@@ -41,6 +41,8 @@ type Config struct {
 	LocalFiles LocalFiles `yaml:"local_files"`
 	// ExecutionEvents 控制实时执行进度与执行记录；默认关闭，关闭时行为与 P7 一致。
 	ExecutionEvents ExecutionEvents `yaml:"execution_events"`
+	// Auth 控制登录认证与多用户隔离；关闭时以单用户模式运行，行为与改造前一致。
+	Auth Auth `yaml:"auth"`
 	// ProjectDir 是实际找到的 config.yaml 所在目录，不参与 YAML 序列化。
 	ProjectDir string `yaml:"-"`
 }
@@ -339,6 +341,9 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := c.ValidateAuth(); err != nil {
+		return err
+	}
 	return c.ValidateMemory()
 }
 

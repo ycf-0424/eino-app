@@ -43,6 +43,18 @@ execution_events:
   max_events_per_run: 5000 # 单个 run 落库的事件上限
   dir: "data/executions"   # 文件后端的执行日志目录
 
+# 登录认证与多用户隔离。enabled: false 时以单用户模式运行，行为与改造前一致；
+# 部署态在最后一步（5.5）置 true，并同步把 memory.identity_mode 改为 multi_user。
+auth:
+  enabled: false
+  provider: feishu
+  app_id: ""               # 建议用环境变量 FEISHU_APP_ID 注入，不写进仓库
+  app_secret: ""           # 同上，FEISHU_APP_SECRET
+  redirect_url: ""         # 必须与飞书后台登记值完全一致；FEISHU_REDIRECT_URL
+  session_ttl: 12h
+  cookie_secure: false     # 内网 http 部署必须 false，否则浏览器不保存 Cookie
+  admin_open_id: ""        # 飞书侧管理员，同时是历史会话数据的归属人
+
 agent:
   multi_agent: true
   checkpoint_dir: "data/checkpoints"
