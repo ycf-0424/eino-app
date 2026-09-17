@@ -466,7 +466,9 @@ function finishGeneration() {
   }
   state.assistantBody = null;
   state.assistantNode = null;
-  state.socket = null;
+  // 本轮已经结束（done / cancelled / approval 都已送达），连接不再需要：
+  // 主动关闭而不是只把引用置空，否则服务端会一直挂着这条空闲连接。
+  closeSocket();
   state.activeRun = null;
   setGenerating(false);
   loadSessions();
@@ -710,6 +712,10 @@ function sendMessage(query) {
   ui.promptInput.value = "";
   resizeInput();
 
+  // 每轮对话都是一条新的 WebSocket，旧连接必须先关掉：服务端为每条连接各留一个
+  // 读循环与出站队列（handleWebSocket），只覆盖 state.socket 而不关闭，会把上一轮的
+  // 连接和它的 goroutine 一起留在服务端（浏览器侧每轮也泄漏一条连接）。
+  closeSocket();
   const socket = new WebSocket(socketURL());
   state.socket = socket;
   socket.onmessage = (event) => {

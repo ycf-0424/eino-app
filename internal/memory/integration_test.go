@@ -92,7 +92,12 @@ func integrationRepo(t *testing.T) (*Repository, *session.Store) {
 		t.Fatal(err)
 	}
 	r := &Repository{DB: s.DB(), Config: cfg.Memory, Generation: "test-generation", Model: "stub"}
-	if err = s.SetTransactionHook(r.Capture); err != nil {
+	// 与生产安装方式保持一致（coordinator.Open）：hook 按「本轮的记忆归属」
+	// 派生 Repository，而不是闭包里的配置身份。
+	engine := &Engine{Repo: r}
+	if err = s.SetTransactionHook(func(ctx context.Context, tx *sql.Tx, id, owner string, msgs []*schema.Message) error {
+		return engine.Repo.For(engine.OwnerScope(owner)).Capture(ctx, tx, id, msgs)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -234,8 +239,9 @@ func TestMySQLMemoryLifecycle(t *testing.T) {
 func TestMySQLAtomicCapture(t *testing.T) {
 	r, s := integrationRepo(t)
 	ctx := context.Background()
-	s.SetTransactionHook(func(ctx context.Context, tx *sql.Tx, id string, ms []*schema.Message) error {
-		if err := r.Capture(ctx, tx, id, ms); err != nil {
+	engine := &Engine{Repo: r}
+	s.SetTransactionHook(func(ctx context.Context, tx *sql.Tx, id, owner string, ms []*schema.Message) error {
+		if err := engine.Repo.For(engine.OwnerScope(owner)).Capture(ctx, tx, id, ms); err != nil {
 			return err
 		}
 		return fmt.Errorf("injected failure")

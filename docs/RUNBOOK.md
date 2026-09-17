@@ -1619,6 +1619,91 @@ powershell -File scripts/feishu-probe-secret.ps1 -Write       # 检出并写回 
 （`1552e0e4`/`3c3b1931`/`e3db1304`/`81bb26d6` → 过滤后只剩前两条）。前端没有测试基建，
 这类改动目前只能靠临时脚本加手动确认，**这是一处需要补的基础设施**。
 
+### 14.20 「每个会话只能问一次」：事务钩子把记忆归属写成了配置里的 owner（已修）
+
+**现象**（用户报「目前所有的会话都只能进行一次对话不能多次」）：第一轮问答正常，
+第二轮无论走 HTTP 还是 WebSocket 都失败；浏览器侧表现为每轮提问都换成一个新会话。
+
+**先看数据，不猜**：
+
+| 查询 | 结果 |
+|---|---|
+| `conversations` 按消息数分组 | 每个会话**恒为 2 条**（1 问 1 答），从无第 3 条 |
+| `execution_runs` 按 `conversation_id` 分组 | 每个会话**恒为 1 个 run**（`user_sequence=0`） |
+| 同一会话连发两轮 `POST /chat` | 第一轮 200，第二轮 **HTTP 500 `memory session scope mismatch`，13ms** |
+
+13ms 是关键信号：模型还没被调用，请求在准备阶段就失败了 —— 这不是模型问题、也不是前端问题。
+
+**根因**：`session.Store` 的事务钩子在启动时只安装一次，闭包捕获的是
+`memory.Repository` 的**配置副本**，于是 `Capture` 用 `memory.owner_id`（`local-owner`）
+去写 `memory_bindings`；而第二轮进来时 `CheckBinding` 用的是登录态 owner
+（`feishu:<open_id>` / `local:<uuid>`），两者不等 → 判归属不符并拒绝服务。
+
+```
+第一轮：bindings 里还没有这个 session → CheckBinding 返回 nil（放行）
+        └─ Save 事务内 Capture 写入 binding，owner = local-owner  ← 埋雷
+第二轮：CheckBinding 读到 local-owner ≠ 登录 owner → 500            ← 引爆
+```
+
+这也解释了为什么它躲过了所有既有验收：单元测试全绿、`/health` 正常、
+`auth` 之后没人连着问过第二句。
+
+**同一类缺陷还有 4 处**：`internal/server/memory.go` 的 4 条路由
+（`GET /memory/facts`、`GET /memory/turns/{id}`、`DELETE /memory/facts/{id}`、
+`POST /memory/jobs/{id}/retry`）直接用 `s.memories.Repo`，多用户下等于让 A 读、删 B 的记忆。
+
+**修法**（沿用既有的「按请求身份派生副本」约定，不新增第二套身份来源）：
+
+| 位置 | 改动 |
+|---|---|
+| `internal/session/mysql.go` | 钩子签名由 `(ctx, tx, id, msgs)` 改为 `(ctx, tx, id, owner, msgs)`，owner 由 `save` 逐次传入；类型层面就不允许钩子再自己找身份 |
+| `internal/memory/coordinator.go` | 安装钩子时按 `e.Repo.For(e.OwnerScope(owner))` 派生；**新增 `Engine.OwnerScope`** 作为「请求身份 → 记忆归属」的唯一换算点 |
+| `internal/memory/coordinator.go` | `OwnerScope`：`local_single_user` 一律返回配置 `owner_id`，`multi_user` 返回登录 owner，登录 owner 为空时**原样返回**（让归属校验去拒绝，不静默回退到配置身份） |
+| `internal/server/service.go` | `CheckBinding` 与 `SetMemoryContext` 都改用 `OwnerScope(owner)` |
+| `internal/server/memory.go` | 4 条路由改为按请求身份派生的 `memoryRepo(r)` |
+
+`OwnerScope` 不是只为多用户写的：**单用户模式（`auth.enabled=false`）请求侧 owner 恒为空串**，
+若不归一化，binding 记在 `""` 下、读写却走配置 owner，第二次请求同样被判归属不符 ——
+也就是说本地 `make run` 的路径原本也是坏的，只是本地开发时同样没人连着问两句。
+
+**数据清理**：`memory_bindings` / `memory_turns` / `memory_jobs` / `memory_locks` 里
+8 条 `owner_id='local-owner'` 的残留会让**已经存在的会话**修完代码也仍然 500
+（`Capture` 用的是 `INSERT IGNORE`，不会覆盖旧绑定）。处置：备份后按 owner 删除，
+**未触碰 `conversations` / `messages`**。
+
+```bash
+# 备份（可读 TSV）：data/tmp/backup/local-owner-orphans.tsv
+docker exec -e MYSQL_PWD="$MYSQL_PASSWORD" -i my-eino-app-mysql-1 mysql -u"$MYSQL_USER" \
+  -D "$MYSQL_DATABASE" --batch -e "SELECT * FROM memory_bindings WHERE owner_id='local-owner';"
+# 清理（一个事务）
+DELETE FROM memory_jobs     WHERE owner_id='local-owner';
+DELETE FROM memory_facts    WHERE owner_id='local-owner';
+DELETE FROM memory_turns    WHERE owner_id='local-owner';
+DELETE FROM memory_bindings WHERE owner_id='local-owner';
+DELETE FROM memory_locks    WHERE owner_id='local-owner';
+```
+
+**验证（四层，缺一层都不足以证明）**：
+
+| 层 | 命令 / 断言 | 结果 |
+|---|---|---|
+| 单元 | `go test -p 1 ./internal/memory/` 的 `TestOwnerScope` | 4 个分支（单用户空/非空、多用户登录/空）全过 |
+| 集成 | `MEMORY_INTEGRATION=1 go test -p 1 ./internal/memory/ -run TestHookBindsRequestOwner` | 通过；**反证**：把钩子改回「忽略 owner」后该测试立刻报 `memory session scope mismatch`，证明它抓得住这个缺陷 |
+| 端点 | `node scripts/multiturn-check.mjs`（复刻前端顺序：`POST /auth/local` → `POST /sessions` → 两条 ws 带同一 id） | `same_session=true context_kept=true` |
+| 落库 | 会话 `f0a31daa`：`messages=4` / `execution_runs=2` / `memory_bindings.owner_id=local:8288b1c8…`（登录 owner，不再是 `local-owner`） | 全部符合预期 |
+
+**新增回归工具**：`scripts/multiturn-check.mjs`（Node 22+，用内置 `WebSocket`，无 npm 依赖）。
+这条路径此前**完全没有任何测试覆盖** —— 缺陷恰恰只在这一步暴露，所以工具比结论更重要：
+
+```bash
+node scripts/multiturn-check.mjs                      # 默认 http://localhost:18180 / admin
+node scripts/multiturn-check.mjs --base http://127.0.0.1:18181 --secret 41
+```
+
+**顺带修掉的前端泄漏**（`internal/server/web/app.js`）：每轮对话都 `new WebSocket(...)`，
+但旧连接既不关闭也不回收（`finishGeneration` 只把 `state.socket` 置空）。服务端为每条连接
+各留一个读循环与出站队列，长会话会一直堆积。现在发送前与结束后都走 `closeSocket()`。
+
 
 
 

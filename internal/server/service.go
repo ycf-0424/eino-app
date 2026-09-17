@@ -339,7 +339,8 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 	if s.memories != nil {
 		// 记忆的归属校验与检索都必须按当前登录身份派生 Repository，
 		// 否则会读到配置里那个 owner 的数据（多用户下就是串号）。
-		if err := s.memories.Repo.For(owner).CheckBinding(ctx, id); err != nil {
+		// OwnerScope 负责单用户/多用户两种模式的换算，见 memory.Engine.OwnerScope。
+		if err := s.memories.Repo.For(s.memories.OwnerScope(owner)).CheckBinding(ctx, id); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -372,7 +373,7 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 	// 持久化完整历史；只有传给模型的上下文才会压缩。
 	chat.SetHistory(history)
 	if s.memories != nil {
-		chat.SetMemoryContext(s.memories.ContextFor(owner))
+		chat.SetMemoryContext(s.memories.ContextFor(s.memories.OwnerScope(owner)))
 	}
 	chat.SetPersistence(func(messages []*schema.Message) error { return s.sessions.Save(owner, id, messages) }, s.cfg.Session.MaxMessages, s.cfg.Session.MaxChars)
 	return chat, preloaded, nil

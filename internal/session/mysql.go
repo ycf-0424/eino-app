@@ -19,13 +19,19 @@ import (
 
 // mysqlStore 保持现有会话 API，避免 HTTP 和命令行各实现一套存储逻辑。
 type mysqlStore struct {
-	db   *sql.DB
-	hook func(context.Context, *sql.Tx, string, []*schema.Message) error
+	db *sql.DB
+	// hook 在会话事务内执行（例如记忆抽取入队）。第二个参数之后的 owner 必须由
+	// save 逐次传入：hook 只在启动时安装一次，若它自己从「服务端配置」里取身份，
+	// 多用户模式下就会把每个登录用户的记忆都写到配置的那个 owner 名下。
+	hook func(context.Context, *sql.Tx, string, string, []*schema.Message) error
 }
 
 // SetTransactionHook is installed once before serving requests. It shares the
 // session transaction, so a completed message and its outbox job commit together.
-func (s *Store) SetTransactionHook(h func(context.Context, *sql.Tx, string, []*schema.Message) error) error {
+//
+// hook 的签名是 (ctx, tx, sessionID, owner, messages)：owner 是本次写入的归属，
+// 由调用方（即 save 的 owner 参数）传入，hook 不得改用配置里的 owner_id。
+func (s *Store) SetTransactionHook(h func(context.Context, *sql.Tx, string, string, []*schema.Message) error) error {
 	if s.mysql == nil {
 		return fmt.Errorf("transaction hook requires mysql")
 	}
@@ -402,7 +408,7 @@ func (s *mysqlStore) save(owner, id string, messages []*schema.Message) error {
 		return err
 	}
 	if s.hook != nil {
-		if err := s.hook(ctx, tx, id, messages); err != nil {
+		if err := s.hook(ctx, tx, id, owner, messages); err != nil {
 			return err
 		}
 	}
