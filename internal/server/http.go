@@ -63,6 +63,22 @@ func (s *Service) checkpointStoreFor(ctx context.Context) *checkpoint.FileStore 
 	return s.checkpoints.For(auth.OwnerFromContext(ctx))
 }
 
+// checkSessionOwner 校验 session 归属，越权返回 session.ErrForeignSession。
+//
+// 「不存在」与「归属他人」必须分开：前者是新会话的正常起点（沿用 id 继续），
+// 后者是越权，必须 403。execution 与 approval 这两条只按 id 取数据的路由
+// 依赖本方法 —— 它们的查询条件里没有 owner，不显式比对就等于「知道 id 即可读」。
+func (s *Service) checkSessionOwner(ctx context.Context, id string) error {
+	owner, exists, err := s.sessions.OwnerOf(id)
+	if err != nil {
+		return err
+	}
+	if !exists || owner == auth.OwnerFromContext(ctx) {
+		return nil
+	}
+	return session.ErrForeignSession
+}
+
 // resolveSessionID 决定本次请求使用的 session id。
 //
 // 规则（步骤 2.7）：
@@ -75,18 +91,10 @@ func (s *Service) resolveSessionID(ctx context.Context, requested string) (strin
 	if strings.TrimSpace(requested) == "" {
 		return uuid.NewString(), nil
 	}
-	owner, exists, err := s.sessions.OwnerOf(requested)
-	if err != nil {
+	if err := s.checkSessionOwner(ctx, requested); err != nil {
 		return "", err
 	}
-	switch {
-	case !exists:
-		return requested, nil
-	case owner == auth.OwnerFromContext(ctx):
-		return requested, nil
-	default:
-		return "", session.ErrForeignSession
-	}
+	return requested, nil
 }
 
 // handleCreateSession 由服务端签发一个新的 session id 并登记归属。
@@ -189,9 +197,16 @@ func (s *Service) handleApproval(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, response{Error: err.Error()})
 		return
 	}
+	id := r.PathValue("id")
+	// 审批票据本身已按 owner 分目录（拿别人的 id 也读不到），这里再补一层会话归属
+	// 校验，是为了让越权请求得到明确的 403，而不是被误读成「该会话没有待审批操作」。
+	if err := s.checkSessionOwner(r.Context(), id); err != nil {
+		writeSessionError(w, err)
+		return
+	}
 	var output bytes.Buffer
 	recorder := execution.NewRecorder(s.execCfg.MaxEventsPerRun)
-	result, err := s.ApproveWithSink(r.Context(), r.PathValue("id"), req.Approved, &output, recorder)
+	result, err := s.ApproveWithSink(r.Context(), id, req.Approved, &output, recorder)
 	if err != nil {
 		writeJSON(w, 400, response{Error: err.Error()})
 		return
@@ -225,10 +240,17 @@ func (s *Service) handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 // handleExecution 返回会话的执行记录与事件，供刷新回放与断线补取。
 // 未开启执行事件时返回空结构而不是错误，前端据此隐藏面板。
+//
+// 步骤 2.8：execution_runs 只靠 conversation_id 关联会话、没有 owner 冗余列，
+// 所以归属校验必须在这里做 —— 查出记录之前先确认这个会话就是调用方的。
 func (s *Service) handleExecution(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.checkSessionOwner(r.Context(), id); err != nil {
+		writeSessionError(w, err)
+		return
+	}
 	snapshot := executionSnapshot{Runs: []execution.Run{}, Events: []execution.Event{}}
 	if s.executions != nil {
-		id := r.PathValue("id")
 		runID := r.URL.Query().Get("run_id")
 		after, _ := strconv.ParseInt(r.URL.Query().Get("after_sequence"), 10, 64)
 		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))

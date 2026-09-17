@@ -8,12 +8,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"my-eino-app/internal/auth"
 	"my-eino-app/internal/checkpoint"
 	"my-eino-app/internal/config"
+	"my-eino-app/internal/execution"
 	"my-eino-app/internal/session"
 	"my-eino-app/internal/skill"
 )
@@ -44,7 +46,15 @@ func newMySQLOwnerService(t *testing.T) *Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Service{sessions: sessions, skills: skill.NewLoader(t.TempDir()), checkpoints: cp, cfg: cfg}
+	s := &Service{
+		sessions:    sessions,
+		skills:      skill.NewLoader(t.TempDir()),
+		checkpoints: cp,
+		cfg:         cfg,
+		// 手工程造 Service 时必须自己补齐 NewService 负责的并发原语：
+		// 审批路径经 acquireSession 取会话级锁，locks 为 nil 会 panic。
+		locks: map[string]chan struct{}{},
+	}
 	s.authSessions = auth.NewSessions(time.Hour)
 	s.authFeishu = auth.NewFeishuClient(cfg.Auth)
 	s.authUsers = auth.NewUserStore(nil)
@@ -198,6 +208,57 @@ func TestResolveSessionIDRejectsForeignOwner(t *testing.T) {
 	if got, err := service.resolveSessionID(ctxB, ""); err != nil || got == "" || got == idA {
 		t.Fatalf("empty resolve = %q, %v", got, err)
 	}
+}
+
+// 步骤 2.8 验收：execution 与 approval 都只按 session id 取数，没有 owner 过滤条件，
+// 所以「B 拿 A 的 id」必须在这里被显式拒绝（403），而不是回 200 空快照或
+// 「该会话没有待审批」这类业务错误 —— 后者会让越权看起来像参数问题。
+func TestCrossOwnerExecutionAndApprovalAreForbidden(t *testing.T) {
+	service := newMySQLOwnerService(t)
+	db := service.sessions.DB()
+	if db == nil {
+		t.Skip("mysql session store unavailable")
+	}
+	if _, err := db.ExecContext(context.Background(), "SELECT 1 FROM execution_runs LIMIT 0"); err != nil {
+		t.Skipf("execution schema is not installed: %v", err)
+	}
+	service.executions = execution.NewMySQLStore(db)
+
+	tokenA := mustToken(t, service, ownerA)
+	tokenB := mustToken(t, service, ownerB)
+	idA := issueSession(t, service, tokenA)
+	defer service.sessions.Delete(ownerA, idA)
+	defer service.DeleteExecutions(context.Background(), idA)
+
+	execPath := "/sessions/" + idA + "/execution"
+	if rec := doAs(t, service, tokenA, http.MethodGet, execPath); rec.Code != http.StatusOK {
+		t.Fatalf("owner A execution status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := doAs(t, service, tokenB, http.MethodGet, execPath); rec.Code != http.StatusForbidden {
+		t.Fatalf("owner B execution status=%d body=%s, want 403", rec.Code, rec.Body.String())
+	}
+
+	approvalPath := "/sessions/" + idA + "/approval"
+	if rec := doJSON(t, service, tokenB, http.MethodPost, approvalPath, `{"approved":true}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("owner B approval status=%d body=%s, want 403", rec.Code, rec.Body.String())
+	}
+	// 同一个路由对本人是可达的：返回的是业务错误（没有待审批的中断），不是 403。
+	// 这条断言把「越权被拒」和「路由本身不可用」区分开。
+	if rec := doJSON(t, service, tokenA, http.MethodPost, approvalPath, `{"approved":true}`); rec.Code == http.StatusForbidden {
+		t.Fatalf("owner A approval was rejected as foreign: body=%s", rec.Body.String())
+	}
+}
+
+func doJSON(t *testing.T, service *Service, token, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	}
+	rec := httptest.NewRecorder()
+	service.Handler().ServeHTTP(rec, req)
+	return rec
 }
 
 func mustToken(t *testing.T, service *Service, owner string) string {

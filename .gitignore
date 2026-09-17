@@ -2,6 +2,8 @@
 # config.yaml 纳入版本控制：不含真凭据，密钥请走 ${ENV_NAME} 或 config.ark.yaml
 *.exe
 *.log
+# 本地验收输出（make check / 集成测试重定向的日志），不进仓库
+/*.txt
 build/
 eino-server
 data/
