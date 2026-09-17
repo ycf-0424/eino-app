@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"my-eino-app/internal/config"
@@ -19,7 +20,10 @@ import (
 func main() {
 	addr := flag.String("addr", ":18180", "HTTP 监听地址")
 	flag.Parse()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// 必须同时捕获 SIGTERM：docker stop 默认发的是 SIGTERM，只监听 os.Interrupt
+	// 会导致容器停机时走不到下面的 server.Shutdown，10 秒优雅期与 defer service.Close()
+	// 全部失效，正在跑的请求被硬切、执行事件可能丢终态。
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg, err := config.Load()
 	if err != nil {
