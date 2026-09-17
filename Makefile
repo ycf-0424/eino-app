@@ -15,14 +15,14 @@ db-memory-indexes:
 sessions-import:
 	go run ./cmd/session-migrate -source data/sessions
 
-.PHONY: help fmt test vet check run build index retrieve eval \
+.PHONY: help fmt boundary test vet check run build index retrieve eval \
 	image infra-up up attu down restart ps logs app-logs
 
 help: ## 显示可用命令
 	@echo "make db-migrate  - 在现有 MySQL 项目库中初始化会话表"
 	@echo "make db-memory-indexes - 使用具备 ALTER 权限的账号补充记忆清理索引"
 	@echo "make sessions-import - 将本地 JSON 会话导入 MySQL"
-	@echo "make check       - 格式化、测试并执行静态检查"
+	@echo "make check       - 格式化、边界校验、测试并执行静态检查"
 	@echo "make run         - 在宿主机启动 Go 服务（127.0.0.1:18181）"
 	@echo "make infra-up    - 启动 MySQL/Milvus/etcd/MinIO"
 	@echo "make attu         - 启动 Milvus 和 Attu 管理界面"
@@ -35,13 +35,18 @@ help: ## 显示可用命令
 fmt: ## 格式化 Go 代码
 	go fmt ./...
 
+# 依赖边界守卫：compose/adk/callbacks 只允许出现在 internal/eino/ 内。
+# 用 Go 实现而非 grep 管道 —— 本机 make 走 cmd.exe，POSIX 写法在那里跑不起来。
+boundary: ## 校验 eino 编排 API 未扩散到 internal/eino 之外
+	go run ./cmd/boundary
+
 test: ## 运行不依赖外部服务的测试；串行编译避免本机内存不足
 	go test -p 1 ./...
 
 vet: ## 执行 Go 静态检查
 	go vet ./...
 
-check: fmt test vet ## 提交前完整检查
+check: fmt boundary test vet ## 提交前完整检查
 
 # 本地端口固定 18181：compose 的 app 服务已把宿主 18180 映射给容器（18180:8080），
 # 两者同时运行会抢占同一个 (IP, 端口)。Windows 下 Go 不设 SO_REUSEADDR，无法共存。
