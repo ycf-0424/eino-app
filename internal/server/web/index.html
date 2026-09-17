@@ -54,6 +54,12 @@
               <option value="">自动</option>
             </select>
           </label>
+          <!-- 登录态：认证开启时才显示（/auth/me 未启用时为 404，元素保持 hidden）。
+               显示格式为「名字（来源）」，登出走 GET /auth/logout。 -->
+          <div class="user-box" id="userBox" hidden>
+            <span class="user-name" id="userName"></span>
+            <button class="icon-button user-logout" id="logoutButton" type="button" title="退出登录" aria-label="退出登录">退出</button>
+          </div>
           <button class="icon-button" id="clearChat" type="button" title="删除当前会话" aria-label="删除当前会话">&#128465;</button>
         </div>
       </header>

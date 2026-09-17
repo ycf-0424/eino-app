@@ -36,7 +36,7 @@ button { color: inherit; }
 }
 
 .sidebar-top, .brand, .sidebar-footer, .topbar, .topbar-actions, .skill-control,
-.approval-actions, .composer-meta { display: flex; align-items: center; }
+.user-box, .approval-actions, .composer-meta { display: flex; align-items: center; }
 
 .sidebar-top { justify-content: space-between; min-height: 40px; }
 .brand { gap: 10px; font-size: 14px; font-weight: 650; }
@@ -123,6 +123,12 @@ button { color: inherit; }
 /* 技能名属于内部实现：只有 debug 模式才解除 hidden，因此需要显式覆盖上面共用的 display:flex。 */
 .skill-control[hidden] { display: none; }
 .skill-control select { height: 34px; max-width: 160px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); padding: 0 28px 0 10px; }
+
+/* 登录态区域：认证关闭时后端不注册 /auth/me，前端保持 hidden，不占位。 */
+.user-box { gap: 8px; }
+.user-box[hidden] { display: none; }
+.user-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.user-logout { width: auto; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; font-size: 12px; }
 
 .conversation {
 	width: 100%;

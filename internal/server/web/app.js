@@ -15,6 +15,10 @@ const state = {
   // 正在进行的「申请新会话」请求：连点新对话时复用同一次签发，
   // 避免在服务端留下多条空会话。
   newChatRequest: null,
+  // 当前登录身份（/auth/me 的返回体）；认证关闭时为 null，顶栏不显示用户区。
+  user: null,
+  // 防止并发请求同时收到 401 时重复导航。
+  redirectingToLogin: false,
 };
 
 const ui = Object.fromEntries([
@@ -22,7 +26,7 @@ const ui = Object.fromEntries([
   "statusDot", "statusText", "conversationState", "skillControl", "skillSelect", "clearChat", "welcome",
   "messages", "conversation", "composer", "promptInput", "sendButton", "requestStatus",
   "approvalPanel", "approvalDescription", "approveAction", "rejectApproval", "toast",
-  "deleteDialog", "confirmDelete",
+  "deleteDialog", "confirmDelete", "userBox", "userName", "logoutButton",
 ].map((id) => [id, document.getElementById(id)]));
 
 // 工具与事件的中文标签；未知名称直接展示原名，不伪造语义。
@@ -65,11 +69,25 @@ function errorLabel(code) {
   return ERROR_LABELS[code] || code;
 }
 
+// 登录态失效时统一跳登录入口。加锁是为了让并发请求同时收到 401 时只跳一次，
+// 否则多个 fetch 会各自触发一次导航。
+function redirectToLogin() {
+  if (state.redirectingToLogin) return;
+  state.redirectingToLogin = true;
+  location.replace("/auth/login");
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
   });
+  // 401 只可能来自认证开启且登录态失效/缺失的场景，此时前端留在页面上
+  // 只会反复报错，直接回登录入口。认证关闭时后端不会返回 401。
+  if (response.status === 401) {
+    redirectToLogin();
+    throw new Error("登录已过期，请重新登录");
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.error) throw new Error(payload.error || `请求失败 (${response.status})`);
   return payload.data;
@@ -956,6 +974,35 @@ async function loadSkills() {
   }
 }
 
+// 登录来源的中文说明；未知来源原样展示，不编造。
+const PROVIDER_LABELS = { feishu: "飞书", local: "账号" };
+
+// 「名字（来源）」：名字缺失时退回 owner，来源缺失时只显示名字。
+function displayName(me) {
+  const name = me?.name || me?.owner || "";
+  const provider = me?.provider || "";
+  const label = PROVIDER_LABELS[provider] || provider;
+  if (!label) return name;
+  return name ? `${name}（${label}）` : label;
+}
+
+// 认证开启时显示当前身份与登出入口。
+//
+// 三种情况都不报错：/auth/me 200 正常显示；认证关闭时该路由未注册（404），
+// 登录态失效时是 401（api 已跳转登录页）。前两种都只是保持隐藏。
+async function loadUser() {
+  try {
+    const me = await api("/auth/me");
+    state.user = me;
+    ui.userName.textContent = displayName(me);
+    ui.userName.title = me?.owner || "";
+    ui.userBox.hidden = false;
+  } catch {
+    state.user = null;
+    ui.userBox.hidden = true;
+  }
+}
+
 function openSidebar() { document.body.classList.add("sidebar-open"); }
 function closeSidebar() { document.body.classList.remove("sidebar-open"); }
 
@@ -976,6 +1023,8 @@ ui.promptInput.addEventListener("keydown", (event) => {
 });
 ui.newChat.onclick = startNewChat;
 ui.clearChat.onclick = () => requestDelete(state.sessionId);
+// 登出是 GET 且服务端 302 回登录入口，直接导航即可（无需前端清状态）。
+ui.logoutButton.onclick = () => { location.href = "/auth/logout"; };
 ui.openSidebar.onclick = openSidebar;
 ui.closeSidebar.onclick = closeSidebar;
 ui.sidebarScrim.onclick = closeSidebar;
@@ -989,6 +1038,8 @@ document.querySelectorAll("[data-prompt]").forEach((button) => button.onclick = 
 
 async function bootstrap() {
   startNewChat();
+  // 认证开启时才渲染用户区；与 /health 的调用相互独立，任一失败都不影响会话加载。
+  loadUser();
   try {
     const health = await api("/health");
     setHealth(true);
