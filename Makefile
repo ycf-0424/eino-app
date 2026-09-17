@@ -16,6 +16,7 @@ sessions-import:
 	go run ./cmd/session-migrate -source data/sessions
 
 .PHONY: help fmt boundary test vet check run build index retrieve eval \
+	backup restore-check \
 	image infra-up up attu down restart ps logs app-logs
 
 help: ## 显示可用命令
@@ -30,6 +31,8 @@ help: ## 显示可用命令
 	@echo "make down        - 停止容器，保留数据卷"
 	@echo "make index       - 使用宿主机 Go 将文档写入 Milvus"
 	@echo "make eval        - 执行固定 RAG 评测"
+	@echo "make backup      - 备份 MySQL 与 Milvus 数据卷（保留最近 14 份）"
+	@echo "make restore-check - 用最近一份备份做恢复演练并比对行数"
 	@echo "make logs        - 查看全部容器日志"
 
 fmt: ## 格式化 Go 代码
@@ -66,6 +69,14 @@ retrieve: ## 使用示例问题查看原始检索分数
 
 eval: ## 执行真实 Ollama + Milvus 固定评测
 	go run ./cmd/eval
+
+# 备份与恢复演练（步骤 5.3）。用 PowerShell 而非 make 内联命令：
+# dump 与卷打包都涉及字节流，make 走 cmd.exe 更容易被引号与编码坑到。
+backup: ## 备份 MySQL 与 Milvus 卷到 data/backups（保留最近 14 份）
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backup.ps1
+
+restore-check: ## 用最近一份备份做恢复演练并比对行数
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore-check.ps1
 
 image: ## 只构建应用镜像
 	docker build -t $(APP):local .

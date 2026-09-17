@@ -1,8 +1,12 @@
 .git
 .gitignore
 .env
+# 只进 builder 阶段、不进最终镜像，但里面有针对本项目的缺口分析，
+# 没必要让它出现在任何一层构建上下文里。
+.workbuddy
 data
 build
+scripts
 *.exe
 *.log
 Dockerfile*
