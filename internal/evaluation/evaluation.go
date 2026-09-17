@@ -18,6 +18,9 @@ type Case struct {
 	Expected     string `json:"expected"`
 	MustCite     string `json:"must_cite"`
 	ShouldRefuse bool   `json:"should_refuse"`
+	// ExpectSkills 是本题期望被加载的技能名。留空表示该题不参与路由评测 ——
+	// 「一个技能都不该加载」是另一种断言，混进来会让分母失真。
+	ExpectSkills []string `json:"expect_skills,omitempty"`
 }
 
 // CaseResult 类型。
@@ -39,6 +42,11 @@ type Report struct {
 	RefusalRate       float64      `json:"refusal_rate"`
 	AverageDurationMS float64      `json:"average_duration_ms"`
 	Cases             []CaseResult `json:"cases"`
+	// RoutingTotal / RoutingAccuracy 只统计声明了 expect_skills 的题目：
+	// 路由维度与答案维度用不同的分母，混在一起算会互相污染。
+	RoutingTotal    int           `json:"routing_total"`
+	RoutingAccuracy float64       `json:"routing_accuracy"`
+	Routing         []RouteResult `json:"routing,omitempty"`
 }
 
 // LoadCases 函数。
@@ -110,6 +118,98 @@ func Run(ctx context.Context, runner *chain.RAGChain, cases []Case, input func(s
 		report.RefusalRate = float64(refused) / float64(refusalRequired)
 	}
 	return report
+}
+
+// Router 跑一道题并返回本轮实际加载的技能名。
+//
+// 评测包只依赖这个接口，Agent 与技能目录的装配留给调用方：这样路由判定逻辑
+// 可以用假实现做单元测试（不需要真实模型），评测包也不会反向依赖 server。
+type Router interface {
+	Route(ctx context.Context, question string) (Routing, error)
+}
+
+// Routing 是一次 Agent 全链路执行的观测结果。
+type Routing struct {
+	Answer    string
+	Loaded    []string // 模型通过 load_skills 实际读取的技能
+	Requested []string // 模型在调用里请求过的技能（可能包含不存在的名字）
+	Preloaded []string // 本轮直接注入提示词的技能
+}
+
+// RouteResult 是一道题的路由判定结果。
+type RouteResult struct {
+	Question  string   `json:"question"`
+	Expected  []string `json:"expected_skills,omitempty"`
+	Loaded    []string `json:"loaded_skills,omitempty"`
+	Requested []string `json:"requested_skills,omitempty"`
+	Preloaded []string `json:"preloaded_skills,omitempty"`
+	// Missing 非空即未命中：它给出「期望但没加载」的清单，是排查路由问题的
+	// 第一手材料 —— 只给一个布尔值等于让人猜。
+	Missing []string `json:"missing_skills,omitempty"`
+	// Extra 是加载了但不在期望里的技能。不计入错误，仅用于观察是否过度加载。
+	Extra   []string `json:"extra_skills,omitempty"`
+	Matched bool     `json:"matched"`
+	Answer  string   `json:"answer,omitempty"`
+	Error   string   `json:"error,omitempty"`
+}
+
+// RunRouting 对声明了 ExpectSkills 的题目逐题执行 Agent 全链路并判定路由命中，
+// 返回逐题结果与命中率。没有声明期望的题目不计入分母。
+//
+// 判定是「覆盖」而非「相等」：期望的技能必须全部被加载（Loaded ⊇ Expected）。
+// 多加载记入 Extra 但不算错 —— 技能规则本身鼓励组合多个技能，把多加载判为错误
+// 会让指标变成噪音；而「该用的没用」才是路由质量要抓的问题。
+//
+// 只认 Loaded 不认 Preloaded：预加载是调用方注入的，不是模型的选择。
+func RunRouting(ctx context.Context, router Router, cases []Case) ([]RouteResult, float64) {
+	var results []RouteResult
+	matched, total := 0, 0
+	for _, item := range cases {
+		if len(item.ExpectSkills) == 0 {
+			continue
+		}
+		total++
+		result := RouteResult{Question: item.Question, Expected: item.ExpectSkills}
+		routing, err := router.Route(ctx, item.Question)
+		if err != nil {
+			result.Error = err.Error()
+		} else {
+			result.Answer = routing.Answer
+			result.Loaded = routing.Loaded
+			result.Requested = routing.Requested
+			result.Preloaded = routing.Preloaded
+			result.Missing = notIn(item.ExpectSkills, routing.Loaded)
+			result.Extra = notIn(routing.Loaded, item.ExpectSkills)
+			result.Matched = len(result.Missing) == 0
+		}
+		if result.Matched {
+			matched++
+		}
+		results = append(results, result)
+	}
+	accuracy := 0.0
+	if total > 0 {
+		accuracy = float64(matched) / float64(total)
+	}
+	return results, accuracy
+}
+
+// notIn 返回 want 中不属于 got 的元素，保持 want 的顺序并去重。
+func notIn(want, got []string) []string {
+	have := make(map[string]bool, len(got))
+	for _, name := range got {
+		have[name] = true
+	}
+	seen := make(map[string]bool, len(want))
+	var out []string
+	for _, name := range want {
+		if have[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 func normalize(value string) string {
