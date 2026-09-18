@@ -4,7 +4,7 @@ services:
     image: mysql@sha256:8fdf311514c91fa5014e93e98e19d7f5d9eb162a462c13100c956dacc278ee21
     command: ["mysqld"]
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "${MYSQL_BIND:-0.0.0.0}:${MYSQL_PORT:-3306}:3306"
     environment:
       # 原数据卷已初始化；这些变量供健康检查使用，不重置已有账号密码。
       MYSQL_USER: "${MYSQL_USER:?Configure MYSQL_USER in .env}"
@@ -141,4 +141,3 @@ volumes:
   milvus-minio:
   milvus-data:
   app-data:
-

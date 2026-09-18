@@ -1233,11 +1233,13 @@ runtime:
 
 **验收**：停掉 MySQL 后 `/health` 仍 200、`/health/ready` 返回非 200 且指出是哪一项失败；恢复 MySQL 后 `/health/ready` 自动回到 200。
 
-### 步骤 5.5a　生产 bootstrap（运维端口开放期间执行）
+### 步骤 5.5a　生产 bootstrap（正式上线前的一次性初始化）
 
 生产镜像只包含 `cmd/server`，不在容器内执行 `user-admin`、`session-migrate`、`indexer` 或 `eval`。在关闭宿主机端口前，使用宿主机 Go 环境通过临时的 `127.0.0.1:3306` 运维映射连接生产 MySQL：
 
-bootstrap 不依赖尚未完成的生产 Compose：现有 Compose 保持原有默认绑定行为，bootstrap 时必须显式设置 `MYSQL_BIND=127.0.0.1` 后再启动数据库；禁止在本项目 bootstrap 操作中使用 `0.0.0.0`。这条操作纪律不改变其他项目共用数据卷的默认配置。bootstrap 验收通过后，5.6a 再切换到独立生产 Compose，删除 MySQL 宿主机映射。若选择把 CLI 打进独立运维镜像，也必须保持同样的先 bootstrap、后封端口顺序。
+bootstrap 只用于正式上线前的一次性初始化，不是最终运行形态。现有开发 Compose 保持原有默认绑定行为；bootstrap 时必须显式设置 `MYSQL_BIND=127.0.0.1` 后启动数据库，禁止在本项目操作中使用 `0.0.0.0`。这条操作纪律不改变其他项目共用数据卷的默认配置。
+
+bootstrap 验收通过后，必须切换到 5.6a 的独立生产 Compose。正式生产启动不得再使用开发 Compose，不发布 MySQL、Milvus、Attu 的宿主机端口，也不依赖宿主机上的 `user-admin` 或 `session-migrate` 才能启动应用。运维 CLI 只在 bootstrap 和后续维护窗口使用；应用通过 Docker 内部网络连接 MySQL。若选择把 CLI 打进独立运维镜像，也不能把它作为正式用户流量容器运行。
 
 CLI 必须显式指向生产 MySQL，不能依赖当前目录的 `config.yaml` 默认 file store：
 
@@ -1254,7 +1256,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 **提交边界**：`chore(deploy): define production bootstrap procedure`；现有 Compose 的 loopback 绑定和生产变量说明属于本子步骤。
 
-**验收**：管理员登录成功；`local-owner` 下历史会话和记忆已迁移；从非宿主机地址无法连接 3306；CLI 不依赖应用容器存在。
+**验收**：管理员登录成功；`local-owner` 下历史会话和记忆已迁移；bootstrap 期间 MySQL 只监听 `127.0.0.1`；CLI 不依赖应用容器存在；切换后由生产 Compose 内部网络连接数据库。
 
 ### 步骤 5.5b　上线前配置切换（生产部署最后一步）
 
@@ -1307,7 +1309,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 在 `internal/server/service.go` 的请求装配路径增加动作 + 对象判定：命中报告生成时服务端预加载 `report_writer`，命中文本/DOCX 读取时预加载 `documents`。该预加载属于服务端内部上下文，不重新开放 `GET /skills`、请求体 `skill` 字段或技能名展示；`requestedSkill()` 的 debug 门禁只继续保护客户端指定技能和目录暴露。
 
-预加载应复用 agent 现有 instruction/context 注入路径，并使用已有的 `SkillPreloaded` 事件记录；知识预检索新增并注册 `KnowledgePreflight` 事件。工具实际开始/完成仍记录工具事件。新增路由单测覆盖动作、对象、组合请求、未命中和 debug=false，不允许通过单个关键词误触发。
+预加载应复用 agent 现有 instruction/context 注入路径，并使用已有的 `SkillPreloaded` 事件记录；知识预检索新增并注册 `KnowledgePreflight` 事件。知识预检索若不经过工具管线，必须在事件 payload 中保留命中数、来源和拒答原因；若复用工具管线，则必须产生标准 `tool_started`/`tool_completed` 事件。新增路由单测覆盖动作、对象、组合请求、未命中和 debug=false，不允许通过单个关键词误触发。
 
 **提交边界**：`feat(routing): preload connected skills server side`。
 
@@ -1345,12 +1347,12 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 | 子步骤 | 必须动作与受影响文件 | 提交边界 | 验收命令/断言 |
 |---|---|---|---|
-| 5.6a 网络 Compose | 新增独立生产 Compose 文件 `docker-compose.prod.yml`，不与开发 Compose 叠加，删除 MySQL/Milvus/Attu 的宿主机 `ports`，应用只绑定代理内网；Attu 默认不启动；应用镜像改为 `${APP_VERSION}` 不可变标签 | `chore(deploy): add production network compose` | `docker compose -f docker-compose.prod.yml config`；`docker compose -f docker-compose.prod.yml ps`；从用户网段扫描确认仅 HTTPS 入口可达 |
+| 5.6a 网络 Compose | 新增独立生产 Compose 文件 `docker-compose.prod.yml`，不与开发 Compose 叠加；生产文件不包含 MySQL、Milvus、Attu 的宿主机 `ports`，应用只绑定代理内网；Attu 默认不启动；应用镜像改为 `${APP_VERSION}` 不可变标签 | `chore(deploy): add production network compose` | 停止开发 Compose 后执行 `docker compose -f docker-compose.prod.yml config` 和 `docker compose -f docker-compose.prod.yml up -d`；确认 MySQL/Milvus/Attu 无宿主机端口，应用健康检查通过，从用户网段只能访问 HTTPS 入口 |
 | 5.6b 代理配置 | 新增并纳入部署文档的 Nginx 配置：TLS、HSTS、`proxy_read_timeout 210s`、WebSocket Upgrade、关闭 buffering、`limit_req`；按真实客户端 IP 在代理层限流 | `chore(proxy): add production reverse proxy policy` | `nginx -t`；浏览器登录/回调；WebSocket 连通；同一真实 IP 超过阈值返回 429 |
 | 5.6c 回调保护 | `internal/server/auth.go` 为 `/auth/callback` 增加按 IP 和回调状态的限流；应用侧仍只使用 `RemoteAddr` 兜底，不读取 XFF | `fix(auth): throttle oauth callback` | 新增回调限流单测；超过阈值返回 `429 + Retry-After`；合法回调仍能完成登录 |
-| 5.7a 确定性预检索 | 在 `internal/server/service.go` 的请求装配路径增加服务端知识意图判定和 `knowledge_search` 预检索；结果注入 agent instruction/history；服务端主动记录 `knowledge_search` 检索事件，不通过 debug 技能目录，不向用户暴露技能名；无命中统一回复“知识库中没有足够资料，无法确认” | `feat(routing): enforce knowledge preflight` | 路由单测覆盖命中、无命中、普通问答；集成测试检查主动检索事件、来源和拒答文本；非 debug 响应不含技能名 |
+| 5.7a 确定性预检索 | 在 `internal/server/service.go` 的请求装配路径增加服务端知识意图判定和 `knowledge_search` 预检索；结果注入 agent instruction/history；服务端主动记录 `knowledge_preflight`，或复用工具管线产生标准 `tool_started`/`tool_completed` 事件，不通过 debug 技能目录，不向用户暴露技能名；无命中统一回复“知识库中没有足够资料，无法确认” | `feat(routing): enforce knowledge preflight` | 路由单测覆盖命中、无命中、普通问答；集成测试检查预检索事件、来源和拒答文本；非 debug 响应不含技能名 |
 | 5.7b 评测重写 | 重写 `internal/integration/eval_cases.json`：执行类题增加可判定答案断言；空壳文件技能改为能力限制断言；增加知识库无命中用例 | `test(eval): assert production routing and answer boundaries` | `go test -p 1 ./internal/evaluation/...`；`make eval` 输出路由、断言、拒答和工具证据指标 |
-| 5.7c 已接入技能预加载 | `SkillPreloaded` 已在 `internal/execution/event.go` 定义并列入 `knownTypes`；本步骤只在 `internal/server/service.go` 增加报告/文档动作+对象判定，服务端预加载 `report_writer`/`documents`，并新增 `KnowledgePreflight` 事件类型；`requestedSkill()` 继续保护客户端技能指定 | `feat(routing): preload connected skills server side` | `go test -p 1 ./internal/server/... ./internal/execution/...`；4 类正例产生预加载/预检索事件，空壳技能不预加载，debug=false 不暴露技能名 |
+| 5.7c 已接入技能预加载 | `SkillPreloaded` 已在 `internal/execution/event.go` 定义并列入 `knownTypes`；本步骤只在 `internal/server/service.go` 增加报告/文档动作+对象判定，服务端预加载 `report_writer`/`documents`，并新增 `KnowledgePreflight` 事件类型；`requestedSkill()` 继续保护客户端技能指定；同步更新 `internal/server/web/app.js` 的非 debug 过滤和知识来源渲染 | `feat(routing): preload connected skills server side` | `go test -p 1 ./internal/server/... ./internal/execution/...`；4 类正例产生预加载/预检索事件，空壳技能不预加载，debug=false 不暴露事件名或技能名，知识来源可见 |
 | 5.8a 并发保护 | 在 `internal/server/service.go:enter` 增加 `runtime.queue_limit` 和 `runtime.queue_timeout`；满队列立即返回可识别错误 | `feat(runtime): bound concurrency queue` | 单测：并发槽满时等待不超过 5 秒，返回 503；配置校验拒绝非正数 |
 | 5.8b 超时和状态指标 | `internal/server/http.go` 将 `context.DeadlineExceeded` 映射为 `504`；扩展 `Stats` 按状态码和错误原因计数，区分超时与其他 5xx | `fix(http): report model timeout as 504` | HTTP 单测断言超时为 504；`/metrics` 输出 `status_5xx`、`timeouts`；非超时 5xx 可单独计算 |
 | 5.8c 发布回滚 | 修改 `Dockerfile`/生产 Compose/`Makefile`：版本由 `APP_VERSION` 注入；生产 Compose 文件不含 `build:`，只保留 `image: ${APP_VERSION}`；`make image VERSION=x` 构建，保留上一版本并提供 `make rollback VERSION=x` | `chore(release): make image versions rollbackable` | 连续构建两个版本；切换标签后 `docker compose ... up -d` 不重新构建；上一版本健康检查通过 |
@@ -1362,7 +1364,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 **门槛计算口径**：关键技能召回率只统计确定性路由用例；工具执行证据率由 `make eval` 统计执行类请求中至少存在一组 `tool_started`/`tool_completed`、`knowledge_preflight` 或 `skill_preloaded` 事件的比例；检查清单第 11 项使用同一组事件名。非超时 5xx 由受保护 `/metrics` 统计 HTTP 500–599 中排除 `context deadline exceeded` 的部分。两套出口都必须直接产出指标，不能依靠人工从日志估算。
 
-**最终上线顺序**：5.5a bootstrap → 5.6a–c → 5.7a–c → 5.8a–c → 5.9a–c → 5.10a–b → 总验收清单 → 5.5b 配置切换 → 3–7 天内部灰度。任一子步骤失败都不得进入下一组。
+**最终上线顺序**：5.5a 一次性 bootstrap → 5.6a–c → 5.7a–c → 5.8a–c → 5.9a–c → 5.10a–b → 总验收清单 → 5.5b 配置切换 → 停止开发 Compose → 用 `docker-compose.prod.yml` 从零启动生产栈 → 3–7 天内部灰度。任一子步骤失败都不得进入下一组。
 
 ---
 
@@ -1449,10 +1451,11 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 - [ ] 第一阶段通过 HTTPS 反向代理访问，`CookieSecure: true`；仅开发环境 HTTP 才允许 `false`
 - [ ] 历史会话已用 `go run ./cmd/session-migrate -claim-owner=<owner>` 归属（**不要用 `admin_open_id`，该字段已废弃删除**；迁移路径见 RUNBOOK 第 293 行附近）
 - [ ] 生产 Compose 已删除不必要的数据库、Milvus、Attu 端口发布；Attu 默认关闭或仅管理网可达
+- [ ] 已停止开发 Compose，并用 `docker-compose.prod.yml` 从零启动生产栈；正式启动不依赖 `MYSQL_BIND`、宿主机 MySQL 端口或宿主机 CLI
 - [ ] 反向代理已配置 HTTPS、真实客户端 IP、180 秒以上读超时和 WebSocket Upgrade 透传；`/auth/callback` 已限流
 - [ ] 生产镜像使用不可变版本标签，上一版本可切换，回滚不依赖重新构建
 - [ ] 表格、PDF、PPT 的未接入能力已在产品文案和验收中明确，未承诺生成或编辑文件
-- [ ] 私有知识请求实际产生 `knowledge_search` 事件并带来源；技能或 embedding 变更后已重跑 `make eval`
+- [ ] 私有知识请求实际产生 `knowledge_preflight`，或标准 `tool_started`/`tool_completed`（`tool_name=knowledge_search`）事件并带来源；技能或 embedding 变更后已重跑 `make eval`
 - [ ] 并发排队有上限和超时；模型超时返回 `504`，与普通 `500` 分开统计
 - [ ] 备份包含 MySQL、Milvus 和 `app-data`；manifest SHA256、恢复行数和非空数据检查均通过，备份不与生产同盘
 - [ ] 备份告警、健康告警、模型/工具失败告警和磁盘告警已有通知通道；日志有大小上限和轮转策略
@@ -1528,9 +1531,9 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 - `docker-compose.prod.yml`（新增，步骤 5.6a）
 - `deploy/nginx/eino.conf`（新增，步骤 5.6b）
 - `internal/server/auth.go`、对应测试（步骤 5.6c）
-- `internal/execution/event.go`、`internal/execution/emitter.go`、对应测试（步骤 5.7a/5.7c 事件白名单）
+- `internal/execution/event.go`、对应测试（步骤 5.7a/5.7c 新增 `KnowledgePreflight` 白名单；`SkillPreloaded` 已存在）
+- `internal/server/web/app.js`（步骤 5.7c 非 debug 事件过滤和预检索来源渲染）
 - `internal/server/service.go`、路由测试和 agent 装配代码（步骤 5.7a、5.8a、5.9a）
-- `internal/execution/event.go`、`internal/execution/emitter.go`、对应测试（步骤 5.7a/5.7c 的预检索和预加载事件白名单）
 - `internal/integration/eval_cases.json`、`internal/evaluation/evaluation.go`、`cmd/eval/main.go`（步骤 5.7b、5.10a；与阶段 4 的评测改动合并提交）
 - `internal/server/http.go`、`internal/server/service.go`、配置校验和测试（步骤 5.8a–b）
 - `Dockerfile`、`docker-compose.prod.yml`、`Makefile`（步骤 5.8c）

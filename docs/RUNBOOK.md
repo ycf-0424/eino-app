@@ -1808,7 +1808,7 @@ docker compose -f docker-compose.milvus.yml up -d   # milvus/etcd/minio 需要�
 
 ### 14.24 方案复核收口：备份兼容性、WebSocket 限流与 session 签发
 
-2026-09-18 再按总验收清单执行时发现并修复三处偏差：
+2026-09-18 再按总验收清单执行时发现并修复五处偏差：
 
 | 项 | 修正 | 验证 |
 |---|---|---|
@@ -1817,5 +1817,7 @@ docker compose -f docker-compose.milvus.yml up -d   # milvus/etcd/minio 需要�
 | session id | 新会话只接受服务端签发；续聊只接受已登记且属于当前 owner 的 id；未知 id 拒绝，帧内 id 忽略 | 单元测试覆盖空 id、未知 id、本人 id、他人 id；真实两轮 WebSocket 回归保持同一会话 |
 | readiness | `memory.enabled=true` 时始终探测 Milvus 与 embedding 服务，不再受 `rag.store` 是否为 milvus 限制 | 新增 `rag.store=redis + memory.enabled` 的失败用例 |
 | 定时任务 | 创建 Windows 任务 `eino-backup`，由 `SYSTEM` 每 6 小时执行 `scripts/backup.ps1` | 手工触发完成，任务回到 `Ready` 且 `Last Result=0` |
+
+本批修复对应提交 `02fad4f`，包含会话签发、WebSocket 限流、readiness、备份脚本和方案文档；后续回退应按提交整体使用 `git revert 02fad4f`，不要在共享工作区重置。
 
 飞书凭据状态也已复核：`scripts/feishu-check.ps1` 五项通过，14.15 中旧的“Secret 无效”状态已更新。
