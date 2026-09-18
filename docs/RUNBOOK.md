@@ -1668,8 +1668,15 @@ powershell -File scripts/feishu-probe-secret.ps1 -Write       # 检出并写回 
 
 **数据清理**：`memory_bindings` / `memory_turns` / `memory_jobs` / `memory_locks` 里
 8 条 `owner_id='local-owner'` 的残留会让**已经存在的会话**修完代码也仍然 500
-（`Capture` 用的是 `INSERT IGNORE`，不会覆盖旧绑定）。处置：备份后按 owner 删除，
+（`Capture` 用的是 `INSERT IGNORE`，不会覆盖旧绑定）。处置：按 owner 删除，
 **未触碰 `conversations` / `messages`**。
+
+> ⚠️ **这次备份实际是失败的，不要把它当成成功案例**。`mysqldump` 报
+> `LOCK TABLES` 被拒（1044）+ 缺 `PROCESS` 权限 + `column_masking_policy` 无 SELECT，
+> 产物只有 999 字节、**0 条 `INSERT`**，而删除照旧执行了。可用留存只有
+> `data/tmp/backup/local-owner-orphans.tsv`（被删行的 SELECT 明细）。
+> 教训：**「有备份文件」≠「备份成功」**，破坏性操作前必须验证产物里真的有数据。
+> 本库可用的导出参数见 14.21。
 
 ```bash
 # 备份（可读 TSV）：data/tmp/backup/local-owner-orphans.tsv
@@ -1703,6 +1710,89 @@ node scripts/multiturn-check.mjs --base http://127.0.0.1:18181 --secret 41
 **顺带修掉的前端泄漏**（`internal/server/web/app.js`）：每轮对话都 `new WebSocket(...)`，
 但旧连接既不关闭也不回收（`finishGeneration` 只把 `state.socket` 置空）。服务端为每条连接
 各留一个读循环与出站队列，长会话会一直堆积。现在发送前与结束后都走 `closeSocket()`。
+
+---
+
+### 14.21 「会话废了」的第二层：一次失败的回合会永久毒死这个会话（已修）
+
+14.20 修完之后，**新建**的会话多轮正常，但**已经存在的**会话依然打不通。把
+`multiturn-check.mjs` 加上 `--session <id>` 去续问一条历史会话，才暴露出来。
+
+**现象**：对 `a55ae34b` 续问两次，都在 **1ms** 内返回 400（模型没被调用）：
+
+```
+[NodeRunError] error, status code: 400, message: invalid message content type: <nil>
+node path: [node_1, ChatModel]
+```
+
+**根因**：一轮对话在调模型前会先落一条助手占位消息（`agent.go:beginReply`，
+`storage_status=generating`，内容为空串），失败时 `finishReply` 把它标成 `failed`，
+**内容仍是空串**。`load` 会原样把所有行读回历史，`CompactHistory` 再把它交给模型 ——
+eino 不接受「既没有内容也没有工具调用」的助手消息，直接 400。
+
+于是一个失败的回合会留下一条永久脏记录：**此后这个会话的每一轮都失败**，用户看到的就是
+「这个会话废了」，而且新建会话不会复现。首轮被 14.20 那个缺陷快速失败过的会话
+（44ms、模型没跑）全部落入这个状态。
+
+**爆炸半径**（2026-09-18 实测）：`role='assistant' AND CHAR_LENGTH(content)=0` 共 **58 条、
+status 全是 `failed`**，分布在 **56 个会话**里 —— `local:8288b1c8…` 42 个、
+`local:19677696…` 14 个，**飞书账号 0 个**（用户真实浏览器会话没被污染）。
+
+**修法**：只在 `CompactHistory`（`internal/session/session.go`）里过滤，不动数据库、
+不动 `a.history`：
+
+| 决策 | 理由 |
+|---|---|
+| 过滤放在 `CompactHistory` 而不是 `load` | `load` 的结果要用来做保存时的前缀比对（`save` 要求数组下标 == 库里的 `sequence`），少一条就报 `session changed`。`CompactHistory` 是「送模型」那一步，只影响输入 |
+| 脏记录**保留在库里** | 它是「这一轮失败了」的唯一记录，前端要靠它显示失败；删数据能治症但丢信息 |
+| 只剔助手消息，不剔用户消息 | 失败回合里用户问的那句是真实输入，该保留 |
+| 判据是 Content + 多模态片段 + ToolCalls 全空 | 纯工具调用的助手消息是合法一轮，不能因 Content 为空就丢 |
+
+改完等于**一次性修好全部 56 个存量会话**，不需要数据迁移。
+
+**验证**：
+
+| 层 | 命令 / 断言 | 结果 |
+|---|---|---|
+| 单元 | `go test -p 1 ./internal/session/ -run CompactHistory`（新增 5 条） | 全过：剔除空占位 / 保留工具调用 / 摘要不写空行 / 空白内容也剔 / 用户消息不误删 |
+| 端点 | `node scripts/multiturn-check.mjs --session a55ae34b-…`（**就是那条被毒死的会话**） | `round 1=收到。` `round 2=41` `same_session=true context_kept=true` |
+| 落库 | 同一会话：新增 `seq 6..9`（助手 3 字符 / 2 字符，均 completed），`execution_runs` 从 2 failed 变 2 failed + 2 completed | 符合预期 |
+| 绑定 | `memory_bindings.owner_id` = `local:8288b1c8…`（登录 owner，不再是 `local-owner`） | 14.20 的修复也确认生效 |
+
+**顺带定下的两件事**：
+
+1. **`multiturn-check.mjs --session <id>`** —— 新会话多轮正常**不能**证明存量会话正常。
+   回归时两种都要跑：新建（`create`）与续用（`reuse`）。
+2. **本库可用的 `mysqldump` 参数**（14.20 那次备份失败的正解，实测 11 张表、174KB、exit 0）：
+
+```bash
+docker exec -e MYSQL_PWD="$MYSQL_PASSWORD" -i my-eino-app-mysql-1 \
+  mysqldump -u"$MYSQL_USER" --no-tablespaces --single-transaction --skip-lock-tables \
+    --set-gtid-purged=OFF --no-create-info --complete-insert "$MYSQL_DATABASE" \
+    conversations messages memory_turns ... > backup.sql
+grep -c "INSERT INTO" backup.sql   # 必须 > 0，否则备份是假的
+```
+
+`--skip-lock-tables`（避开被拒的 `LOCK TABLES`）+ `--no-tablespaces`（避开 `PROCESS`）
+是关键；剩下的 `column_masking_policy` 报错只是警告，不影响数据。
+
+### 14.22 Docker Desktop 冷启动：`Start-Process` 拉不起来，用 `docker desktop start`
+
+机器重启后 Docker 引擎不在，容器 `Exited (255)`。用 PowerShell 的 `Start-Process` 打开
+`Docker Desktop.exe` **会失败**：进程能短暂出现，但后端日志停在启动后 0.1s
+（`com.docker.backend.exe.log` 只写到版本信息就没了），随后进程树被连同调用会话一起回收。
+可用的路径是官方 CLI：
+
+```bash
+docker desktop start        # ✓ Starting Docker Desktop（约 25s 后引擎就绪）
+docker compose -f docker-compose.milvus.yml up -d   # milvus/etcd/minio 需要单独补起
+```
+
+引擎重启后 `app`/`mysql` 会自动起来（restart 策略），但 `milvus`/`etcd`/`minio`/`attu`
+停在 `Exited (255)`，要跑一次 `compose up -d` 补齐。**app 起来后会连续重试连 milvus
+并打一堆 `Milvus Proxy is not ready yet`**，那是等待期噪音，不是故障；milvus healthy 后
+`/health` 与 `/health/ready` 都会恢复。
+
 
 
 

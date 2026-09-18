@@ -72,6 +72,68 @@ func TestCompactHistoryCreatesSummary(t *testing.T) {
 	}
 }
 
+// 失败回合留下的空助手占位必须被剔除，否则 eino 会报
+// "invalid message content type: <nil>"，且该会话此后每轮都失败。
+func TestCompactHistoryDropsEmptyAssistantPlaceholder(t *testing.T) {
+	messages := []*schema.Message{
+		schema.UserMessage("第一问"),
+		schema.AssistantMessage("", nil), // 失败回合的占位
+		schema.UserMessage("第二问"),
+	}
+	got := CompactHistory(messages, 0, 0)
+	if len(got) != 2 {
+		t.Fatalf("空助手占位没有被剔除: %+v", got)
+	}
+	for _, m := range got {
+		if m.Role == schema.Assistant {
+			t.Fatalf("仍残留助手消息: %+v", got)
+		}
+	}
+	// 失败回合里用户问的那句是真实输入，必须保留。
+	if got[0].Content != "第一问" || got[1].Content != "第二问" {
+		t.Fatalf("用户消息被误删: %+v", got)
+	}
+}
+
+// 纯工具调用的助手消息是合法的一轮，不能因为 Content 为空就丢掉。
+func TestCompactHistoryKeepsToolCallAssistant(t *testing.T) {
+	toolCall := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "call-1", Type: "function",
+		Function: schema.FunctionCall{Name: "current_time", Arguments: "{}"},
+	}})
+	messages := []*schema.Message{schema.UserMessage("现在几点"), toolCall}
+	got := CompactHistory(messages, 0, 0)
+	if len(got) != 2 || got[1] != toolCall {
+		t.Fatalf("工具调用消息被误删: %+v", got)
+	}
+}
+
+// 裁掉消息时生成的摘要不能把空占位写成「助手: 」（空行）。
+func TestCompactHistorySummarySkipsPlaceholder(t *testing.T) {
+	messages := []*schema.Message{
+		schema.UserMessage("旧问题"),
+		schema.AssistantMessage("", nil), // 占位
+		schema.UserMessage("新问题"),
+		schema.AssistantMessage("新回答", nil),
+	}
+	got := CompactHistory(messages, 2, 1000)
+	if len(got) != 3 || got[0].Role != schema.System {
+		t.Fatalf("unexpected compact history: %+v", got)
+	}
+	if summary := got[0].Content; summary != summaryPrefix+"用户: 旧问题" {
+		t.Fatalf("摘要里混入了空占位: %q", summary)
+	}
+}
+
+// 空白的助手消息（只有空格/换行）同样不可用。
+func TestCompactHistoryDropsWhitespaceAssistant(t *testing.T) {
+	messages := []*schema.Message{schema.UserMessage("问"), schema.AssistantMessage("  \n ", nil)}
+	got := CompactHistory(messages, 0, 0)
+	if len(got) != 1 || got[0].Role != schema.User {
+		t.Fatalf("空白助手消息没有被剔除: %+v", got)
+	}
+}
+
 func TestListDeleteAndCleanup(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {

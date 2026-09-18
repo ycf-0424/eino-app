@@ -73,8 +73,11 @@ func TrimHistory(messages []*schema.Message, maxMessages int, maxChars int) []*s
 // CompactHistory 将被裁掉的旧消息压缩为确定性摘要，并保留最近消息。
 // 这里不额外调用模型，避免每轮会话都增加 Ollama 推理开销。
 func CompactHistory(messages []*schema.Message, maxMessages, maxChars int) []*schema.Message {
-	trimmed := TrimHistory(messages, maxMessages, maxChars)
-	if len(trimmed) == len(messages) {
+	// 先剔除模型不接受的消息，再做裁剪：摘要与保留集必须基于同一份列表，
+	// 否则被剔掉的消息会以「助手: （空）」的形式回到摘要里。
+	usable := withoutEmptyAssistant(messages)
+	trimmed := TrimHistory(usable, maxMessages, maxChars)
+	if len(trimmed) == len(usable) {
 		return trimmed
 	}
 	kept := make(map[*schema.Message]struct{}, len(trimmed))
@@ -82,7 +85,7 @@ func CompactHistory(messages []*schema.Message, maxMessages, maxChars int) []*sc
 		kept[message] = struct{}{}
 	}
 	var lines []string
-	for _, message := range messages {
+	for _, message := range usable {
 		if message == nil {
 			continue
 		}
@@ -105,6 +108,46 @@ func CompactHistory(messages []*schema.Message, maxMessages, maxChars int) []*sc
 	summary := schema.SystemMessage(summaryPrefix + strings.Join(lines, "\n"))
 	// 摘要作为系统上下文放在最近消息之前，不会被误认为新的用户问题。
 	return append([]*schema.Message{summary}, trimmed...)
+}
+
+// withoutEmptyAssistant 剔除「既没有内容、也没有工具调用」的助手消息。
+//
+// 这类消息不是对话内容，而是**失败回合留下的占位记录**：agent 在调模型前先落一条
+// status=generating 的占位（用来识别异常退出），回合失败时它被改成 status=failed，
+// 内容仍是空串（见 internal/eino/agent/agent.go 的 beginReply / finishReply）。
+// 留在库里是对的——前端要靠它显示「这一轮失败了」；但绝不能送进模型：
+// eino 会直接报 `invalid message content type: <nil>`，而且这条记录一旦落库就
+// 永远留在历史里，于是**这个会话此后每一轮都失败**，用户看到的是「会话废了」。
+//
+// 2026-09-18 实测：a55ae34b 的首轮就是被记忆归属缺陷快速失败的（44ms，模型没被调用），
+// 之后连续两次续问都在 1ms 内报同一个 400；库里 56 个会话有同样形状的脏记录。
+// 在「送模型」这一步统一过滤，等于一次性修好所有这些存量会话，不用改数据。
+//
+// 只过滤助手消息：用户消息是真实输入（哪怕是失败回合里问的），保留。
+func withoutEmptyAssistant(messages []*schema.Message) []*schema.Message {
+	out := make([]*schema.Message, 0, len(messages))
+	for _, m := range messages {
+		if m == nil {
+			continue
+		}
+		if m.Role == schema.Assistant && isEmptyAssistant(m) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func isEmptyAssistant(m *schema.Message) bool {
+	if strings.TrimSpace(m.Content) != "" {
+		return false
+	}
+	// 多模态片段或工具调用都是有效内容，不能只看 Content。
+	if len(m.MultiContent) > 0 || len(m.UserInputMultiContent) > 0 || len(m.AssistantGenMultiContent) > 0 {
+		return false
+	}
+	// 纯工具调用的助手消息是合法的一轮（模型要工具、还没说话）。
+	return len(m.ToolCalls) == 0
 }
 
 var validID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)

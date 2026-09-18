@@ -12,7 +12,11 @@
 // 用法（Node 22+，内置 WebSocket，无需 npm 依赖）：
 //   node scripts/multiturn-check.mjs
 //   node scripts/multiturn-check.mjs --base http://localhost:18180 --user admin --pass admin123
+//   node scripts/multiturn-check.mjs --session <已有会话 id>     # 续用已有会话，不新建
 // 退出码 0 = 两轮都通过且第二轮答出了第一轮埋的数字；1 = 任一项不满足。
+//
+// --session 的用途：验证「修复前只问过一次的历史会话，现在还能不能接着问」。
+// 修复前那些会话已经在库里留下 2 条消息 / 1 个 run，新建会话测不出这个场景。
 //
 // 前提：服务端 auth 开启时需有可用的本地账号（go run ./cmd/user-admin）；
 // 容器部署下 base 用 http://localhost:18180。
@@ -29,6 +33,7 @@ const USER = arg("user", "admin");
 const PASS = arg("pass", "admin123");
 const SECRET = arg("secret", "41");
 const TIMEOUT_MS = Number(arg("timeout", "240")) * 1000;
+const REUSE_SESSION = arg("session", "");
 
 const log = (...a) => console.log(...a);
 
@@ -86,8 +91,8 @@ function ask(cookie, sessionId, query) {
 }
 
 const cookie = await login();
-const id = await createSession(cookie);
-log(`session    ${id}`);
+const id = REUSE_SESSION || (await createSession(cookie));
+log(`${REUSE_SESSION ? "reuse  " : "create "} ${id}`);
 
 const first = await ask(cookie, id, `记住数字 ${SECRET}，只回复“收到”。`);
 log(`round 1    sid=${first.sessionId}  answer=${first.answer.trim().slice(0, 40)}`);
