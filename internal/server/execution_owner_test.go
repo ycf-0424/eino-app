@@ -13,7 +13,7 @@ import (
 
 // 步骤 2.8：execution_runs 没有 owner 冗余列，只按 conversation_id 取数，
 // 所以「这条会话是不是调用方的」只能在应用层判定。判定点就是 checkSessionOwner，
-// 它的三种结果（放行 / 放行 / 拒绝）必须互相可区分。
+// 它的三种结果（本人放行 / 不存在放行 / 他人拒绝）必须互相可区分。
 func TestCheckSessionOwner(t *testing.T) {
 	service := newTestService(t, nil)
 	ctx := context.Background()
@@ -25,7 +25,8 @@ func TestCheckSessionOwner(t *testing.T) {
 	if err := service.checkSessionOwner(ctx, "mine"); err != nil {
 		t.Fatalf("single-user owner check = %v", err)
 	}
-	// 未登记的 id 不是越权：那是新会话的正常起点。
+	// 该辅助函数也用于 execution/approval：未登记资源由具体端点按空结果处理。
+	// 聊天入口另由 resolveSessionID 拒绝未签发 id。
 	if err := service.checkSessionOwner(ctx, "unclaimed"); err != nil {
 		t.Fatalf("unclaimed owner check = %v", err)
 	}

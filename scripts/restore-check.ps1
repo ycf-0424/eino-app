@@ -32,6 +32,18 @@ if ([string]::IsNullOrWhiteSpace($BackupRoot)) {
 function Write-Step([string]$Message) { Write-Host "[restore-check] $Message" }
 function Fail([string]$Message) { Write-Host "[restore-check] ERROR: $Message" -ForegroundColor Red; exit 1 }
 
+# 与 backup.ps1 保持一致，不依赖可能被定时任务环境覆盖的 Get-FileHash。
+function Get-Sha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Read-DotEnv([string]$Path) {
     $values = @{}
     if (-not (Test-Path $Path)) { return $values }
@@ -134,7 +146,7 @@ if (-not $SkipChecksum) {
     foreach ($name in $expected.Keys) {
         $path = Join-Path $BackupDir $name
         if (-not (Test-Path $path)) { Fail "artifact listed in manifest is missing: $name" }
-        $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
+        $actual = Get-Sha256 $path
         if ($actual -ne $expected[$name]) {
             Fail "checksum mismatch for ${name}: manifest=$($expected[$name]) actual=$actual"
         }

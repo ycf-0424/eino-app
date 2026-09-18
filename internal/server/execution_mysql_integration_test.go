@@ -87,6 +87,9 @@ func TestChatRecordsExecutionEvents(t *testing.T) {
 	}
 	handler := service.Handler()
 	id := "exec-e2e-" + uuid.NewString()
+	if err = service.sessions.Create("", id); err != nil {
+		t.Fatalf("签发测试会话: %v", err)
+	}
 	defer service.sessions.Delete("", id)
 	defer service.DeleteExecutions(context.Background(), id)
 

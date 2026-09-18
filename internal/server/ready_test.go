@@ -103,3 +103,31 @@ func TestReadySkipsMySQLForFileStore(t *testing.T) {
 		}
 	}
 }
+
+// 自动记忆始终使用 Milvus 索引；即使文档 RAG 改成 redis，ready 也不能漏报。
+func TestReadyChecksMilvusWhenMemoryEnabled(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	address := listener.Addr().String()
+	listener.Close()
+
+	service := &Service{cfg: &config.Config{
+		RAG:    config.RAG{Enabled: true, Store: "redis", Milvus: config.Milvus{Address: address}},
+		Memory: config.Memory{Enabled: true},
+	}}
+	code, body := callReady(t, service)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503", code)
+	}
+	for _, item := range body.Data.Checks {
+		if item.Name == "milvus" {
+			if item.OK || item.Error == "" {
+				t.Fatalf("milvus 项应失败并带错误信息: %+v", item)
+			}
+			return
+		}
+	}
+	t.Fatalf("memory.enabled 时返回体缺少 milvus 项: %+v", body.Data.Checks)
+}

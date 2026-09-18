@@ -26,6 +26,9 @@ $ComposeFile = Join-Path $RepoRoot "docker-compose.milvus.yml"
 if ([string]::IsNullOrWhiteSpace($BackupRoot)) {
     $BackupRoot = Join-Path $RepoRoot "data/backups"
 }
+# Docker 的 `-v host-path:/backup` 不接受相对宿主机路径：相对值会被当成
+# named volume。统一转成绝对路径，保证手工传 `-BackupRoot data\...` 与默认值行为一致。
+$BackupRoot = [System.IO.Path]::GetFullPath($BackupRoot)
 
 function Write-Step([string]$Message) { Write-Host "[backup] $Message" }
 
@@ -43,6 +46,31 @@ function Fail([string]$Message) {
         Write-Host "[backup] removing incomplete backup directory: $script:createdTarget" -ForegroundColor Red
         Remove-Item -LiteralPath $script:createdTarget -Recurse -Force -ErrorAction SilentlyContinue
     }
+    exit 1
+}
+
+# 不依赖 Get-FileHash：Codex 的 PowerShell 运行时会把一个精简版
+# Microsoft.PowerShell.Utility 放在 PSModulePath 前面，Windows PowerShell 5.1
+# 从 make 启动时可能因此找不到 Get-FileHash。直接用 .NET 计算 SHA256，兼容
+# Windows PowerShell 5.1、PowerShell 7 和定时任务环境。
+function Get-Sha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
+# 捕获函数外的终止错误，确保任何失败都不会留下「最新但不完整」的目录。
+trap {
+    if (-not $script:manifestWritten -and -not [string]::IsNullOrWhiteSpace($script:createdTarget)) {
+        Write-Host "[backup] removing incomplete backup directory: $script:createdTarget" -ForegroundColor Red
+        Remove-Item -LiteralPath $script:createdTarget -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "[backup] ERROR: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
 
@@ -281,7 +309,7 @@ $manifest.Add("[files]")
 foreach ($name in $artifacts) {
     $path = Join-Path $target $name
     if (-not (Test-Path $path)) { Fail "expected artifact missing: $name" }
-    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
+    $hash = Get-Sha256 $path
     $size = (Get-Item -LiteralPath $path).Length
     $manifest.Add("$name sha256=$hash bytes=$size")
 }

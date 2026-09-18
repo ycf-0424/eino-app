@@ -48,12 +48,14 @@ func (s *Service) readinessChecks() []health.Checker {
 			checkers = append(checkers, health.Checker{Name: "mysql", Check: mysqlPing(db, health.DefaultReadyTimeout)})
 		}
 	}
-	// Milvus：RAG 用 milvus 后端时才探。只做 TCP 建连。
-	if cfg.RAG.Enabled && cfg.RAG.Store == "milvus" && cfg.RAG.Milvus.Address != "" {
+	// Milvus：RAG 使用 milvus，或自动记忆启用时都必须探测。记忆索引始终由
+	// NewMilvusIndex 创建，即使 RAG 文档存储将来切成 redis 也仍依赖这里。
+	milvusRequired := (cfg.RAG.Enabled && cfg.RAG.Store == "milvus") || cfg.Memory.Enabled
+	if milvusRequired && cfg.RAG.Milvus.Address != "" {
 		checkers = append(checkers, health.Checker{Name: "milvus", Check: health.DialChecker(cfg.RAG.Milvus.Address)})
 	}
-	// Ollama：RAG 依赖它的 embedding；聊天模型也可能指向它。
-	if cfg.RAG.Enabled {
+	// Ollama：RAG 与自动记忆都使用 embedding 配置。
+	if cfg.RAG.Enabled || cfg.Memory.Enabled {
 		if url := health.OllamaTagsURL(cfg.OpenAI.BaseURL); url != "" {
 			checkers = append(checkers, health.Checker{Name: "ollama", Check: health.HTTPChecker(url)})
 		}

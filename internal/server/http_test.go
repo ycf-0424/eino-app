@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -71,6 +72,9 @@ func TestHealthAndSessionsEndpoints(t *testing.T) {
 func TestWebSocketReady(t *testing.T) {
 	sessions, _ := session.New(t.TempDir())
 	service := &Service{sessions: sessions, skills: skill.NewLoader(t.TempDir())}
+	if err := sessions.Create("", "test"); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(service.Handler())
 	defer server.Close()
 	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws?session_id=test"
@@ -91,6 +95,39 @@ func TestWebSocketReady(t *testing.T) {
 	if debug, ok := event["debug"].(bool); !ok || debug {
 		t.Fatalf("ready debug=%v", event["debug"])
 	}
+}
+
+func TestWebSocketRouteIsRateLimited(t *testing.T) {
+	sessions, _ := session.New(t.TempDir())
+	service := &Service{
+		sessions:    sessions,
+		skills:      skill.NewLoader(t.TempDir()),
+		chatLimiter: newRateLimiter(30, 2),
+	}
+	now := time.Now()
+	service.chatLimiter.now = func() time.Time { return now }
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+
+	for i := 0; i < 2; i++ {
+		conn, resp, err := websocket.DefaultDialer.Dial(url, nil)
+		if err != nil {
+			t.Fatalf("handshake %d: %v (response=%v)", i+1, err, resp)
+		}
+		_ = conn.Close()
+	}
+	conn, resp, err := websocket.DefaultDialer.Dial(url, nil)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil || resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("third handshake err=%v response=%v, want HTTP 429", err, resp)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Fatal("WebSocket 429 response missing Retry-After")
+	}
+	_ = resp.Body.Close()
 }
 
 func TestStatsRecordsErrorAndDuration(t *testing.T) {

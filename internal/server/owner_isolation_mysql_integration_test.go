@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"my-eino-app/internal/auth"
 	"my-eino-app/internal/checkpoint"
 	"my-eino-app/internal/config"
@@ -150,6 +151,11 @@ func TestSessionListIsScopedToOwner(t *testing.T) {
 	}
 	idA := issueSession(t, service, tokenA)
 	defer service.sessions.Delete(ownerA, idA)
+	// 空会话按产品设计不显示在列表；先写一条消息，验证的是 owner 过滤而不是
+	// 空壳会话是否可见。
+	if err := service.sessions.Save(ownerA, idA, []*schema.Message{schema.UserMessage("owner A list marker")}); err != nil {
+		t.Fatalf("seed owner A session: %v", err)
+	}
 
 	rec := doAs(t, service, tokenA, http.MethodGet, "/sessions")
 	if rec.Code != http.StatusOK {
@@ -200,9 +206,9 @@ func TestResolveSessionIDRejectsForeignOwner(t *testing.T) {
 	if _, err := service.resolveSessionID(ctxB, idA); !errors.Is(err, session.ErrForeignSession) {
 		t.Fatalf("owner B resolve err = %v, want ErrForeignSession", err)
 	}
-	// 未登记的新 id 沿用（客户端为新会话指定 id 的既有用法不受影响）。
-	if got, err := service.resolveSessionID(ctxB, idA+"-unclaimed"); err != nil || got != idA+"-unclaimed" {
-		t.Fatalf("unclaimed resolve = %q, %v", got, err)
+	// 未登记 id 不是服务端签发的，必须拒绝。
+	if _, err := service.resolveSessionID(ctxB, idA+"-unclaimed"); !errors.Is(err, errUnsignedSession) {
+		t.Fatalf("unclaimed resolve err = %v, want errUnsignedSession", err)
 	}
 	// 空 id 由服务端生成。
 	if got, err := service.resolveSessionID(ctxB, ""); err != nil || got == "" || got == idA {

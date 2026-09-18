@@ -254,9 +254,9 @@ func (s *Store) Create(owner, id string) error {
 
 // OwnerOf 返回会话归属；会话不存在时 exists 为 false。
 //
-// 服务端据此决定是否沿用调用方带来的 session id：只有不存在（新会话）或
-// 归属就是当前用户时才接受，否则调用方必须收到明确的越权错误，
-// 而不是被悄悄换一个 id —— 后者会掩盖越权尝试。
+// 服务端据此决定是否沿用调用方带来的 session id：只有已由 POST /sessions
+// 登记且归属当前用户的 id 才接受。不存在表示客户端绕过签发接口自行造 id，
+// HTTP 层会拒绝；归属他人则返回明确的越权错误。
 // 文件后端没有 owner 维度，存在即归属空 owner（auth 启用时 ValidateAuth 已强制 mysql）。
 func (s *Store) OwnerOf(id string) (owner string, exists bool, err error) {
 	if err := validateID(id); err != nil {

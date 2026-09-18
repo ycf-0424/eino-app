@@ -4,8 +4,10 @@
 >
 > **本手册不是什么**：不复制内容表。**每一步具体改什么**（字段值、SQL、代码片段、工具名清单）以 `EXECUTION-PLAN.md` 的对应步骤为准。两份文档分工明确，避免内容漂移。
 >
-> **基线**：`92b2833`（2026-09-16 建立并推送）。**剩余 25 个 commit、6 次推送。**
+> **基线**：`92b2833`（2026-09-16 建立并推送）。历史阶段的 commit 数和推送点仅供追溯；当前以 `EXECUTION-PLAN.md` 的子步骤表和实际 `git log` 为准。
 > **工作目录**：`E:\11\my-eino-app`
+
+> **工作区保护**：本手册旧阶段段落中仍保留当时的回退示例。当前共享工作区禁止直接执行 `git reset --hard`、`git checkout --` 或 `git clean`；先确认 `git status --short`，提交后使用 `git revert <commit>`，未提交改动先保存补丁并逐文件处理。
 > **外部依赖**：阶段 2 需要一个**飞书自建应用**（见第一节末），另需一次 **DBA 动作**给数据库加一个迁移账号（见 C5）。其余阶段不需要任何项目之外的资源。
 
 ---
@@ -451,7 +453,7 @@ git commit -m "feat(memory): 记忆按 owner 隔离并修正 worker job 过滤"
 
 - **根因**：session id 可由客户端指定（`http.go:85`、`ws.go:116`、`ws.go:159`）→ 知道别人的 id 就能读审批、恢复执行（坑 B6）。
 - **两层动作**：
-  1. **服务端强制生成 session id**——新增 `POST /sessions`；`http.go:85` 与 `ws.go:116/159` 一律忽略客户端值；前端 `startNewChat()` 改**异步**，移除 `app.js:452` 的 `makeSessionId()`。
+  1. **服务端强制签发 session id**——新增 `POST /sessions`；新会话拒绝客户端自造 id，续聊只接受已登记且属于当前 owner 的 id，WebSocket 帧内 id 一律忽略；前端 `startNewChat()` 改**异步**，移除 `app.js:452` 的 `makeSessionId()`。
   2. **checkpoint 路径加 owner 分层**（兜底）——`path(id)` → `path(owner, id)`，所有方法签名加 owner。
 - **7 个调用点**同步改；`cmd/console/main.go` 是 CLI 单用户路径，**保持不动**。
 
@@ -850,7 +852,7 @@ git push          # = P5
 - [ ] `FEISHU_*` 通过环境变量注入，**不在仓库中**
 - [ ] `REDIRECT_URL` 与飞书开发者后台登记的**完全一致**（含端口与路径）
 - [ ] 飞书后台**已完成「发布」**，且**可用范围**包含所有要用的人（否则报 20010）
-- [ ] `CookieSecure` 与部署协议匹配（内网 http 必须 `false`，否则浏览器不保存 Cookie）
+- [ ] 第一阶段使用 HTTPS，`CookieSecure=true`；仅开发 HTTP 才允许 `false`
 - [ ] 历史会话已用 `go run ./cmd/session-migrate -claim-owner=<owner>` 归属（**不是 `AdminOpenID`** —— 该字段已于 2026-09-17 删除，见 14.10）
 - [ ] 备份定时任务已生效，`restore-check` 至少跑过一次
 - [ ] `make check` 全绿
@@ -861,14 +863,14 @@ git push          # = P5
 
 | 场景 | 命令 |
 |---|---|
-| 回退**未提交**的改动 | `git checkout -- <文件或目录>` |
-| 回退**最近一个 commit** | `git reset --hard HEAD~1` |
-| 回退**整个阶段** | `git reset --hard HEAD~<该阶段 commit 数>`（阶段 1 是 3，阶段 2 是 **12**，阶段 3 是 3，阶段 4 是 2，阶段 5 是 5） |
-| 回退到**基线** | `git reset --hard 92b2833` |
+| 回退**未提交**的改动 | 先 `git status --short`；保留用户改动，使用 `git diff > rollback-review.patch` 后逐文件 `apply_patch`，不要直接覆盖整个目录 |
+| 回退**最近一个 commit** | `git revert <commit>`，再运行 `go test -p 1 ./...` |
+| 回退**整个阶段** | 按提交顺序逐个 `git revert <commit>`，每个反向提交后执行对应验收；数据库和数据卷按步骤回滚栏单独处理 |
+| 回退到**基线** | 新建临时分支比较 `92b2833`，确认工作区和数据迁移影响后，再逐提交 `git revert`；禁止在共享工作区直接重置 |
 | 看某一步改了什么 | `git show <commit>` / `git diff HEAD~1` |
 | 已推送后又想回退 | 先 `git revert <commit>` 生成反向提交，**不要** `push --force` |
 
-⚠️ **`git reset --hard` 会丢弃未提交改动**。执行前先 `git status` 确认没有你还想要的东西。
+⚠️ **不要在共享工作区使用 `git reset --hard`、`git checkout --` 或 `git clean`**。它们会丢弃当前未提交的真实修复；只有在明确保存补丁、确认无用户改动且用户明确要求时，才可在隔离工作树中使用。
 
 ⚠️ **数据库与数据卷不在 git 里**：C5 的建表/加列、C13 的 `auth_local_users` 表、C23 的备份目录，回滚代码不会回滚它们，需按该步「回滚」栏手工处理。
 
@@ -1291,7 +1293,7 @@ err=file is outside the allowed local directories or does not exist`。
 **现象**：`auth.admin_open_id` 在 `internal/config/auth.go` 有声明、三份配置都写了（都是空值），
 但 `grep -rn AdminOpenID --include=*.go` **只命中声明本身，零使用点**。
 而上线前最终检查里有一项是「管理员 `AdminOpenID` 已配置，本地后门可用」——
-**33 个步骤里没有任何一步要求实现它**，这一项永远打不了勾。
+**原执行步骤里没有任何一步要求实现它**，这一项永远打不了勾。
 
 **为什么删而不是补**：补实现等于新增一份「飞书侧管理员能做什么」的功能定义，方案里没有这个需求，
 属于超范围。而且留着一个什么都不做的配置项**比没有更坏**——它让人以为后门存在。
@@ -1437,11 +1439,11 @@ OK: 限流行为与预期一致
 
 | 项 | 状态 | 阻塞因素 |
 |---|---|---|
-| C25 飞书凭据 | ⏸ | 凭据**已写入**（三值非空、透传已验证），但 **App Secret 被判无效**（见 14.16）；只差换一个能用的 Secret |
+| C25 飞书凭据 | ✅ | 14.18 已定位并修正 Secret 形近字误读；`feishu-check.ps1` 五项探测通过 |
 | 生产模式路由准确率 | ✅ | 已测（14.13）：`0.125`，debug 与生产两态都接近 0 |
 | **路由准确率本身** | ⏸ | 本地 `qwen3.5:9b` 不主动 `load_skills`；要提升得换模型或改提示词策略，另立项 |
 | 16 道执行类题的答案断言 | ⏸ | 见 14.14 遗留：目前只有路由维度可判，需要补可判定的断言 |
-| 备份定时任务（`schtasks`） | ⏸ | 命令需在**提权终端**执行（`/RL HIGHEST`），本环境无法代为创建 |
+| 备份定时任务（`schtasks`） | ✅ | 已创建 `eino-backup`，由 `SYSTEM` 每 6 小时运行；2026-09-18 手工触发验证 `Last Result=0` |
 | `admin` / `admin123` 口令 | ⚠️ | 简单口令，**上线前必须改**：`go run ./cmd/user-admin -passwd -username=admin` |
 | 多副本限流 / token 预算 | ⏸ | 方案明确不做，需换 Redis，另立项 |
 | `knowledge_qa` 技能的存废 | ⏸ | 见 14.6 附带结论 |
@@ -1798,8 +1800,22 @@ docker compose -f docker-compose.milvus.yml up -d   # milvus/etcd/minio 需要�
 并打一堆 `Milvus Proxy is not ready yet`**，那是等待期噪音，不是故障；milvus healthy 后
 `/health` 与 `/health/ready` 都会恢复。
 
+### 14.23 内部灰度执行记录（对应 EXECUTION-PLAN 5.10b）
 
+灰度前确认 `EXECUTION-PLAN.md` 的 5.5a、5.6–5.10 子步骤和上线前最终检查全部通过。灰度对象为 3–10 名内部用户，窗口为 3–7 天；每天记录以下内容：请求量和错误、知识检索命中/无命中、技能预加载和工具执行事件、P95/超时、备份与恢复状态、磁盘和模型状态。
 
+出现认证或跨用户数据泄露、备份/恢复失败、模型持续不可用、工具执行证据低于 95% 或非超时 5xx 达到 1% 时，立即停止扩大用户范围，保留日志和当前版本，按 EXECUTION-PLAN 的不可变镜像回滚步骤处理。连续 3 天达到门槛后，由负责人记录“通过/不通过”、日期和版本，再决定是否扩大到全部内部用户。
 
+### 14.24 方案复核收口：备份兼容性、WebSocket 限流与 session 签发
 
+2026-09-18 再按总验收清单执行时发现并修复三处偏差：
 
+| 项 | 修正 | 验证 |
+|---|---|---|
+| `make backup` / `restore-check` | SHA256 改用 .NET API，不再依赖可能被 `PSModulePath` 覆盖的 `Get-FileHash`；备份脚本增加顶层异常清理 | 连续两次备份生成不同目录；最新备份 4 个产物校验和通过；临时库 16 张表行数全部一致 |
+| `GET /ws` 限流 | 与 `POST /chat` 一样挂到认证后的 `throttle`，按 owner 分桶并返回 `429 + Retry-After` | 新增 WebSocket 握手限流测试 |
+| session id | 新会话只接受服务端签发；续聊只接受已登记且属于当前 owner 的 id；未知 id 拒绝，帧内 id 忽略 | 单元测试覆盖空 id、未知 id、本人 id、他人 id；真实两轮 WebSocket 回归保持同一会话 |
+| readiness | `memory.enabled=true` 时始终探测 Milvus 与 embedding 服务，不再受 `rag.store` 是否为 milvus 限制 | 新增 `rag.store=redis + memory.enabled` 的失败用例 |
+| 定时任务 | 创建 Windows 任务 `eino-backup`，由 `SYSTEM` 每 6 小时执行 `scripts/backup.ps1` | 手工触发完成，任务回到 `Ready` 且 `Last Result=0` |
+
+飞书凭据状态也已复核：`scripts/feishu-check.ps1` 五项通过，14.15 中旧的“Secret 无效”状态已更新。

@@ -33,6 +33,8 @@ type response struct {
 	Error string `json:"error,omitempty"`
 }
 
+var errUnsignedSession = errors.New("session id was not issued by server")
+
 // executionSnapshot 是执行记录查询接口的返回体。
 type executionSnapshot struct {
 	Runs   []execution.Run   `json:"runs"`
@@ -83,16 +85,22 @@ func (s *Service) checkSessionOwner(ctx context.Context, id string) error {
 //
 // 规则（步骤 2.7）：
 //   - 调用方没带 id → 服务端生成；
-//   - 带的 id 不存在（新会话）→ 沿用，保持既有脚本与文档的用法；
-//   - 带的 id 属于当前用户 → 沿用，多轮对话照常续接；
-//   - 带的 id 属于别人 → ErrForeignSession（403），必须明确拒绝而不是换个 id
-//     继续跑：静默替换会掩盖越权尝试，也让调用方失去信号。
+//   - 带的 id 必须已经由 POST /sessions 签发且属于当前用户；
+//   - 未登记 id 拒绝，防止客户端继续自行选择 checkpoint / execution 的键；
+//   - 属于别人 → ErrForeignSession（403）。
 func (s *Service) resolveSessionID(ctx context.Context, requested string) (string, error) {
 	if strings.TrimSpace(requested) == "" {
 		return uuid.NewString(), nil
 	}
-	if err := s.checkSessionOwner(ctx, requested); err != nil {
+	owner, exists, err := s.sessions.OwnerOf(requested)
+	if err != nil {
 		return "", err
+	}
+	if !exists {
+		return "", errUnsignedSession
+	}
+	if owner != auth.OwnerFromContext(ctx) {
+		return "", session.ErrForeignSession
 	}
 	return requested, nil
 }
@@ -180,7 +188,7 @@ func (s *Service) Handler() http.Handler {
 	mux.Handle("POST /sessions/{id}/approval", s.protected(http.HandlerFunc(s.handleApproval)))
 	// WebSocket 认证只能靠 Cookie（浏览器无法自定义 Header）；
 	// 中间件包在 mux 内部，最外层的超时豁免不受影响。
-	mux.Handle("GET /ws", s.protected(http.HandlerFunc(s.handleWebSocket)))
+	mux.Handle("GET /ws", s.protected(s.throttle(http.HandlerFunc(s.handleWebSocket))))
 	s.registerMemoryRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// WebSocket 是长连接；其他 HTTP 请求统一受 runtime.request_timeout 控制。

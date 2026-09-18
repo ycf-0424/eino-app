@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -88,8 +89,7 @@ func TestCreateSessionIssuesServerSideID(t *testing.T) {
 	}
 }
 
-// resolveSessionID 决定「沿用还是拒绝」调用方带来的 id：
-// 生成、沿用、明确拒绝三种结果都要可区分。
+// resolveSessionID 只接受服务端签发过的 id；空值由服务端生成。
 func TestResolveSessionID(t *testing.T) {
 	service := newTestService(t, nil)
 	ctx := context.Background()
@@ -104,9 +104,9 @@ func TestResolveSessionID(t *testing.T) {
 		t.Fatalf("resolve(empty) must generate a fresh id: %q, %v", second, err)
 	}
 
-	// 尚未登记的 id → 沿用（保持既有脚本与文档里「客户端指定 id」的用法）。
-	if got, err := service.resolveSessionID(ctx, "unclaimed-id"); err != nil || got != "unclaimed-id" {
-		t.Fatalf("resolve(unclaimed) = %q, %v", got, err)
+	// 尚未登记的 id 必须拒绝，不能让客户端自行选择存储键。
+	if _, err := service.resolveSessionID(ctx, "unclaimed-id"); !errors.Is(err, errUnsignedSession) {
+		t.Fatalf("resolve(unclaimed) err = %v, want errUnsignedSession", err)
 	}
 
 	// 已登记且属于当前身份 → 沿用。

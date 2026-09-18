@@ -4,10 +4,10 @@
 > `AUTH-PLAN.md`（飞书登录 + 多用户隔离）、`REFACTOR-PLAN.md`（P-REFACTOR + P-SKILL-QUALITY）、`PLAN-SKILL-QUALITY-AND-LAUNCH-GAP.md`（上线差距评估）。
 >
 > **合并原则**
-> 1. 全部步骤重排为单一线性编号（0.1 → 5.5，共 33 步），不再有「P-REFACTOR 阶段 / S1–S8 / AUTH 阶段 1–5」三套体系并存；
-> 2. 源文档里 11 条待决策事项**全部预置默认值**，执行过程中不需要回头拍板；
+> 1. 全部步骤重排为单一线性编号（0.1 → 5.10，共 38 步），不再有「P-REFACTOR 阶段 / S1–S8 / AUTH 阶段 1–5」三套体系并存；
+> 2. 源文档里 11 条待决策事项及生产新增决策都给出推荐默认值，评估确认后作为执行约束；
 > 3. 每一步都给出「改什么 / 具体动作 / 验收 / 回滚」，无跨文档跳转；
-> 4. 源文档保留作证据与设计动因的历史记录，**执行一律以本文为准**。
+> 4. 源文档保留作证据与设计动因的历史记录，**执行一律以本文为准**；生产部署与灰度要求也在阶段 5 中统一维护。
 >
 > **行号基准**：本文所有行号对应基线提交 **`92b2833`**（已于 2026-09-16 建立并推送）。超过该提交之后的行号会漂移，核对时以函数名/语句为准。
 
@@ -19,14 +19,14 @@
 
 | 约定 | 内容 |
 |---|---|
-| 执行单元 | **一个步骤 = 一个 commit**，不要合并提交，否则失败时无法定位。**例外**：有硬依赖、分开提交会留下坏中间态的步骤明文合并——`1.2+1.3+1.4`（坑 A1）、`1.5+1.6`、`2.10+2.11`、`2.12+2.13`、`3.1`（必须一次完成）。33 步因此归并为 **25 个 commit** |
+| 执行单元 | 代码/配置步骤原则上**一个步骤 = 一个 commit**；存在硬依赖时按“关键交集”表合并。历史步骤已有实际提交，5.10b 也可能只形成灰度记录，因此不再给出容易失真的总提交数；剩余工作以阶段 5 子步骤表中的提交边界为准 |
 | 验收时机 | 每步验收全部通过才进入下一步 |
 | **推送节奏** | **阶段级推送 + `3.1` 单独推**，共 6 次（见 `RUNBOOK.md` 第二节）。commit 是给「回退」用的，push 是给「离开这台机器」用的，粒度不必一致。推送由**用户在自己的终端执行**——自动化环境拿不到凭据管理器登录态 |
-| 回滚方式 | `git reset --hard HEAD`（退回上一步）。**阶段 0 一旦跳过，后续任何一步都不可回退** |
+| 回滚方式 | 每个子步骤开始前先确认 `git status --short` 干净；提交后用 `git revert <commit>` 回退该步骤。工作区非空时禁止执行 `git reset --hard`、`git checkout --` 或 `git clean`，必须先把已验证改动提交或另存补丁 |
 | 测试命令 | `go test -p 1 ./...`。**`-p 1` 不能省略**——本机内存不足，并行编译会失败（`Makefile:38` 已有注释） |
 | 收尾检查 | 每个阶段结束跑 `make check`。**注意**：步骤 3.2 之前定义是 `fmt test vet`，之后并入 `boundary` 变成 `fmt boundary test vet` |
 | 工作目录 | `E:/11/my-eino-app` |
-| **执行手册** | 逐 commit 的命令、commit message、推送点、回滚速查见 **`docs/RUNBOOK.md`**。本文负责「改什么」，手册负责「怎么走」，内容不重复 |
+| **执行手册** | 逐 commit 的命令、commit message、推送点、回滚速查见 **`docs/RUNBOOK.md`**。本文负责「改什么」，手册负责「怎么走」，内容不重复；本文是唯一方案入口 |
 
 ### 六个阶段总览
 
@@ -37,9 +37,9 @@
 | **2** | 鉴权、多用户隔离与项目自有账号体系 | 15（2.1–2.15） | 代码 + 数据库 | **是** |
 | **3** | eino 框架收敛 | 3（3.1–3.3） | 结构与 import | 否 |
 | **4** | 评测与可观测性收口 | 2（4.1–4.2） | 代码 | 否 |
-| **5** | 上线收口 | 5（5.1–5.5） | 代码 + 运维 | **是** |
+| **5** | 上线收口、生产部署与内部灰度 | 10（5.1–5.10） | 代码 + 运维 + 业务验收 | **是** |
 
-**合计 33 个步骤**。步骤编号连续、无跳号，从头执行到尾即可。
+**合计 38 个基础步骤**。其中 5.5a、5.6–5.10 拆为 15 个可执行子步骤；提交数量以子步骤表和实际历史为准。步骤编号连续、无跳号，从头执行到尾即可。
 
 **顺序的三条依据**
 
@@ -59,6 +59,7 @@
 | WS 同源校验 | `ws.go` 的 `CheckOrigin` 比对 Host。这是 CSRF 防护，**不是认证**，阶段 2 要另做认证 |
 | 请求体大小限制 | 1 MiB |
 | 容器加固 | Dockerfile 非 root（`USER eino`）、HEALTHCHECK 打 `/health`；compose 依赖健康门控 + `restart` |
+| `SkillPreloaded` 事件 | `internal/execution/event.go` 已定义并列入 `knownTypes`；`internal/server/service.go` 已有发送路径。阶段 5.7c 只补生产态服务端预加载和 `KnowledgePreflight`，不要重复注册 `SkillPreloaded` |
 | 迁移机制 | 幂等 `CREATE TABLE IF NOT EXISTS` + `//go:embed`，但**没有版本表**，且不幂等处理 `ALTER TABLE`（见坑 B2） |
 | 已有组件 | `github.com/google/uuid`（生成 state / session id）、`github.com/joho/godotenv`（读 .env）。**`go.mod` 无 `golang.org/x/oauth2`**——飞书接口是标准 HTTP，手写 3 个调用，不引依赖 |
 | 测试规模 | 35 个测试文件 |
@@ -79,7 +80,7 @@
 
 ## 一、预置决策表
 
-源文档里的 11 条待决策事项，加上本方案新增的 4 条（D12–D15），全部在此拍定。**执行时直接照做，不再回头讨论。**
+源文档里的 11 条待决策事项，加上本方案新增的生产决策（D12–D22），统一放在此处。下列内容是**推荐默认值**，先供你评估可实施性；确认后再作为执行约束，避免后续出现两套口径。
 
 | # | 决策 | 已定值 | 理由 |
 |---|---|---|---|
@@ -98,6 +99,16 @@
 | D13 | 是否保留 `/auth/local` 单口令后门 | **不保留**，升级为本地账号登录 | 本地账号体系落地后，管理员自己就是一个带 `is_admin` 标记的 local 账号，后门的「能进去」不再独有。保留它等于多一个「口令即管理员」的永久入口，而它唯一能救的场景（DB 挂 + 进程重启后仍要登录）下，会话 / 记忆 / 执行记录已全部不可用，系统本就不具备可用性 |
 | D14 | 本地账号与飞书账号是否绑定合并 | **不绑定，两套身份完全独立** | 用户选定。`owner` 加命名空间前缀后天然隔离，零额外代码；绑定需要邮箱 / 手机比对与验证流程，复杂度与当前需求不匹配，另立项 |
 | D15 | 管理员如何创建本地账号 | **命令行工具 `cmd/user-admin`**，不做管理端 API | ① 项目已有 8 个 `cmd/*` 工具，风格一致；② **零 HTTP 暴露面**——建号能力只属于「能登上服务器的人」；③ 天然解决「第一个管理员从哪来」的引导问题（管理端 API 方案反而需要额外的 bootstrap 机制） |
+| D16 | 第一阶段承诺哪些文件能力 | **报告生成 + 文本/DOCX 读取 + 知识库检索 + 审批后写笔记** | `pdf`、`spreadsheets`、`presentations` 当前没有真实文件工具，不能把技能说明当成已完成能力 |
+| D17 | 技能路由策略 | **混合路由；知识库请求由服务端先强制 `knowledge_search`，报告/文档走已接入技能** | 当前模型自主 `load_skills` 路由准确率约 0.125，关键场景不能完全交给模型 |
+| D18 | 第一阶段上线形态 | **内部 3–10 人灰度，单副本；通过 HTTPS 反向代理从内网或 VPN 访问** | 先验证真实需求、路由、备份和运维；多副本另立项 |
+| D19 | 生产网络暴露面 | **只暴露反向代理入口；MySQL、Milvus、Ollama、Attu 走内部网络** | 当前 Compose 发布了多个管理和数据库端口，开发配置不能直接用于生产 |
+| D20 | 数据保护目标 | **RPO ≤ 6 小时，RTO ≤ 2 小时；备份包含 MySQL、Milvus 和 `app-data`，并放在不同存储位置** | 只备 MySQL 或只看脚本退出码不足以证明可恢复 |
+| D21 | 生产运行环境 | **明确选择 Windows/Docker Desktop 或 Linux/Docker，并在同一环境验证备份和定时任务** | 当前脚本和任务计划偏向 Windows，跨 OS 搬运会使运维流程失效 |
+| D22 | `knowledge_qa` 的定位 | **保留为知识问答能力的说明层，实际检索由服务端强制 `knowledge_search` 完成** | 避免模型跳过检索，同时不重复建设第二套知识库工具 |
+| D23 | 知识库无命中时的回答 | **明确回答“知识库中没有足够资料，无法确认”，不放开常识补全** | 私有知识问答必须可审计，避免把模型常识伪装成内部事实 |
+| D24 | 第一阶段传输协议 | **HTTPS；反向代理终止 TLS，应用 Cookie `Secure=true`** | 灰度也可能包含敏感业务内容，避免后续从 HTTP 切 HTTPS 造成 Cookie 和代理配置二次变更 |
+| D25 | 真实 IP 限流位置 | **代理层按真实 IP 主限流；应用只保留用户名维度和代理失效时的 RemoteAddr 兜底** | 代理后的 `RemoteAddr` 是代理地址，不能把应用 IP 桶当作正常用户限流；当前 Go 应用刻意不信任客户端 XFF |
 
 **与源文档的两处主动偏离**（已核实，非笔误）：
 
@@ -387,7 +398,7 @@ type Auth struct {
     AppSecret    string    `yaml:"app_secret"`
     RedirectURL  string    `yaml:"redirect_url"`   // http://192.168.x.x:18180/auth/callback
     SessionTTL   Duration  `yaml:"session_ttl"`    // 建议 12h
-    CookieSecure bool      `yaml:"cookie_secure"`  // 内网 http 必须 false
+    CookieSecure bool      `yaml:"cookie_secure"`  // 生产 HTTPS 必须 true；仅开发 HTTP 才为 false
     Local        LocalAuth `yaml:"local"`          // 项目自有账号，字段与校验见步骤 2.10
 }
 
@@ -427,7 +438,7 @@ FEISHU_APP_SECRET=
 FEISHU_REDIRECT_URL=http://localhost:18180/auth/callback
 ```
 
-**三份配置均加 `auth:` 段，`enabled: false`** —— 保持默认关，这样阶段 2 做到一半也不会破坏现有单用户流程；部署态在步骤 5.5（本方案最后一步）置 `true`。三份都要加（不能只加 `config.yaml`），否则步骤 5.5 无处可改。`auth.local` 子段在步骤 2.10 补入。
+**三份配置均加 `auth:` 段，`enabled: false`** —— 保持默认关，这样阶段 2 做到一半也不会破坏现有单用户流程；部署态在步骤 5.5b（本方案最后一步）置 `true`。三份都要加（不能只加 `config.yaml`），否则步骤 5.5b 无处可改。`auth.local` 子段在步骤 2.10 补入。
 
 **验收**：`go build ./...` 通过；`auth.enabled: true` 但缺 `AppID` 时启动失败且报错清晰。
 
@@ -704,10 +715,10 @@ if m.IdentityMode != "local_single_user" {
 
 **动作（两层）**
 
-1. **服务端强制生成 session id**
+1. **服务端强制签发 session id**
    - 新增 `POST /sessions`：服务端 `uuid.NewString()` 并写入 `conversations(id, owner_id)`，返回 `{id}`
-   - `http.go:85`：忽略客户端传入值，一律服务端生成
-   - `ws.go:116/159`：同样忽略
+   - 新会话不接受客户端自造 id；续聊只能携带一个已登记且属于当前 owner 的 id
+   - `http.go` / `ws.go`：空 id 由服务端生成，未知 id 拒绝，他人 id 返回 403；帧内 id 一律忽略
    - 前端 `app.js:450` 的 `startNewChat()` 改为**异步**，先调 `POST /sessions` 拿 id 再继续；`app.js:452` 的 `makeSessionId()` 移除
 2. **checkpoint 路径加 owner 分层（兜底）**
    - `checkpoint/store.go:40-44`：`path(id)` → `path(owner, id)`，返回 `dir/<owner>/<id>.checkpoint`
@@ -1142,7 +1153,7 @@ type Embedder   = embedding.Embedder
 
 ## 七、阶段 5：上线收口
 
-### 步骤 5.1　优雅停机（一行修复）
+### 步骤 5.1　优雅停机（一行修复）　✅ 已实现并验证
 
 **问题**：`cmd/server/main.go:22` 是 `signal.NotifyContext(context.Background(), os.Interrupt)` —— **只捕获 SIGINT**，而 `docker stop` 默认发 **SIGTERM**。走不到 `server.Shutdown`（`main.go:49`），10 秒优雅期与 `defer service.Close()` 全部失效 → 正在跑的请求被硬切、执行事件可能丢终态。
 
@@ -1156,7 +1167,7 @@ ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SI
 
 **验收**：容器内起服务，`docker stop` 后日志出现优雅停机路径（不是直接被 kill）；用 `docker stop -t 30` 观察 10 秒优雅期生效。
 
-### 步骤 5.2　限流与配额
+### 步骤 5.2　限流与配额　✅ 基础能力已实现；生产扩展仍待执行
 
 > **本节为新增设计，不在原三份方案内**（原方案仅在「尚未归属的缺口」中登记）。这是对外上线前的硬要求。
 
@@ -1164,7 +1175,7 @@ ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SI
 
 **动作**
 
-1. **复用步骤 2.13 已建的 `internal/server/ratelimit.go`** —— 自有账号登录限流那一步已经落地了令牌桶实现，本步骤**不再新建**，只做扩展：key 取 `auth.OwnerFromContext(ctx)`；未认证时退回客户端 IP（`X-Forwarded-For` 优先，回退 `RemoteAddr`）。空闲桶回收在 2.13 已实现。
+1. **复用步骤 2.13 已建的 `internal/server/ratelimit.go`** —— 自有账号登录限流那一步已经落地了令牌桶实现，本步骤**不再新建**，只做扩展：key 取 `auth.OwnerFromContext(ctx)`；未认证时退回客户端 IP（当前实现只取可信链路上的 `RemoteAddr`，不直接采信客户端可伪造的 `X-Forwarded-For`）。若部署在反向代理后，必须由代理层覆盖并固定真实客户端地址，确保应用看到的 `RemoteAddr` 可用于按 IP 限流。空闲桶回收在 2.13 已实现。
 2. 新增配置 `runtime.rate_limit`：
 
 ```yaml
@@ -1184,7 +1195,7 @@ runtime:
 
 **验收**：脚本连续打 40 次 `POST /chat`，第 31 次起返回 429；`burst` 内允许突发；`Retry-After` 合理。
 
-### 步骤 5.3　备份与恢复演练
+### 步骤 5.3　备份与恢复演练　✅ 基础流程已实现并验证；`app-data` 扩展仍待执行
 
 > **本节为新增设计，不在原三份方案内。**
 
@@ -1210,7 +1221,7 @@ runtime:
 - [ ] 连续跑两次 `make backup` 不互相覆盖（时间戳不同）
 - [ ] 手工造一个"第 15 份"，确认最旧一份被清理且清理前有打印
 
-### 步骤 5.4　健康检查分离
+### 步骤 5.4　健康检查分离　✅ 已实现并验证
 
 **问题**：`/health`（`http.go:43-45`）返回静态 ok，**不检查 MySQL / Milvus / Ollama**，而 `Dockerfile:35-36` 的 HEALTHCHECK 正是打它 → liveness 与 readiness 未分离。
 
@@ -1222,30 +1233,136 @@ runtime:
 
 **验收**：停掉 MySQL 后 `/health` 仍 200、`/health/ready` 返回非 200 且指出是哪一项失败；恢复 MySQL 后 `/health/ready` 自动回到 200。
 
-### 步骤 5.5　上线前配置切换（**本阶段最后一步**）
+### 步骤 5.5a　生产 bootstrap（运维端口开放期间执行）
 
-前置：5.1–5.4 全部完成并验收通过，才执行本步。
+生产镜像只包含 `cmd/server`，不在容器内执行 `user-admin`、`session-migrate`、`indexer` 或 `eval`。在关闭宿主机端口前，使用宿主机 Go 环境通过临时的 `127.0.0.1:3306` 运维映射连接生产 MySQL：
+
+bootstrap 不依赖尚未完成的生产 Compose：现有 Compose 保持原有默认绑定行为，bootstrap 时必须显式设置 `MYSQL_BIND=127.0.0.1` 后再启动数据库；禁止在本项目 bootstrap 操作中使用 `0.0.0.0`。这条操作纪律不改变其他项目共用数据卷的默认配置。bootstrap 验收通过后，5.6a 再切换到独立生产 Compose，删除 MySQL 宿主机映射。若选择把 CLI 打进独立运维镜像，也必须保持同样的先 bootstrap、后封端口顺序。
+
+CLI 必须显式指向生产 MySQL，不能依赖当前目录的 `config.yaml` 默认 file store：
+
+```powershell
+$env:SESSION_STORE="mysql"
+$env:MYSQL_HOST="127.0.0.1"
+$env:MYSQL_PORT="3306"
+$env:MYSQL_DATABASE=(Get-Content .env | Select-String '^MYSQL_DATABASE=').ToString().Split('=',2)[1]
+$env:MYSQL_USER="<production-mysql-user>"
+$env:MYSQL_PASSWORD="<production-mysql-password>"
+go run ./cmd/user-admin -create -username=admin -admin
+go run ./cmd/session-migrate -claim-owner=<owner>
+```
+
+**提交边界**：`chore(deploy): define production bootstrap procedure`；现有 Compose 的 loopback 绑定和生产变量说明属于本子步骤。
+
+**验收**：管理员登录成功；`local-owner` 下历史会话和记忆已迁移；从非宿主机地址无法连接 3306；CLI 不依赖应用容器存在。
+
+### 步骤 5.5b　上线前配置切换（生产部署最后一步）
+
+前置：先执行 5.5a 完成管理员建号和历史数据归属；再完成 5.1–5.4 以及 5.6–5.10 的全部子步骤，最后执行本步。5.5b 是实际切换生产配置的最后一步。
 
 | 配置 | 改为 | 说明 |
 |---|---|---|
 | `config.docker.yaml` 的 `auth.enabled` | `false` → **`true`** | 打开鉴权 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_REDIRECT_URL` | 填入真实凭据 | 走**环境变量**，不写进仓库 |
+| `FEISHU_REDIRECT_URL` / 飞书后台回调地址 | **统一改为 HTTPS 可达地址** | 应用配置、`.env` 和飞书后台三处必须完全一致；证书必须被浏览器和飞书回调链路信任 |
 | `config.docker.yaml` 的 `auth.local.enabled` | **保持 `true`** | 保留本地账号入口，作为飞书故障时的兜底 |
 | `config.docker.yaml` 的 `memory.identity_mode` | `local_single_user` → **`multi_user`** | 与 auth 配套 |
 | `config.docker.yaml` 的 `debug` | **保持 `false`** | 部署态不暴露技能入口 |
 | `cmd/server` 监听地址 | 保持 `:18180`（容器内） | 对外暴露面由 compose 端口映射决定 |
 
-⚠️ **前置动作（最容易漏的一步）**：`auth.enabled: true` **之前**，先在部署环境用 CLI 建好管理员本地账号：
-
-```bash
-go run ./cmd/user-admin -create -username=admin -admin   # 口令走 stdin 交互输入
-```
-
-否则一旦飞书认证服务出问题，系统将**没有任何入口** —— 而本地账号的全部意义就在于这一刻。建号后再打开 `auth.enabled`。
+⚠️ 管理员建号和历史数据归属已移到 5.5a，必须先完成；否则一旦飞书认证服务出问题，系统将没有兜底入口。
 
 ⚠️ `auth.enabled: true` 时若 `session.store != mysql`（`config.docker.yaml` 已是 mysql）或 `FEISHU_*` 缺失，`ValidateAuth()` 会让启动**直接失败**——这是刻意设计（清晰失败优于静默）。
 
 **验收**：按「十、总验收清单 → 上线前最终检查」逐项打勾；容器重启后走一遍完整登录 + 一次对话 + 一次工具审批。
+
+### 步骤 5.6　生产部署边界与网络收口
+
+第一阶段采用**内部用户灰度、单副本部署**。反向代理负责 HTTPS、访问来源限制、请求大小限制和可信真实客户端 IP；应用负责认证、授权、会话隔离和技能路由。MySQL、Milvus、Ollama 和 Attu 不直接暴露给用户网络。
+
+当前 Compose 文件仍发布 3306、19530、9091、Attu 和应用端口；这只是开发配置，不能直接作为生产网络配置。生产配置必须删除不必要的 `ports`，改用内部 Docker 网络；Attu 默认关闭或仅绑定管理网段。生产 MySQL 使用独立数据卷或实例，避免与其他项目共用执行表后被 `RecoverStale` 误处理。
+
+反向代理按自身可信的真实客户端地址执行主要 IP 限流。应用不直接采信客户端可伪造的 `X-Forwarded-For`；代理后的应用 `RemoteAddr` 是代理地址，因此应用侧 IP 桶只作为代理失效时的兜底，日常防爆破由代理 IP 桶和应用用户名桶共同承担。HTTP 读超时至少覆盖当前 180 秒的 `request_timeout`；WebSocket 透传 `Upgrade`/`Connection` 并关闭缓冲；第一阶段必须启用 HTTPS 和 `cookie_secure`；`/auth/callback` 也必须限流。
+
+**验收**：完成 5.5a 后关闭临时 loopback MySQL 映射；从用户网络无法连接 MySQL、Milvus、Attu；只有 HTTPS 反向代理入口可访问应用；WebSocket 可建立；代理层登录限流按真实客户端 IP 生效；应用用户名桶仍生效；代理读超时不短于应用超时。
+
+### 步骤 5.7　生产能力边界与确定性路由
+
+第一阶段只承诺以下已接入能力：报告文本生成、授权路径下的文本/DOCX 读取、知识库检索和审批后的笔记写入。当前真正注册的工具只有 `current_time`、`write_note`、`load_skills`、`local_file_read`、`knowledge_search`。
+
+表格、PDF、PPT 文件处理目前只有技能说明，没有真实文件工具，不能承诺读取、编辑或生成文件；用户提出这些需求时必须明确告知限制和替代方式，不能加载空壳技能制造“已支持”的假象。
+
+路由顺序：
+
+1. 私有知识问题由服务端强制执行 `knowledge_search`，答案必须基于返回资料并带来源；预检索结果注入 agent instruction/history 上下文，不依赖模型再次选择工具。
+2. 报告生成命中 `report_writer`；文档读取命中 `documents`。
+3. 表格、PDF、PPT 文件请求进入能力限制回复，不进入伪执行流程。
+4. 未命中或低风险问题才允许模型自主选择。
+
+路由规则必须结合动作和对象，而不是只匹配单个关键词；技能、工具、提示词或 embedding 模型变更后必须重新执行 `make eval`。
+
+**验收**：知识库请求都有检索事件和来源；无命中统一回答“知识库中没有足够资料，无法确认”；报告/文档场景有实际技能事件；空壳技能场景不声称已生成文件；`debug=false` 的用户可见回答不出现技能名；评测集覆盖上述边界。
+
+### 步骤 5.7c　已接入技能的服务端选择
+
+在 `internal/server/service.go` 的请求装配路径增加动作 + 对象判定：命中报告生成时服务端预加载 `report_writer`，命中文本/DOCX 读取时预加载 `documents`。该预加载属于服务端内部上下文，不重新开放 `GET /skills`、请求体 `skill` 字段或技能名展示；`requestedSkill()` 的 debug 门禁只继续保护客户端指定技能和目录暴露。
+
+预加载应复用 agent 现有 instruction/context 注入路径，并使用已有的 `SkillPreloaded` 事件记录；知识预检索新增并注册 `KnowledgePreflight` 事件。工具实际开始/完成仍记录工具事件。新增路由单测覆盖动作、对象、组合请求、未命中和 debug=false，不允许通过单个关键词误触发。
+
+**提交边界**：`feat(routing): preload connected skills server side`。
+
+**验收**：`report_writer` 和 `documents` 的 4 类正例均产生预加载事件；空壳技能不产生预加载事件；非 debug 响应和 `/skills` 不暴露技能名；`go test -p 1 ./internal/server/...` 全绿。
+
+### 步骤 5.8　发布、回滚和并发保护
+
+应用发布使用不可变版本标签，并至少保留上一版本镜像或二进制；不能依赖固定的 `my-eino-app:local` 配合 `up -d --build` 回滚。路由规则使用功能开关，允许关闭单个问题能力。
+
+并发槽满时必须有排队上限和排队超时；不能无限等待。模型超时应返回 `504`，并与普通 `500` 分开统计。单副本阶段保留现有限流；多副本前必须另行引入共享会话、Redis 限流和共享文件存储。
+
+**验收**：新旧版本可切换；排队超过 5 秒或队列达到上限立即返回 `503`；模型超时返回 `504`；回滚不需要重新构建源码。
+
+### 步骤 5.9　备份、日志和告警
+
+备份范围必须包括 MySQL dump、Milvus 数据卷以及 `app-data` 中的 notes、checkpoints、executions；同机同盘副本不算灾备。备份成功的判据包括 manifest SHA256、恢复后表行数比对和非空业务数据检查，不能只看脚本退出码。目标暂定 RPO 6 小时、RTO 2 小时。
+
+当前 `/metrics` 是需登录访问的进程内 JSON 计数，重启后归零，不能直接被 Prometheus 抓取。5.9c 增加一个仅允许内网/代理管理网访问、使用 bearer/token 校验的指标入口，不能把整个 `/metrics` 匿名暴露；通知可由该入口或定时探测脚本驱动。为容器日志设置大小上限、保留周期和轮转策略；`execution_events` 增加周期清理，不依赖启动时的一次清理。
+
+当前 `scripts/backup.ps1` 的卷清单只有三个 Milvus 卷，不包含 `app-data`；5.9b 是必须实施的真实待办，不得把现有备份成功误认为全量备份。
+
+**验收**：定时备份成功；恢复检查通过；备份失败、健康检查失败、模型不可用、技能工具连续失败和磁盘不足都有可见告警；日志不会无限增长。
+
+### 步骤 5.10　内部灰度和上线门槛
+
+先开放给 3–10 名内部用户，灰度 3–7 天，再决定是否扩大范围。扩大范围前满足：认证和跨用户隔离 100% 通过，关键技能必需场景召回率不低于 95%，工具调用有执行证据的比例不低于 95%，关键流程无凭空声称已完成，非超时 5xx 小于 1%，备份成功率 100%，最近一次恢复检查不超过 7 天，严重安全问题为 0。
+
+启用多用户前必须运行 `go run ./cmd/session-migrate -claim-owner=<owner>` 处理 `local-owner` 下的历史会话和记忆。生产运行环境必须明确为 Windows/Docker Desktop 或 Linux/Docker，并按同一环境验证备份、定时任务和卷路径。`cmd/user-admin` 当前没有删除账号操作，离职账号按禁用处理；管理员口令必须在上线前改掉。
+
+**验收**：灰度期间每天检查错误、路由、备份和资源使用；认证、数据隔离、备份或恢复出现严重问题时停止扩大范围。
+
+### 阶段 5 的可执行拆分、提交边界与命令
+
+5.5a、5.6–5.10 不是“做完代码再一起验收”的工作包，按下列边界逐项提交。每个子步骤验收失败时只回退该子步骤；所有子步骤完成后，才允许执行 5.5b 的生产配置切换和灰度。
+
+| 子步骤 | 必须动作与受影响文件 | 提交边界 | 验收命令/断言 |
+|---|---|---|---|
+| 5.6a 网络 Compose | 新增独立生产 Compose 文件 `docker-compose.prod.yml`，不与开发 Compose 叠加，删除 MySQL/Milvus/Attu 的宿主机 `ports`，应用只绑定代理内网；Attu 默认不启动；应用镜像改为 `${APP_VERSION}` 不可变标签 | `chore(deploy): add production network compose` | `docker compose -f docker-compose.prod.yml config`；`docker compose -f docker-compose.prod.yml ps`；从用户网段扫描确认仅 HTTPS 入口可达 |
+| 5.6b 代理配置 | 新增并纳入部署文档的 Nginx 配置：TLS、HSTS、`proxy_read_timeout 210s`、WebSocket Upgrade、关闭 buffering、`limit_req`；按真实客户端 IP 在代理层限流 | `chore(proxy): add production reverse proxy policy` | `nginx -t`；浏览器登录/回调；WebSocket 连通；同一真实 IP 超过阈值返回 429 |
+| 5.6c 回调保护 | `internal/server/auth.go` 为 `/auth/callback` 增加按 IP 和回调状态的限流；应用侧仍只使用 `RemoteAddr` 兜底，不读取 XFF | `fix(auth): throttle oauth callback` | 新增回调限流单测；超过阈值返回 `429 + Retry-After`；合法回调仍能完成登录 |
+| 5.7a 确定性预检索 | 在 `internal/server/service.go` 的请求装配路径增加服务端知识意图判定和 `knowledge_search` 预检索；结果注入 agent instruction/history；服务端主动记录 `knowledge_search` 检索事件，不通过 debug 技能目录，不向用户暴露技能名；无命中统一回复“知识库中没有足够资料，无法确认” | `feat(routing): enforce knowledge preflight` | 路由单测覆盖命中、无命中、普通问答；集成测试检查主动检索事件、来源和拒答文本；非 debug 响应不含技能名 |
+| 5.7b 评测重写 | 重写 `internal/integration/eval_cases.json`：执行类题增加可判定答案断言；空壳文件技能改为能力限制断言；增加知识库无命中用例 | `test(eval): assert production routing and answer boundaries` | `go test -p 1 ./internal/evaluation/...`；`make eval` 输出路由、断言、拒答和工具证据指标 |
+| 5.7c 已接入技能预加载 | `SkillPreloaded` 已在 `internal/execution/event.go` 定义并列入 `knownTypes`；本步骤只在 `internal/server/service.go` 增加报告/文档动作+对象判定，服务端预加载 `report_writer`/`documents`，并新增 `KnowledgePreflight` 事件类型；`requestedSkill()` 继续保护客户端技能指定 | `feat(routing): preload connected skills server side` | `go test -p 1 ./internal/server/... ./internal/execution/...`；4 类正例产生预加载/预检索事件，空壳技能不预加载，debug=false 不暴露技能名 |
+| 5.8a 并发保护 | 在 `internal/server/service.go:enter` 增加 `runtime.queue_limit` 和 `runtime.queue_timeout`；满队列立即返回可识别错误 | `feat(runtime): bound concurrency queue` | 单测：并发槽满时等待不超过 5 秒，返回 503；配置校验拒绝非正数 |
+| 5.8b 超时和状态指标 | `internal/server/http.go` 将 `context.DeadlineExceeded` 映射为 `504`；扩展 `Stats` 按状态码和错误原因计数，区分超时与其他 5xx | `fix(http): report model timeout as 504` | HTTP 单测断言超时为 504；`/metrics` 输出 `status_5xx`、`timeouts`；非超时 5xx 可单独计算 |
+| 5.8c 发布回滚 | 修改 `Dockerfile`/生产 Compose/`Makefile`：版本由 `APP_VERSION` 注入；生产 Compose 文件不含 `build:`，只保留 `image: ${APP_VERSION}`；`make image VERSION=x` 构建，保留上一版本并提供 `make rollback VERSION=x` | `chore(release): make image versions rollbackable` | 连续构建两个版本；切换标签后 `docker compose ... up -d` 不重新构建；上一版本健康检查通过 |
+| 5.9a 执行记录清理 | 在 `internal/server/service.go` 增加可取消的定时清理 goroutine，复用 `RetentionDays`，停机时等待退出 | `feat(execution): schedule retention cleanup` | fake store 单测确认周期调用；关闭服务后 goroutine 退出；长期运行不会只在启动时清理 |
+| 5.9b 全量备份 | 扩展 `scripts/backup.ps1` 和 `scripts/restore-check.ps1`，加入 `app-data` 卷；manifest 必须包含 SHA256、表行数、非空业务数据判据；备份复制到不同存储位置 | `feat(ops): back up app data and verify contents` | `make backup`；`make restore-check`；检查 16 张表、3 个 Milvus 卷和 `app-data` 均有产物；故意空 dump 时命令失败 |
+| 5.9c 日志与通知 | Compose 增加日志大小/轮转配置；新增通知脚本或 Prometheus 告警规则，覆盖健康、备份、模型/工具失败、磁盘不足；为 Prometheus 增加受保护的内部 bearer/token 抓取入口 | `chore(ops): add log rotation and alerts` | `docker compose config` 检查 logging；模拟备份失败收到通知；日志文件达到上限后轮转；无凭据不能抓指标 |
+| 5.10a 门槛出口 | `internal/evaluation/evaluation.go` / `cmd/eval/main.go` 只增加 `tool_evidence_rate` 和拒答边界统计；`internal/server/http.go`/`service.go` 的受保护 `/metrics` 单独增加 `non_timeout_5xx_rate` 所需状态/超时计数 | `feat(eval): export launch gate metrics` | `make eval` JSON 含工具证据和拒答字段；认证指标抓取含状态/超时字段；固定失败样本验证分母和分子可失败 |
+| 5.10b 灰度验收 | 使用已存在的 `docs/RUNBOOK.md` 14.23 灰度章节，填写 3–10 名用户、3–7 天窗口、每日检查和停止条件；不新增第二份方案或独立检查清单 | `docs(launch): record internal canary result`（仅在记录尚未填写时提交） | 连续 3 天指标达到门槛；负责人签字记录；完成 5.5b 前置检查 |
+
+**门槛计算口径**：关键技能召回率只统计确定性路由用例；工具执行证据率由 `make eval` 统计执行类请求中至少存在一组 `tool_started`/`tool_completed`、`knowledge_preflight` 或 `skill_preloaded` 事件的比例；检查清单第 11 项使用同一组事件名。非超时 5xx 由受保护 `/metrics` 统计 HTTP 500–599 中排除 `context deadline exceeded` 的部分。两套出口都必须直接产出指标，不能依靠人工从日志估算。
+
+**最终上线顺序**：5.5a bootstrap → 5.6a–c → 5.7a–c → 5.8a–c → 5.9a–c → 5.10a–b → 总验收清单 → 5.5b 配置切换 → 3–7 天内部灰度。任一子步骤失败都不得进入下一组。
 
 ---
 
@@ -1295,7 +1412,7 @@ go run ./cmd/user-admin -create -username=admin -admin   # 口令走 stdin 交�
 | B7 | **用户名含 `:` 会撞 owner 命名空间** | 有人用 `feishu:xxx` 当用户名，即与某个飞书身份同名 → 直接读写对方的数据 | 步骤 2.12 的 `^[a-zA-Z0-9_]{3,32}$` 格式校验必须先于查库 |
 | B8 | **登录接口不限期 = 口令爆破入口** | 用户名可枚举（内部系统就是人名拼音），错误口令可无限次尝试 | 步骤 2.13 按 **IP + 用户名** 双维度限流；只按 IP 会漏内网多机，只按用户名会漏批量撞库 |
 | B9 | **自有账号口令用 sha256 存** | 用户自选口令强度不可控 + 单轮哈希 → 库一旦泄露即可秒破 | 步骤 2.11 用 `crypto/pbkdf2`（**Go 标准库自带，零新增依赖**），210000 轮 + 随机盐 |
-| B10 | **打开 `auth.enabled` 却没建任何账号** | 飞书一旦故障，系统**彻底没有入口** —— 而本地账号的意义正在于此 | 步骤 5.5 的前置动作：先 `cmd/user-admin` 建管理员账号，再开 auth |
+| B10 | **打开 `auth.enabled` 却没建任何账号** | 飞书一旦故障，系统**彻底没有入口** —— 而本地账号的意义正在于此 | 步骤 5.5a 的前置动作：先 `cmd/user-admin` 建管理员账号，再由 5.5b 开 auth |
 
 ### 收敛侧
 
@@ -1321,7 +1438,7 @@ go run ./cmd/user-admin -create -username=admin -admin   # 口令走 stdin 交�
 | 2 | `make db-migrate` 连跑两次；`go test -p 1 ./...` | A/B 加 L1/L2 **四种身份**交叉测试全项通过（见步骤 2.15） |
 | 3 | `make boundary`；`go test -p 1 ./...`（通过数与基线一致） | — |
 | 4 | `make eval` 输出含 `routing_accuracy` | 易混场景判定正确 |
-| 5 | `make backup` + `restore-check`；限流脚本打满 | `docker stop` 走优雅停机；`/health` 与 `/health/ready` 行为分离 |
+| 5 | `go test -p 1 ./...`；`make backup` + `restore-check`；`docker compose -f docker-compose.prod.yml config`；代理/回调/队列/504/指标/清理测试；`make eval` 输出上线门槛 | 仅 HTTPS 入口可达；`/health` 与 `/health/ready` 分离；知识库无命中明确拒答；空壳技能不承诺文件能力；可切换上一版本；备份、告警、灰度记录全部通过 |
 
 ### 上线前最终检查
 
@@ -1329,8 +1446,17 @@ go run ./cmd/user-admin -create -username=admin -admin   # 口令走 stdin 交�
 - [ ] **已用 `cmd/user-admin -create -admin` 建好管理员本地账号** —— 必须在打开 `auth.enabled` 之前完成（坑 B10）
 - [ ] `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_REDIRECT_URL` 通过环境变量注入，**不在仓库中**
 - [ ] `REDIRECT_URL` 与飞书开发者后台登记的**完全一致**（含端口与路径）
-- [ ] `CookieSecure` 与部署协议匹配（内网 http 必须 `false`，否则浏览器不保存 Cookie）
+- [ ] 第一阶段通过 HTTPS 反向代理访问，`CookieSecure: true`；仅开发环境 HTTP 才允许 `false`
 - [ ] 历史会话已用 `go run ./cmd/session-migrate -claim-owner=<owner>` 归属（**不要用 `admin_open_id`，该字段已废弃删除**；迁移路径见 RUNBOOK 第 293 行附近）
+- [ ] 生产 Compose 已删除不必要的数据库、Milvus、Attu 端口发布；Attu 默认关闭或仅管理网可达
+- [ ] 反向代理已配置 HTTPS、真实客户端 IP、180 秒以上读超时和 WebSocket Upgrade 透传；`/auth/callback` 已限流
+- [ ] 生产镜像使用不可变版本标签，上一版本可切换，回滚不依赖重新构建
+- [ ] 表格、PDF、PPT 的未接入能力已在产品文案和验收中明确，未承诺生成或编辑文件
+- [ ] 私有知识请求实际产生 `knowledge_search` 事件并带来源；技能或 embedding 变更后已重跑 `make eval`
+- [ ] 并发排队有上限和超时；模型超时返回 `504`，与普通 `500` 分开统计
+- [ ] 备份包含 MySQL、Milvus 和 `app-data`；manifest SHA256、恢复行数和非空数据检查均通过，备份不与生产同盘
+- [ ] 备份告警、健康告警、模型/工具失败告警和磁盘告警已有通知通道；日志有大小上限和轮转策略
+- [ ] `local-owner` 历史数据已迁移；生产 OS 和备份/定时任务方案已明确并在同一环境验证
 - [ ] 备份定时任务已生效，`restore-check` 至少跑过一次
 - [ ] `make check` 全绿
 
@@ -1391,12 +1517,25 @@ go run ./cmd/user-admin -create -username=admin -admin   # 口令走 stdin 交�
 
 - `internal/evaluation/evaluation.go`、`cmd/eval/main.go`、`internal/integration/eval_cases.json`
 
-### 阶段 5（10 个）
+### 阶段 5（10 个基础步骤 + 15 个可执行子步骤）
 
+- `docker-compose.milvus.yml`（步骤 5.5a 的 loopback 运维绑定）
+- `cmd/user-admin`、`cmd/session-migrate`（步骤 5.5a 的宿主机 bootstrap，不打进应用镜像）
 - `cmd/server/main.go`（步骤 5.1）
 - `internal/server/ratelimit.go`（新增）+ `internal/config/config.go`（新增 `rate_limit` 段）+ 三份配置（步骤 5.2）
 - `scripts/backup.ps1`、`scripts/restore-check.ps1`（新增）+ `Makefile`（步骤 5.3）
 - `internal/server/http.go`（步骤 5.4）
+- `docker-compose.prod.yml`（新增，步骤 5.6a）
+- `deploy/nginx/eino.conf`（新增，步骤 5.6b）
+- `internal/server/auth.go`、对应测试（步骤 5.6c）
+- `internal/execution/event.go`、`internal/execution/emitter.go`、对应测试（步骤 5.7a/5.7c 事件白名单）
+- `internal/server/service.go`、路由测试和 agent 装配代码（步骤 5.7a、5.8a、5.9a）
+- `internal/execution/event.go`、`internal/execution/emitter.go`、对应测试（步骤 5.7a/5.7c 的预检索和预加载事件白名单）
+- `internal/integration/eval_cases.json`、`internal/evaluation/evaluation.go`、`cmd/eval/main.go`（步骤 5.7b、5.10a；与阶段 4 的评测改动合并提交）
+- `internal/server/http.go`、`internal/server/service.go`、配置校验和测试（步骤 5.8a–b）
+- `Dockerfile`、`docker-compose.prod.yml`、`Makefile`（步骤 5.8c）
+- `scripts/backup.ps1`、`scripts/restore-check.ps1`、Compose 日志配置（步骤 5.9b–c）
+- `docs/RUNBOOK.md` 灰度操作章节（步骤 5.10b）
 
 ### 关键交集（必须按顺序，否则二次改写）
 
@@ -1404,10 +1543,26 @@ go run ./cmd/user-admin -create -username=admin -admin   # 口令走 stdin 交�
 |---|---|---|
 | `internal/evaluation/evaluation.go` | 3（import）+ 4（逻辑） | 步骤 4.1 必须在 3.1 之后 |
 | `cmd/eval/main.go` | 3（import）+ 4（逻辑） | 步骤 4.1 必须在 3.1 之后 |
-| `internal/server/service.go` | 2（owner + 9 处）+ 3（import） | 阶段 2 必须在阶段 3 之前 |
+| `internal/server/service.go` | 2（owner + 9 处）+ 3（import）+ 5.7a/5.7c/5.8a/5.9a | 阶段 2 必须在阶段 3 之前；5.7 路由完成后再做队列和清理 |
 | `cmd/server/main.go` | 2（装配 auth）+ 3（import）+ 5.1（信号） | 阶段 2 → 3 → 5 |
 | `config.yaml` | 1（S5/S6）+ 2（auth 段） | 段落不重叠，但**不要同时提交同一文件** |
 | `internal/server/ratelimit.go` | 2（步骤 2.13 创建）+ 5（步骤 5.2 扩展） | 5.2 **只扩展不重建**，否则会出现两套限流实现 |
+| `internal/server/http.go` | 2（认证路由）+ 5.4（ready）+ 5.8b（504/状态指标） | 先完成认证，再补 readiness 和状态码指标 |
+| `internal/config/config.go` | 2（auth）+ 5.2（rate_limit）+ 5.8a（queue_limit/timeout） | 配置字段一次校验，三份配置同步 |
+| `internal/server/auth.go` | 2（登录/回调）+ 5.6c（回调限流） | 5.6c 只扩展现有登录限流，不重写认证流程 |
+| `internal/integration/eval_cases.json` | 4（路由评测）+ 5.7b（答案边界） | 统一重写断言，避免旧模型自主路由期望残留 |
+| `scripts/backup.ps1` / `scripts/restore-check.ps1` | 5.3（初版）+ 5.9b（app-data 扩展） | 5.9b 只扩展备份范围和判据，保留已验证的 SHA256/恢复流程 |
+| `internal/evaluation/evaluation.go` / `cmd/eval/main.go` | 阶段 4 + 5.7b/5.10a | 合并为一次评测指标提交，只计算工具证据和拒答边界，不计算 HTTP 5xx；避免门槛分母不一致 |
+
+### 阶段 5 生产来源与执行对应
+
+| 本方案步骤 | 具体来源/交付物 |
+|---|---|
+| 5.6a–c | 本仓库生产 Compose、Nginx 配置、`auth.go` 回调限流及测试 |
+| 5.7a–c | 服务端预检索、已接入技能预加载、能力边界回复、评测用例和答案断言 |
+| 5.8a–c | 并发队列、HTTP 状态码/指标、不可变镜像和回滚命令 |
+| 5.9a–c | 执行记录定时清理、全量备份恢复、日志轮转和通知规则 |
+| 5.10a–b | `make eval`/`/metrics` 门槛指标、内部灰度记录和停止条件 |
 
 ---
 
@@ -1440,7 +1595,12 @@ go run ./cmd/user-admin -create -username=admin -admin   # 口令走 stdin 交�
 | 步骤 5.2 | 第十九节第 1 条（**本方案补全设计**）；限流实现文件改由步骤 2.13 创建，5.2 只做扩展 |
 | 步骤 5.3 | 第十九节第 2 条（**本方案补全设计**） |
 | 步骤 5.4 | 从「已达成的现状」与 Dockerfile HEALTHCHECK 推导（**本方案新增**） |
-| 步骤 5.5 | `AUTH-PLAN.md` A 节的配置常量 + 本方案补全的切换清单 |
+| 步骤 5.5a–b | `AUTH-PLAN.md` A 节的配置常量 + 本方案新增的 bootstrap、历史归属和最后的生产配置切换 |
+| 步骤 5.6a–c | **本方案新增**：生产 Compose、HTTPS 反向代理、回调限流和网络隔离 |
+| 步骤 5.7a–c | **本方案新增**：服务端知识预检索、已接入技能预加载、能力边界回复、评测断言 |
+| 步骤 5.8a–c | **本方案新增**：有界并发、504 与指标拆分、不可变镜像回滚 |
+| 步骤 5.9a–c | **本方案新增**：执行记录周期清理、完整备份、日志轮转与告警 |
+| 步骤 5.10a–b | **本方案新增**：上线门槛度量与内部灰度流程 |
 | 「明确不做」 | `REFACTOR-PLAN.md` 阶段 4、S8、决策 5；`AUTH-PLAN.md` 坑 5 |
 
 ---
