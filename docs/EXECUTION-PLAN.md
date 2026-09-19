@@ -59,7 +59,7 @@
 | WS 同源校验 | `ws.go` 的 `CheckOrigin` 比对 Host。这是 CSRF 防护，**不是认证**，阶段 2 要另做认证 |
 | 请求体大小限制 | 1 MiB |
 | 容器加固 | Dockerfile 非 root（`USER eino`）、HEALTHCHECK 打 `/health`；compose 依赖健康门控 + `restart` |
-| `SkillPreloaded` 事件 | `internal/execution/event.go` 已定义并列入 `knownTypes`；`internal/server/service.go` 已有发送路径。阶段 5.7c 只补生产态服务端预加载和 `KnowledgePreflight`，不要重复注册 `SkillPreloaded` |
+| `SkillPreloaded` 事件 | `internal/execution/event.go` 已定义并列入 `knownTypes`；`internal/server/service.go` 已有发送路径。阶段 5.7c 复用它补生产态服务端预加载；知识预检索复用标准工具事件，不新增自定义事件 |
 | 迁移机制 | 幂等 `CREATE TABLE IF NOT EXISTS` + `//go:embed`，但**没有版本表**，且不幂等处理 `ALTER TABLE`（见坑 B2） |
 | 已有组件 | `github.com/google/uuid`（生成 state / session id）、`github.com/joho/godotenv`（读 .env）。**`go.mod` 无 `golang.org/x/oauth2`**——飞书接口是标准 HTTP，手写 3 个调用，不引依赖 |
 | 测试规模 | 35 个测试文件 |
@@ -1195,7 +1195,7 @@ runtime:
 
 **验收**：脚本连续打 40 次 `POST /chat`，第 31 次起返回 429；`burst` 内允许突发；`Retry-After` 合理。
 
-### 步骤 5.3　备份与恢复演练　✅ 基础流程已实现并验证；`app-data` 扩展仍待执行
+### 步骤 5.3　备份与恢复演练　✅ Windows/Linux 实现已完成；生产环境演练待依赖服务可用后执行
 
 > **本节为新增设计，不在原三份方案内。**
 
@@ -1309,7 +1309,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 在 `internal/server/service.go` 的请求装配路径增加动作 + 对象判定：命中报告生成时服务端预加载 `report_writer`，命中文本/DOCX 读取时预加载 `documents`。该预加载属于服务端内部上下文，不重新开放 `GET /skills`、请求体 `skill` 字段或技能名展示；`requestedSkill()` 的 debug 门禁只继续保护客户端指定技能和目录暴露。
 
-预加载应复用 agent 现有 instruction/context 注入路径，并使用已有的 `SkillPreloaded` 事件记录；知识预检索新增并注册 `KnowledgePreflight` 事件。知识预检索若不经过工具管线，必须在事件 payload 中保留命中数、来源和拒答原因；若复用工具管线，则必须产生标准 `tool_started`/`tool_completed` 事件。新增路由单测覆盖动作、对象、组合请求、未命中和 debug=false，不允许通过单个关键词误触发。
+预加载复用 agent 现有 instruction/context 注入路径，并使用已有的 `SkillPreloaded` 事件记录；知识预检索复用标准 `tool_started`/`tool_completed` 事件，payload 保留 `hit_count`、`sources` 和 `source=server_preflight`。新增路由单测覆盖动作、对象、组合请求、未命中和 debug=false，不允许通过单个关键词误触发。
 
 **提交边界**：`feat(routing): preload connected skills server side`。
 
@@ -1329,7 +1329,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 当前 `/metrics` 是需登录访问的进程内 JSON 计数，重启后归零，不能直接被 Prometheus 抓取。5.9c 增加一个仅允许内网/代理管理网访问、使用 bearer/token 校验的指标入口，不能把整个 `/metrics` 匿名暴露；通知可由该入口或定时探测脚本驱动。为容器日志设置大小上限、保留周期和轮转策略；`execution_events` 增加周期清理，不依赖启动时的一次清理。
 
-当前 `scripts/backup.ps1` 的卷清单只有三个 Milvus 卷，不包含 `app-data`；5.9b 是必须实施的真实待办，不得把现有备份成功误认为全量备份。
+`scripts/backup.ps1`、`scripts/backup.sh` 现已覆盖三个 Milvus 依赖卷和 `app-data`；5.9b 的代码实现已完成，仍须在目标环境执行备份、异地复制和恢复演练，不能把静态配置检查误认为灾备验证。
 
 **验收**：定时备份成功；恢复检查通过；备份失败、健康检查失败、模型不可用、技能工具连续失败和磁盘不足都有可见告警；日志不会无限增长。
 
@@ -1347,19 +1347,19 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 | 子步骤 | 必须动作与受影响文件 | 提交边界 | 验收命令/断言 |
 |---|---|---|---|
-| 5.6a 网络 Compose | 新增独立生产 Compose 文件 `docker-compose.prod.yml`，不与开发 Compose 叠加；生产文件不包含 MySQL、Milvus、Attu 的宿主机 `ports`，应用只绑定代理内网；Attu 默认不启动；应用镜像改为 `${APP_VERSION}` 不可变标签 | `chore(deploy): add production network compose` | 停止开发 Compose 后执行 `docker compose -f docker-compose.prod.yml config` 和 `docker compose -f docker-compose.prod.yml up -d`；确认 MySQL/Milvus/Attu 无宿主机端口，应用健康检查通过，从用户网段只能访问 HTTPS 入口 |
+| 5.6a 网络 Compose | 新增独立生产 Compose 文件 `docker-compose.prod.yml`，不与开发 Compose 叠加；生产文件不包含 MySQL、Milvus、Attu 的宿主机 `ports`，应用只绑定代理内网；Attu 默认不启动；应用镜像使用 `${APP_IMAGE}` 不可变标签 | `chore(deploy): add production network compose` | 停止开发 Compose 后执行 `docker compose -f docker-compose.prod.yml --env-file .env.prod config` 和 `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --no-build`；确认 MySQL/Milvus/Attu 无宿主机端口，应用健康检查通过，从用户网段只能访问 HTTPS 入口 |
 | 5.6b 代理配置 | 新增并纳入部署文档的 Nginx 配置：TLS、HSTS、`proxy_read_timeout 210s`、WebSocket Upgrade、关闭 buffering、`limit_req`；按真实客户端 IP 在代理层限流 | `chore(proxy): add production reverse proxy policy` | `nginx -t`；浏览器登录/回调；WebSocket 连通；同一真实 IP 超过阈值返回 429 |
 | 5.6c 回调保护 | `internal/server/auth.go` 为 `/auth/callback` 增加按 IP 和回调状态的限流；应用侧仍只使用 `RemoteAddr` 兜底，不读取 XFF | `fix(auth): throttle oauth callback` | 新增回调限流单测；超过阈值返回 `429 + Retry-After`；合法回调仍能完成登录 |
-| 5.7a 确定性预检索 | 在 `internal/server/service.go` 的请求装配路径增加服务端知识意图判定和 `knowledge_search` 预检索；结果注入 agent instruction/history；服务端主动记录 `knowledge_preflight`，或复用工具管线产生标准 `tool_started`/`tool_completed` 事件，不通过 debug 技能目录，不向用户暴露技能名；无命中统一回复“知识库中没有足够资料，无法确认” | `feat(routing): enforce knowledge preflight` | 路由单测覆盖命中、无命中、普通问答；集成测试检查预检索事件、来源和拒答文本；非 debug 响应不含技能名 |
+| 5.7a 确定性预检索 | 在 `internal/server/service.go` 的请求装配路径增加服务端知识意图判定和 `knowledge_search` 预检索；结果注入 agent instruction/history；复用标准 `tool_started`/`tool_completed` 事件，不通过 debug 技能目录，不向用户暴露技能名；无命中统一回复“知识库中没有足够资料，无法确认” | `feat(routing): enforce knowledge preflight` | 路由单测覆盖命中、无命中、普通问答；集成测试检查预检索事件、来源和拒答文本；非 debug 响应不含技能名 |
 | 5.7b 评测重写 | 重写 `internal/integration/eval_cases.json`：执行类题增加可判定答案断言；空壳文件技能改为能力限制断言；增加知识库无命中用例 | `test(eval): assert production routing and answer boundaries` | `go test -p 1 ./internal/evaluation/...`；`make eval` 输出路由、断言、拒答和工具证据指标 |
-| 5.7c 已接入技能预加载 | `SkillPreloaded` 已在 `internal/execution/event.go` 定义并列入 `knownTypes`；本步骤只在 `internal/server/service.go` 增加报告/文档动作+对象判定，服务端预加载 `report_writer`/`documents`，并新增 `KnowledgePreflight` 事件类型；`requestedSkill()` 继续保护客户端技能指定；同步更新 `internal/server/web/app.js` 的非 debug 过滤和知识来源渲染 | `feat(routing): preload connected skills server side` | `go test -p 1 ./internal/server/... ./internal/execution/...`；4 类正例产生预加载/预检索事件，空壳技能不预加载，debug=false 不暴露事件名或技能名，知识来源可见 |
+| 5.7c 已接入技能预加载 | `SkillPreloaded` 已在 `internal/execution/event.go` 定义并列入 `knownTypes`；本步骤在 `internal/skill/runtime.go` 支持多技能预加载，在 `internal/server/service.go` 增加报告/文档动作+对象判定，服务端预加载 `report_writer`/`documents`；`requestedSkill()` 继续保护客户端技能指定 | `feat(routing): preload connected skills server side` | `go test -p 1 ./internal/server/... ./internal/skill/...`；报告、文档和组合请求产生预加载事件，空壳技能不预加载，debug=false 不暴露技能名，知识来源可见 |
 | 5.8a 并发保护 | 在 `internal/server/service.go:enter` 增加 `runtime.queue_limit` 和 `runtime.queue_timeout`；满队列立即返回可识别错误 | `feat(runtime): bound concurrency queue` | 单测：并发槽满时等待不超过 5 秒，返回 503；配置校验拒绝非正数 |
 | 5.8b 超时和状态指标 | `internal/server/http.go` 将 `context.DeadlineExceeded` 映射为 `504`；扩展 `Stats` 按状态码和错误原因计数，区分超时与其他 5xx | `fix(http): report model timeout as 504` | HTTP 单测断言超时为 504；`/metrics` 输出 `status_5xx`、`timeouts`；非超时 5xx 可单独计算 |
-| 5.8c 发布回滚 | 修改 `Dockerfile`/生产 Compose/`Makefile`：版本由 `APP_VERSION` 注入；生产 Compose 文件不含 `build:`，只保留 `image: ${APP_VERSION}`；`make image VERSION=x` 构建，保留上一版本并提供 `make rollback VERSION=x` | `chore(release): make image versions rollbackable` | 连续构建两个版本；切换标签后 `docker compose ... up -d` 不重新构建；上一版本健康检查通过 |
+| 5.8c 发布回滚 | 生产 Compose 文件不含 `build:`，只保留 `image: ${APP_IMAGE}`；`make image VERSION=x` 构建不可变标签，`make prod-up VERSION=x` 启动，`make prod-rollback VERSION=x` 切换上一版本 | `chore(release): make image versions rollbackable` | 连续构建两个版本；切换标签后 `docker compose ... up -d --no-build`；上一版本健康检查通过 |
 | 5.9a 执行记录清理 | 在 `internal/server/service.go` 增加可取消的定时清理 goroutine，复用 `RetentionDays`，停机时等待退出 | `feat(execution): schedule retention cleanup` | fake store 单测确认周期调用；关闭服务后 goroutine 退出；长期运行不会只在启动时清理 |
-| 5.9b 全量备份 | 扩展 `scripts/backup.ps1` 和 `scripts/restore-check.ps1`，加入 `app-data` 卷；manifest 必须包含 SHA256、表行数、非空业务数据判据；备份复制到不同存储位置 | `feat(ops): back up app data and verify contents` | `make backup`；`make restore-check`；检查 16 张表、3 个 Milvus 卷和 `app-data` 均有产物；故意空 dump 时命令失败 |
-| 5.9c 日志与通知 | Compose 增加日志大小/轮转配置；新增通知脚本或 Prometheus 告警规则，覆盖健康、备份、模型/工具失败、磁盘不足；为 Prometheus 增加受保护的内部 bearer/token 抓取入口 | `chore(ops): add log rotation and alerts` | `docker compose config` 检查 logging；模拟备份失败收到通知；日志文件达到上限后轮转；无凭据不能抓指标 |
-| 5.10a 门槛出口 | `internal/evaluation/evaluation.go` / `cmd/eval/main.go` 只增加 `tool_evidence_rate` 和拒答边界统计；`internal/server/http.go`/`service.go` 的受保护 `/metrics` 单独增加 `non_timeout_5xx_rate` 所需状态/超时计数 | `feat(eval): export launch gate metrics` | `make eval` JSON 含工具证据和拒答字段；认证指标抓取含状态/超时字段；固定失败样本验证分母和分子可失败 |
+| 5.9b 全量备份 | Windows 脚本和新增 Linux 脚本覆盖 MySQL dump、3 个 Milvus 依赖卷及 `app-data`；manifest 包含 SHA256、非空业务数据判据和恢复演练入口；备份复制到不同存储位置 | `feat(ops): back up app data and verify contents` | Windows 执行 `make backup`/`make restore-check`；Linux 执行 `make backup-linux`/`make restore-check-linux`；故意空 dump 时命令失败 |
+| 5.9c 日志与通知 | Compose 增加日志大小/轮转配置；`/metrics` 支持受保护 bearer token；新增 `scripts/health-alert.sh`，探测 readiness/metrics 并通过可选 webhook 通知 | `chore(ops): add log rotation and alerts` | `docker compose -f docker-compose.prod.yml --env-file .env.prod config` 检查 logging；无 bearer 不能抓指标；探测失败返回非零并在配置 webhook 时发送通知 |
+| 5.10a 门槛出口 | `internal/evaluation/evaluation.go` / `cmd/eval/main.go` 输出路由、工具/预加载证据率；`internal/server/http.go`/`service.go` 的受保护 `/metrics` 输出 `status_5xx`、`timeouts`、`non_timeout_5xx_rate` | `feat(eval): export launch gate metrics` | `make eval` JSON 含工具证据字段；带 bearer 抓取指标；固定失败样本验证分母和分子可失败 |
 | 5.10b 灰度验收 | 使用已存在的 `docs/RUNBOOK.md` 14.23 灰度章节，填写 3–10 名用户、3–7 天窗口、每日检查和停止条件；不新增第二份方案或独立检查清单 | `docs(launch): record internal canary result`（仅在记录尚未填写时提交） | 连续 3 天指标达到门槛；负责人签字记录；完成 5.5b 前置检查 |
 
 **门槛计算口径**：关键技能召回率只统计确定性路由用例；工具执行证据率由 `make eval` 统计执行类请求中至少存在一组 `tool_started`/`tool_completed`、`knowledge_preflight` 或 `skill_preloaded` 事件的比例；检查清单第 11 项使用同一组事件名。非超时 5xx 由受保护 `/metrics` 统计 HTTP 500–599 中排除 `context deadline exceeded` 的部分。两套出口都必须直接产出指标，不能依靠人工从日志估算。
@@ -1529,15 +1529,15 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 - `scripts/backup.ps1`、`scripts/restore-check.ps1`（新增）+ `Makefile`（步骤 5.3）
 - `internal/server/http.go`（步骤 5.4）
 - `docker-compose.prod.yml`（新增，步骤 5.6a）
-- `deploy/nginx/eino.conf`（新增，步骤 5.6b）
+- `deploy/openresty/my-eino-app.conf`（新增，步骤 5.6b）
 - `internal/server/auth.go`、对应测试（步骤 5.6c）
-- `internal/execution/event.go`、对应测试（步骤 5.7a/5.7c 新增 `KnowledgePreflight` 白名单；`SkillPreloaded` 已存在）
+- `internal/execution/event.go`、对应测试（`SkillPreloaded` 已存在；知识预检索复用标准工具事件）
 - `internal/server/web/app.js`（步骤 5.7c 非 debug 事件过滤和预检索来源渲染）
 - `internal/server/service.go`、路由测试和 agent 装配代码（步骤 5.7a、5.8a、5.9a）
 - `internal/integration/eval_cases.json`、`internal/evaluation/evaluation.go`、`cmd/eval/main.go`（步骤 5.7b、5.10a；与阶段 4 的评测改动合并提交）
 - `internal/server/http.go`、`internal/server/service.go`、配置校验和测试（步骤 5.8a–b）
 - `Dockerfile`、`docker-compose.prod.yml`、`Makefile`（步骤 5.8c）
-- `scripts/backup.ps1`、`scripts/restore-check.ps1`、Compose 日志配置（步骤 5.9b–c）
+- `scripts/backup.ps1`、`scripts/restore-check.ps1`、`scripts/backup.sh`、`scripts/restore-check.sh`、`scripts/health-alert.sh`、Compose 日志配置（步骤 5.9b–c）
 - `docs/RUNBOOK.md` 灰度操作章节（步骤 5.10b）
 
 ### 关键交集（必须按顺序，否则二次改写）

@@ -1,0 +1,124 @@
+# 生产配置模板。由 docker-compose.prod.yml 挂载为 /app/config.yaml。
+# 所有密钥和地址都由环境变量注入；未设置时启动会明确失败。
+openai:
+  api_key: "${OPENAI_API_KEY}"
+  model: "${OPENAI_MODEL}"
+  base_url: "${OPENAI_BASE_URL}"
+  reasoning_effort: "none"
+  max_completion_tokens: 2048
+
+session_dir: "data/sessions"
+session:
+  store: "mysql"
+  max_messages: 20
+  max_chars: 12000
+  expire_days: 30
+
+skills:
+  dir: "skills"
+  default: ""
+
+runtime:
+  request_timeout: 180s
+  max_concurrency: 2
+  queue_limit: 4
+  queue_timeout: 10s
+  rate_limit:
+    enabled: true
+    per_minute: 30
+    burst: 10
+
+local_files:
+  enabled: true
+  roots: ["workspace-files"]
+  max_bytes: 10485760
+
+execution_events:
+  enabled: true
+  queue_size: 256
+  retention_days: 7
+  max_events_per_run: 5000
+  dir: "data/executions"
+
+auth:
+  enabled: true
+  provider: "feishu"
+  app_id: "${FEISHU_APP_ID}"
+  app_secret: "${FEISHU_APP_SECRET}"
+  redirect_url: "${FEISHU_REDIRECT_URL}"
+  session_ttl: 12h
+  cookie_secure: true
+  local:
+    enabled: true
+    min_password_length: 12
+
+agent:
+  multi_agent: true
+  checkpoint_dir: "data/checkpoints"
+
+memory:
+  enabled: true
+  identity_mode: "multi_user"
+  owner_id: ""
+  project_id: "my-eino-app"
+  auto_extract: true
+  extractor_model: "inherit_chat"
+  embedding_config: "inherit_rag"
+  milvus_collection: "my_eino_memory_v1"
+  vectorize_types: ["project_fact", "decision", "milestone", "todo"]
+  extraction_context_messages: 8
+  max_candidates: 5
+  max_candidate_chars: 500
+  worker_concurrency: 1
+  task_timeout: 120s
+  lease_duration: 180s
+  max_attempts: 5
+  retry_initial_delay: 2s
+  retry_max_delay: 60s
+  retrieval_top_k: 5
+  max_context_chars: 2000
+  audit_retention_days: 30
+  turn_retention_days: 30
+  job_success_retention_days: 7
+  job_failed_retention_days: 30
+  source_retention_days: 90
+  version_keep_count: 3
+  cleanup_batch_size: 500
+  cleanup_interval: 24h
+
+debug: false
+
+ollama:
+  health_check: true
+  timeout: 60s
+
+retry:
+  max_attempts: 3
+  base_delay: 1s
+  max_delay: 10s
+
+rag:
+  enabled: true
+  store: "milvus"
+  document_dir: "docs/knowledge"
+  chunk_size: 800
+  chunk_overlap: 120
+  top_k: 5
+  score_threshold: 0.50
+  max_context_chars: 6000
+  dimension: 1024
+  embedding:
+    api_key: "${EMBEDDING_API_KEY}"
+    model: "${EMBEDDING_MODEL}"
+    base_url: "${EMBEDDING_BASE_URL}"
+  redis:
+    addr: "redis-stack:6379"
+    password: ""
+    db: 0
+    index: "my_eino_knowledge"
+    key_prefix: "knowledge:"
+  milvus:
+    address: "milvus:19530"
+    username: ""
+    password: ""
+    collection: "my_eino_knowledge"

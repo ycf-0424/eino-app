@@ -61,9 +61,11 @@ type Report struct {
 	Cases             []CaseResult `json:"cases"`
 	// RoutingTotal / RoutingAccuracy 只统计声明了 expect_skills 的题目：
 	// 路由维度与答案维度用不同的分母，混在一起算会互相污染。
-	RoutingTotal    int           `json:"routing_total"`
-	RoutingAccuracy float64       `json:"routing_accuracy"`
-	Routing         []RouteResult `json:"routing,omitempty"`
+	RoutingTotal      int           `json:"routing_total"`
+	RoutingAccuracy   float64       `json:"routing_accuracy"`
+	Routing           []RouteResult `json:"routing,omitempty"`
+	ToolEvidenceTotal int           `json:"tool_evidence_total"`
+	ToolEvidenceRate  float64       `json:"tool_evidence_rate"`
 }
 
 // LoadCases 函数。
@@ -155,10 +157,11 @@ type Router interface {
 
 // Routing 是一次 Agent 全链路执行的观测结果。
 type Routing struct {
-	Answer    string
-	Loaded    []string // 模型通过 load_skills 实际读取的技能
-	Requested []string // 模型在调用里请求过的技能（可能包含不存在的名字）
-	Preloaded []string // 本轮直接注入提示词的技能
+	Answer       string
+	Loaded       []string // 模型通过 load_skills 实际读取的技能
+	Requested    []string // 模型在调用里请求过的技能（可能包含不存在的名字）
+	Preloaded    []string // 本轮直接注入提示词的技能
+	ToolEvidence bool     // 本轮有可审计的工具或服务端预加载事件
 }
 
 // RouteResult 是一道题的路由判定结果。
@@ -172,10 +175,11 @@ type RouteResult struct {
 	// 第一手材料 —— 只给一个布尔值等于让人猜。
 	Missing []string `json:"missing_skills,omitempty"`
 	// Extra 是加载了但不在期望里的技能。不计入错误，仅用于观察是否过度加载。
-	Extra   []string `json:"extra_skills,omitempty"`
-	Matched bool     `json:"matched"`
-	Answer  string   `json:"answer,omitempty"`
-	Error   string   `json:"error,omitempty"`
+	Extra        []string `json:"extra_skills,omitempty"`
+	Matched      bool     `json:"matched"`
+	Answer       string   `json:"answer,omitempty"`
+	Error        string   `json:"error,omitempty"`
+	ToolEvidence bool     `json:"tool_evidence"`
 }
 
 // RunRouting 对声明了 ExpectSkills 的题目逐题执行 Agent 全链路并判定路由命中，
@@ -185,7 +189,8 @@ type RouteResult struct {
 // 多加载记入 Extra 但不算错 —— 技能规则本身鼓励组合多个技能，把多加载判为错误
 // 会让指标变成噪音；而「该用的没用」才是路由质量要抓的问题。
 //
-// 只认 Loaded 不认 Preloaded：预加载是调用方注入的，不是模型的选择。
+// Loaded 与 Preloaded 都是可审计的路由结果：生产服务端确定性路由使用
+// Preloaded，模型自主选择使用 Loaded。
 func RunRouting(ctx context.Context, router Router, cases []Case) ([]RouteResult, float64) {
 	var results []RouteResult
 	matched, total := 0, 0
@@ -203,8 +208,10 @@ func RunRouting(ctx context.Context, router Router, cases []Case) ([]RouteResult
 			result.Loaded = routing.Loaded
 			result.Requested = routing.Requested
 			result.Preloaded = routing.Preloaded
-			result.Missing = notIn(item.ExpectSkills, routing.Loaded)
-			result.Extra = notIn(routing.Loaded, item.ExpectSkills)
+			result.ToolEvidence = routing.ToolEvidence
+			observed := append(append([]string{}, routing.Loaded...), routing.Preloaded...)
+			result.Missing = notIn(item.ExpectSkills, observed)
+			result.Extra = notIn(observed, item.ExpectSkills)
 			result.Matched = len(result.Missing) == 0
 		}
 		if result.Matched {

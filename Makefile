@@ -16,8 +16,8 @@ sessions-import:
 	go run ./cmd/session-migrate -source data/sessions
 
 .PHONY: help fmt boundary test vet check run build index retrieve eval \
-	backup restore-check \
-	image infra-up up attu down restart ps logs app-logs
+	backup restore-check backup-linux restore-check-linux health-alert-linux \
+	image prod-up prod-rollback infra-up up attu down restart ps logs app-logs
 
 help: ## 显示可用命令
 	@echo "make db-migrate  - 在现有 MySQL 项目库中初始化会话表"
@@ -33,6 +33,10 @@ help: ## 显示可用命令
 	@echo "make eval        - 执行固定 RAG 评测"
 	@echo "make backup      - 备份 MySQL 与 Milvus 数据卷（保留最近 14 份）"
 	@echo "make restore-check - 用最近一份备份做恢复演练并比对行数"
+	@echo "make backup-linux - Linux 生产备份（使用 .env.prod）"
+	@echo "make restore-check-linux - Linux 生产恢复演练"
+	@echo "make prod-up VERSION=x - 使用不可变镜像启动生产 Compose"
+	@echo "make prod-rollback VERSION=x - 切换到指定的上一版本镜像"
 	@echo "make logs        - 查看全部容器日志"
 
 fmt: ## 格式化 Go 代码
@@ -78,8 +82,25 @@ backup: ## 备份 MySQL 与 Milvus 卷到 data/backups（保留最近 14 份）
 restore-check: ## 用最近一份备份做恢复演练并比对行数
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore-check.ps1
 
-image: ## 只构建应用镜像
-	docker build -t $(APP):local .
+backup-linux: ## Linux 生产备份
+	bash scripts/backup.sh
+
+restore-check-linux: ## Linux 生产恢复演练
+	bash scripts/restore-check.sh
+
+health-alert-linux: ## Linux 生产健康探测与可选 webhook 告警
+	bash scripts/health-alert.sh
+
+VERSION ?= local
+
+image: ## 构建带不可变版本标签的应用镜像
+	docker build -t $(APP):$(VERSION) .
+
+prod-up: ## 使用 .env.prod 和不可变镜像启动生产 Compose（不重新构建）
+	bash scripts/prod-deploy.sh $(VERSION)
+
+prod-rollback: ## 切换生产 Compose 到指定版本镜像（不重新构建）
+	bash scripts/prod-rollback.sh $(VERSION)
 
 infra-up: ## 启动数据库依赖，适合配合 make run
 	$(COMPOSE) up -d mysql etcd minio milvus
@@ -104,4 +125,3 @@ logs: ## 持续查看完整服务日志
 
 app-logs: ## 只查看应用日志
 	$(COMPOSE) logs -f --tail=200 app
-

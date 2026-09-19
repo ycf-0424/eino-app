@@ -16,6 +16,14 @@ import (
 // 返回值 preloaded 是本轮直接注入提示词的技能名，供 service 发 skill_preloaded 事件；
 // 技能目录扫描不等于模型使用技能，因此扫描结果不进入 preloaded。
 func (l *Loader) Runtime(preferred string, availableTools ...string) (instruction string, t eino.InvokableTool, preloaded []string, err error) {
+	if preferred == "" {
+		return l.RuntimeMany(nil, availableTools...)
+	}
+	return l.RuntimeMany([]string{preferred}, availableTools...)
+}
+
+// RuntimeMany is the deterministic preload path for compound requests.
+func (l *Loader) RuntimeMany(preferred []string, availableTools ...string) (instruction string, t eino.InvokableTool, preloaded []string, err error) {
 	names, err := l.List()
 	if err != nil {
 		return "", nil, nil, err
@@ -69,13 +77,18 @@ func (l *Loader) Runtime(preferred string, availableTools ...string) (instructio
 每轮按需重新加载，不假设历史轮次的技能正文仍存在。委派任务时传递适用规则和已获得的事实。
 可用技能目录：
 ` + catalog.String()
-	if preferred != "" {
-		s, ok := registry[preferred]
+	seenPreferred := map[string]bool{}
+	for _, name := range preferred {
+		if name == "" || seenPreferred[name] {
+			continue
+		}
+		seenPreferred[name] = true
+		s, ok := registry[name]
 		if !ok {
-			return "", nil, nil, fmt.Errorf("unknown preferred skill %q", preferred)
+			return "", nil, nil, fmt.Errorf("unknown preferred skill %q", name)
 		}
 		instruction += "\n本轮预加载技能（仍可加载其他技能）：\n" + s.Name + "\n" + s.Instruction
-		preloaded = []string{s.Name}
+		preloaded = append(preloaded, s.Name)
 	}
 	reader := toolset.NewNameListTool(
 		"load_skills",

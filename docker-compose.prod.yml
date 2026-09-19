@@ -1,0 +1,140 @@
+name: eino-prod
+
+services:
+  mysql:
+    image: mysql@sha256:8fdf311514c91fa5014e93e98e19d7f5d9eb162a462c13100c956dacc278ee21
+    command: ["mysqld"]
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD}"
+      MYSQL_DATABASE: "${MYSQL_DATABASE:?Set MYSQL_DATABASE}"
+      MYSQL_USER: "${MYSQL_USER:?Set MYSQL_USER}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u\"$$MYSQL_USER\" -D\"$$MYSQL_DATABASE\" -N -e 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+    restart: unless-stopped
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.30
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - etcd-data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: *default-logging
+
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}"
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - minio-data:/minio_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    logging: *default-logging
+
+  milvus:
+    image: milvusdb/milvus:v2.5.13
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+    restart: unless-stopped
+    logging: *default-logging
+
+  app:
+    image: "${APP_IMAGE:?Set APP_IMAGE to an immutable image tag or digest}"
+    environment:
+      SESSION_STORE: mysql
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: "${MYSQL_DATABASE:?Set MYSQL_DATABASE}"
+      MYSQL_USER: "${MYSQL_USER:?Set MYSQL_USER}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:?Set OPENAI_API_KEY}"
+      OPENAI_MODEL: "${OPENAI_MODEL:?Set OPENAI_MODEL}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:?Set OPENAI_BASE_URL}"
+      EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:?Set EMBEDDING_API_KEY}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:?Set EMBEDDING_MODEL}"
+      EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL:?Set EMBEDDING_BASE_URL}"
+      FEISHU_APP_ID: "${FEISHU_APP_ID:?Set FEISHU_APP_ID}"
+      FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:?Set FEISHU_APP_SECRET}"
+      FEISHU_REDIRECT_URL: "${FEISHU_REDIRECT_URL:?Set FEISHU_REDIRECT_URL}"
+      METRICS_TOKEN: "${METRICS_TOKEN:?Set METRICS_TOKEN}"
+    ports:
+      - "127.0.0.1:${APP_PORT:-18180}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - app-data:/app/data
+      - ./config.prod.yaml:/app/config.yaml:ro
+      - ./workspace-files:/app/workspace-files:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    logging: *default-logging
+
+volumes:
+  # 默认是独立生产数据；测试复用现有卷时通过 COMPOSE_*_VOLUME_NAME 与
+  # COMPOSE_*_VOLUME_EXTERNAL 显式指定，避免误连共享 gozero 数据。
+  mysql-data:
+    name: "${MYSQL_VOLUME_NAME:-eino-prod-mysql}"
+    external: ${MYSQL_VOLUME_EXTERNAL:-false}
+  etcd-data:
+    name: "${ETCD_VOLUME_NAME:-eino-prod-etcd}"
+    external: ${ETCD_VOLUME_EXTERNAL:-false}
+  minio-data:
+    name: "${MINIO_VOLUME_NAME:-eino-prod-minio}"
+    external: ${MINIO_VOLUME_EXTERNAL:-false}
+  milvus-data:
+    name: "${MILVUS_VOLUME_NAME:-eino-prod-milvus}"
+    external: ${MILVUS_VOLUME_EXTERNAL:-false}
+  app-data:
+    name: "${APP_VOLUME_NAME:-eino-prod-app-data}"
+    external: ${APP_VOLUME_EXTERNAL:-false}

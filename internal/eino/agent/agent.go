@@ -43,10 +43,26 @@ type ChatAgent struct {
 	reasoning     string
 	debug         bool
 	memoryContext func(context.Context, string) (string, error)
+	preflight     string
 }
 
 func (a *ChatAgent) SetMemoryContext(f func(context.Context, string) (string, error)) {
 	a.memoryContext = f
+}
+
+// SetPreflightContext injects server-verified context for the current turn.
+// It is kept on the per-request agent, so concurrent sessions cannot share it.
+func (a *ChatAgent) SetPreflightContext(text string) { a.preflight = strings.TrimSpace(text) }
+
+// Respond records a deterministic server response without invoking the model.
+// It is used for a knowledge miss where fabricating an answer would be unsafe.
+func (a *ChatAgent) Respond(query, answer string) error {
+	user := schema.UserMessage(query)
+	user.Extra = map[string]any{"memory_turn": uuid.NewString()}
+	assistant := schema.AssistantMessage(answer, nil)
+	assistant.Extra = map[string]any{"storage_status": "completed", "storage_turn": uuid.NewString()}
+	a.history = append(a.history, user, assistant)
+	return a.saveHistory()
 }
 
 // ApprovalRequest 描述一个等待用户决定的中断点。
@@ -307,6 +323,9 @@ func (a *ChatAgent) AskTo(ctx context.Context, query string, writer io.Writer) e
 			return fmt.Errorf("load memory: %w", err)
 		}
 		input = append([]*schema.Message{schema.SystemMessage(text)}, input...)
+	}
+	if a.preflight != "" {
+		input = append([]*schema.Message{schema.SystemMessage(a.preflight)}, input...)
 	}
 	if err := a.beginReply(); err != nil {
 		a.history = a.history[:previousLength]

@@ -4,10 +4,12 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +39,7 @@ type Service struct {
 	cfg         *config.Config
 	model       eino.ChatModel
 	tools       []eino.BaseTool
+	knowledge   eino.InvokableTool
 	checkpoints *checkpoint.FileStore
 	sessions    *session.Store
 	skills      *skill.Loader
@@ -51,20 +54,33 @@ type Service struct {
 	authMW       *auth.Middleware
 	// localAccounts 与 loginLimiter 仅在 auth.local.enabled 时装配；
 	// 两者为 nil 时 POST /auth/local 不注册（404）。
-	localAccounts *auth.LocalStore
-	loginLimiter  *rateLimiter
+	localAccounts   *auth.LocalStore
+	loginLimiter    *rateLimiter
+	callbackLimiter *rateLimiter
 	// chatLimiter 是 /chat 与 /ws 的 per-user 限流（步骤 5.2），
 	// runtime.rate_limit.enabled 为 false 时保持 nil，middleware 直接透传。
 	chatLimiter   *rateLimiter
 	lockMu        sync.Mutex
 	locks         map[string]chan struct{}
 	concurrency   chan struct{}
+	queueLimit    int64
+	queueTimeout  time.Duration
+	waiting       atomic.Int64
 	cleanupCancel context.CancelFunc
+	cleanupWG     sync.WaitGroup
 	requests      atomic.Uint64
 	errors        atomic.Uint64
 	active        atomic.Int64
 	durationNS    atomic.Int64
+	timeouts      atomic.Uint64
+	queueRejected atomic.Uint64
+	nonTimeout5xx atomic.Uint64
+	status5xx     atomic.Uint64
+	metricsToken  string
 }
+
+var ErrQueueFull = errors.New("request queue is full")
+var ErrQueueTimeout = errors.New("request queue wait timed out")
 
 // ChatResult 类型。Events 只在开启执行事件且使用同步接口时返回。
 type ChatResult struct {
@@ -83,6 +99,7 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 		return nil, err
 	}
 	var tools []eino.BaseTool
+	var knowledge eino.InvokableTool
 	if cfg.LocalFiles.Enabled {
 		fileTool, toolErr := toolset.NewLocalFileReadTool(cfg.LocalFiles.Roots, cfg.LocalFiles.MaxBytes)
 		if toolErr != nil {
@@ -97,7 +114,9 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 		if storeErr != nil {
 			return nil, storeErr
 		}
-		tools = append(tools, toolset.NewKnowledgeToolWithOptions(store, rag.SearchOptions{TopK: cfg.RAG.TopK, ScoreThreshold: cfg.RAG.ScoreThreshold, MaxContextChars: cfg.RAG.MaxContextChars}))
+		knowledgeTool := toolset.NewKnowledgeToolWithOptions(store, rag.SearchOptions{TopK: cfg.RAG.TopK, ScoreThreshold: cfg.RAG.ScoreThreshold, MaxContextChars: cfg.RAG.MaxContextChars})
+		knowledge = knowledgeTool
+		tools = append(tools, knowledgeTool)
 	}
 	cp, err := checkpoint.New(cfg.Agent.CheckpointDir)
 	if err != nil {
@@ -110,7 +129,7 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 	// 技能名与技能目录属于内部实现，只在 debug 模式向调用方暴露。
 	skillLoader := skill.NewLoader(cfg.Skills.Dir)
 	skillLoader.ExposeNames = cfg.Debug
-	service := &Service{cfg: cfg, model: cm, tools: tools, checkpoints: cp, sessions: sessions, skills: skillLoader, execCfg: cfg.ExecutionEvents, locks: map[string]chan struct{}{}, concurrency: make(chan struct{}, cfg.Runtime.MaxConcurrency)}
+	service := &Service{cfg: cfg, model: cm, tools: tools, knowledge: knowledge, checkpoints: cp, sessions: sessions, skills: skillLoader, execCfg: cfg.ExecutionEvents, locks: map[string]chan struct{}{}, concurrency: make(chan struct{}, cfg.Runtime.MaxConcurrency), queueLimit: int64(cfg.Runtime.QueueLimit), queueTimeout: time.Duration(cfg.Runtime.QueueTimeout), metricsToken: strings.TrimSpace(os.Getenv("METRICS_TOKEN"))}
 	executionStore, err := newExecutionStore(ctx, cfg, sessions)
 	if err != nil {
 		return nil, err
@@ -127,6 +146,7 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 		}
 		service.authUsers = auth.NewUserStore(userDB)
 		service.authMW = auth.NewMiddleware(service.authSessions)
+		service.callbackLimiter = newRateLimiter(loginRatePerMinute, loginBurst)
 		if cfg.Auth.Local.Enabled {
 			// 自有账号是例外通道（没有飞书账号的人 + 飞书故障兜底），
 			// 与飞书共用同一套登录态签发，只是凭据来源不同。
@@ -165,7 +185,9 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 	if cfg.Session.ExpireDays > 0 && cfg.Session.Store == "mysql" {
 		cleanupCtx, cleanupCancel := context.WithCancel(ctx)
 		service.cleanupCancel = cleanupCancel
+		service.cleanupWG.Add(1)
 		go func() {
+			defer service.cleanupWG.Done()
 			interval := 24 * time.Hour
 			if cfg.Memory.CleanupInterval > 0 {
 				interval = time.Duration(cfg.Memory.CleanupInterval)
@@ -197,13 +219,46 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 			}
 		}()
 	}
+	if service.executions != nil && cfg.ExecutionEvents.RetentionDays > 0 {
+		cleanupCtx, cancel := context.WithCancel(ctx)
+		previous := service.cleanupCancel
+		service.cleanupCancel = func() {
+			cancel()
+			if previous != nil {
+				previous()
+			}
+		}
+		service.cleanupWG.Add(1)
+		go func() { defer service.cleanupWG.Done(); service.cleanupExecutions(cleanupCtx, 24*time.Hour) }()
+	}
 	return service, nil
+}
+
+func (s *Service) cleanupExecutions(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			removed, err := s.executions.CleanupOlderThan(cleanupCtx, time.Duration(s.execCfg.RetentionDays)*24*time.Hour)
+			cancel()
+			if err != nil {
+				log.Printf("execution cleanup failed: %v", err)
+			} else if removed > 0 {
+				log.Printf("execution cleanup removed %d expired runs", removed)
+			}
+		}
+	}
 }
 
 func (s *Service) Close() error {
 	if s.cleanupCancel != nil {
 		s.cleanupCancel()
 	}
+	s.cleanupWG.Wait()
 	var closeErr error
 	if s.memories != nil {
 		closeErr = s.memories.Close()
@@ -260,6 +315,12 @@ type Stats struct {
 	Errors            uint64  `json:"errors"`
 	Active            int64   `json:"active"`
 	AverageDurationMS float64 `json:"average_duration_ms"`
+	Waiting           int64   `json:"waiting"`
+	Timeouts          uint64  `json:"timeouts"`
+	QueueRejected     uint64  `json:"queue_rejected"`
+	NonTimeout5xx     uint64  `json:"non_timeout_5xx"`
+	NonTimeout5xxRate float64 `json:"non_timeout_5xx_rate"`
+	Status5xx         uint64  `json:"status_5xx"`
 }
 
 func (s *Service) Stats() Stats {
@@ -268,16 +329,43 @@ func (s *Service) Stats() Stats {
 	if requests > 0 {
 		average = float64(s.durationNS.Load()) / float64(time.Millisecond) / float64(requests)
 	}
-	return Stats{Requests: requests, Errors: s.errors.Load(), Active: s.active.Load(), AverageDurationMS: average}
+	nonTimeout := s.nonTimeout5xx.Load()
+	rate := 0.0
+	if requests > 0 {
+		rate = float64(nonTimeout) / float64(requests)
+	}
+	return Stats{Requests: requests, Errors: s.errors.Load(), Active: s.active.Load(), AverageDurationMS: average, Waiting: s.waiting.Load(), Timeouts: s.timeouts.Load(), QueueRejected: s.queueRejected.Load(), NonTimeout5xx: nonTimeout, NonTimeout5xxRate: rate, Status5xx: s.status5xx.Load()}
 }
 func (s *Service) enter(ctx context.Context) (func(error), error) {
 	if s.concurrency != nil {
 		select {
 		case s.concurrency <- struct{}{}:
-		case <-ctx.Done():
+			goto acquired
+		default:
+		}
+		if s.queueLimit > 0 && s.waiting.Add(1) > s.queueLimit {
+			s.waiting.Add(-1)
+			s.queueRejected.Add(1)
+			return nil, ErrQueueFull
+		}
+		defer s.waiting.Add(-1)
+		waitCtx := ctx
+		cancel := func() {}
+		if s.queueTimeout > 0 {
+			waitCtx, cancel = context.WithTimeout(ctx, s.queueTimeout)
+		}
+		defer cancel()
+		select {
+		case s.concurrency <- struct{}{}:
+		case <-waitCtx.Done():
+			if errors.Is(waitCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+				s.queueRejected.Add(1)
+				return nil, ErrQueueTimeout
+			}
 			return nil, ctx.Err()
 		}
 	}
+acquired:
 	s.requests.Add(1)
 	s.active.Add(1)
 	started := time.Now()
@@ -332,7 +420,7 @@ func (s *Service) acquireSession(ctx context.Context, id string) (func(), error)
 }
 
 // newAgent 创建本轮 Agent，并返回本轮直接预加载的技能名。
-func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.ChatAgent, []string, error) {
+func (s *Service) newAgent(ctx context.Context, id, skillName string, preloadSkills ...string) (*agent.ChatAgent, []string, error) {
 	// owner 在这里取出并捕获进闭包：SetPersistence 的回调可能在请求 context
 	// 已取消之后才被调用，那时再读 context 已经取不到值。
 	owner := auth.OwnerFromContext(ctx)
@@ -355,7 +443,11 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 		}
 		availableTools = append(availableTools, info.Name)
 	}
-	instruction, skillTool, preloaded, err := s.skills.Runtime(skillName, availableTools...)
+	preferred := append([]string{}, preloadSkills...)
+	if skillName != "" {
+		preferred = append([]string{skillName}, preferred...)
+	}
+	instruction, skillTool, preloaded, err := s.skills.RuntimeMany(preferred, availableTools...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -377,6 +469,73 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string) (*agent.Ch
 	}
 	chat.SetPersistence(func(messages []*schema.Message) error { return s.sessions.Save(owner, id, messages) }, s.cfg.Session.MaxMessages, s.cfg.Session.MaxChars)
 	return chat, preloaded, nil
+}
+
+type routeDecision struct {
+	preloadKnowledge bool
+	preloadSkills    []string
+	capabilityNotice string
+}
+
+// decideRoute is deliberately conservative: it only forces a route when the
+// request names a private source, report, or document-reading action. Other
+// requests remain model-routed and unsupported formats are explained honestly.
+func decideRoute(query string) routeDecision {
+	q := strings.ToLower(strings.TrimSpace(query))
+	decision := routeDecision{}
+	if strings.Contains(q, "知识库") || strings.Contains(q, "项目资料") || strings.Contains(q, "内部资料") || strings.Contains(q, "私有资料") || strings.Contains(q, "知识问答") || strings.Contains(q, "星河系统") || strings.Contains(q, "默认管理员") || strings.Contains(q, "生产部署") || strings.Contains(q, "内部版本") || strings.Contains(q, "技术栈") || strings.Contains(q, "幸运数字") {
+		decision.preloadKnowledge = true
+	}
+	if strings.Contains(q, "报告") || strings.Contains(q, "汇报") || strings.Contains(q, "report") {
+		decision.preloadSkills = append(decision.preloadSkills, "report_writer")
+	}
+	if strings.Contains(q, "docx") || strings.Contains(q, "word") || strings.Contains(q, "工单") || (strings.Contains(q, "读取") && (strings.Contains(q, "文档") || strings.Contains(q, "文件") || strings.Contains(q, "workspace-files"))) || strings.Contains(q, "阅读文档") || strings.Contains(q, "总结文档") {
+		decision.preloadSkills = append(decision.preloadSkills, "documents")
+	}
+	if (strings.Contains(q, "pdf") || strings.Contains(q, "pdf文件") || strings.Contains(q, "表格") || strings.Contains(q, "excel") || strings.Contains(q, "xlsx") || strings.Contains(q, "ppt") || strings.Contains(q, "演示文稿")) && (strings.Contains(q, "读取") || strings.Contains(q, "解析") || strings.Contains(q, "生成") || strings.Contains(q, "编辑") || strings.Contains(q, "提取") || strings.Contains(q, "导出") || strings.Contains(q, "分析") || strings.Contains(q, "整理") || strings.Contains(q, "组织") || strings.Contains(q, "操作")) {
+		decision.capabilityNotice = "当前生产环境已接入文本/DOCX读取、知识库检索和文本报告生成；PDF、表格与演示文稿文件工具尚未接入，不能承诺读取、编辑或生成这类文件。可以先提供纯文本内容，或给出接入工具后的实施方案。"
+	}
+	return decision
+}
+
+type knowledgePreflight struct {
+	Answer  string
+	Hit     int
+	Sources []string
+}
+
+// runKnowledgePreflight uses the same knowledge tool as the Agent and emits
+// the normal tool events, so metrics and the UI have one evidence format.
+func (s *Service) runKnowledgePreflight(ctx context.Context, query string) (knowledgePreflight, error) {
+	if s.knowledge == nil {
+		return knowledgePreflight{}, nil
+	}
+	em := execution.FromContext(ctx)
+	callID := uuid.NewString()
+	started := time.Now()
+	args, _ := json.Marshal(map[string]string{"query": query})
+	em.Emit(execution.Event{Type: execution.ToolStarted, Payload: map[string]any{"tool_name": "knowledge_search", "tool_call_id": callID, "args_digest": execution.DigestArgs(string(args)), "source": "server_preflight"}})
+	bag := execution.NewBag()
+	toolCtx := execution.WithBag(ctx, bag)
+	result, err := s.knowledge.InvokableRun(toolCtx, string(args))
+	payload := map[string]any{"tool_name": "knowledge_search", "tool_call_id": callID, "source": "server_preflight", "duration_ms": time.Since(started).Milliseconds()}
+	if err != nil {
+		payload["error_code"] = "knowledge_preflight_failed"
+		payload["error_message"] = err.Error()
+		em.Emit(execution.Event{Type: execution.ToolFailed, Payload: payload})
+		return knowledgePreflight{}, err
+	}
+	execution.MergeAnnotations(toolCtx, payload)
+	em.Emit(execution.Event{Type: execution.ToolCompleted, Payload: payload})
+	hit := 0
+	if value, ok := payload["hit_count"].(int); ok {
+		hit = value
+	}
+	var sources []string
+	if values, ok := payload["sources"].([]string); ok {
+		sources = append([]string(nil), values...)
+	}
+	return knowledgePreflight{Answer: result, Hit: hit, Sources: sources}, nil
 }
 
 // save 以当前请求身份落盘。owner 取自 context，因此 CLI 侧（不注入 owner）
@@ -475,18 +634,57 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 	if s.debugEnabled() && isSkillCatalogQuery(query) {
 		return s.replySkillCatalog(ctx, id, query, writer, sink)
 	}
-	chat, preloaded, err := s.newAgent(ctx, id, skillName)
-	if err != nil {
-		return ChatResult{}, err
-	}
 	ctx, em := s.beginRun(ctx, id, sink, "")
 	if em != nil {
 		em.Emit(execution.Event{Type: execution.RunStarted, Payload: map[string]any{
 			"query_chars": utf8.RuneCountInString(query), "skill_preferred": skillName,
 		}})
-		if len(preloaded) > 0 {
-			em.Emit(execution.Event{Type: execution.SkillPreloaded, Payload: map[string]any{"skill_names": preloaded}})
+	}
+	route := decideRoute(query)
+	if skillName == "" && len(route.preloadSkills) > 0 {
+		skillName = route.preloadSkills[0]
+	}
+	var preflight knowledgePreflight
+	if route.preloadKnowledge {
+		preflight, err = s.runKnowledgePreflight(ctx, query)
+		if err != nil {
+			finishRun(em, execution.StatusFailed, "knowledge_preflight_failed")
+			return ChatResult{}, err
 		}
+	}
+	chat, preloaded, err := s.newAgent(ctx, id, skillName, route.preloadSkills...)
+	if err != nil {
+		finishRun(em, execution.StatusFailed, "agent_init_failed")
+		return ChatResult{}, err
+	}
+	if em != nil && len(preloaded) > 0 {
+		em.Emit(execution.Event{Type: execution.SkillPreloaded, Payload: map[string]any{"skill_names": preloaded}})
+	}
+	if route.preloadKnowledge {
+		if preflight.Hit == 0 {
+			const answer = "知识库中没有足够资料，无法确认"
+			if err = chat.Respond(query, answer); err != nil {
+				finishRun(em, execution.StatusFailed, "save_failed")
+				return ChatResult{}, err
+			}
+			if writer != nil {
+				_, _ = io.WriteString(writer, answer)
+			}
+			finishRun(em, execution.StatusCompleted, "")
+			return ChatResult{SessionID: id, RunID: runIDOf(em), TurnID: latestTurn(chat.History())}, nil
+		}
+		chat.SetPreflightContext("服务端已完成知识库检索。以下内容是本轮唯一可引用的私有资料，请基于它回答并列出来源；不要再次猜测或补充资料中没有的事实。\n<knowledge_results>\n" + preflight.Answer + "\n</knowledge_results>")
+	}
+	if route.capabilityNotice != "" {
+		if err = chat.Respond(query, route.capabilityNotice); err != nil {
+			finishRun(em, execution.StatusFailed, "save_failed")
+			return ChatResult{}, err
+		}
+		if writer != nil {
+			_, _ = io.WriteString(writer, route.capabilityNotice)
+		}
+		finishRun(em, execution.StatusCompleted, "")
+		return ChatResult{SessionID: id, RunID: runIDOf(em), TurnID: latestTurn(chat.History())}, nil
 	}
 	err = chat.AskTo(ctx, query, writer)
 	var approval *agent.ApprovalRequest

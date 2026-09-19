@@ -239,7 +239,7 @@ if (-not $SkipVolumes) {
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         ForEach-Object { $_.Trim() }
 
-    $wanted = @("milvus-data", "milvus-etcd", "milvus-minio")
+    $wanted = @("milvus-data", "milvus-etcd", "milvus-minio", "app-data")
     $resolved = @()
     foreach ($logical in $wanted) {
         $match = $allVolumes | Where-Object { $_ -eq $logical -or $_ -like "*_$logical" } | Select-Object -First 1
@@ -250,7 +250,7 @@ if (-not $SkipVolumes) {
         }
     }
     if ($resolved.Count -eq 0) {
-        Write-Step "WARNING: no Milvus volumes found; this backup covers MySQL only"
+        Write-Step "WARNING: no persistent application volumes found; this backup covers MySQL only"
     }
 
     # 打包器镜像必须从【本地已有】的镜像里挑。

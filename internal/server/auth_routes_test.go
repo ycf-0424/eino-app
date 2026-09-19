@@ -194,6 +194,29 @@ func TestAuthCallbackRejectsStateMismatch(t *testing.T) {
 	}
 }
 
+func TestAuthCallbackRateLimit(t *testing.T) {
+	service := newAuthTestService(t)
+	service.callbackLimiter = newRateLimiter(10, 2)
+	now := time.Now()
+	service.callbackLimiter.now = func() time.Time { return now }
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/auth/callback?state=bad", nil)
+		req.RemoteAddr = "192.0.2.10:1234"
+		rec := httptest.NewRecorder()
+		service.handleAuthCallback(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("attempt %d status=%d, want 400", i+1, rec.Code)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/auth/callback?state=bad", nil)
+	req.RemoteAddr = "192.0.2.10:1234"
+	rec := httptest.NewRecorder()
+	service.handleAuthCallback(rec, req)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("third callback status=%d retry-after=%q, want 429", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}
+
 func TestAuthDisabledKeepsOldBehavior(t *testing.T) {
 	// auth 关闭时：/ 不重定向、/auth/* 全部 404、POST /chat 不需要登录。
 	sessions, _ := session.New(t.TempDir())

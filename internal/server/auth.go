@@ -2,6 +2,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"html"
 	"net"
@@ -111,6 +113,18 @@ func stripMarkedBlock(page, name string, keep bool) string {
 // 这是唯一一条「访问者一定是浏览器」的认证路由（飞书 302 过来）。失败时不回 JSON
 // 而回一张 HTML 错误页，理由见 renderCallbackError。
 func (s *Service) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	if s.callbackLimiter != nil {
+		state := r.URL.Query().Get("state")
+		digest := sha256.Sum256([]byte(state))
+		keys := []string{"ip:" + clientIP(r), "state:" + hex.EncodeToString(digest[:8])}
+		for _, key := range keys {
+			if ok, retryAfter := s.callbackLimiter.Allow(key); !ok {
+				w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds()+0.999)))
+				writeJSON(w, http.StatusTooManyRequests, response{Error: "回调请求过于频繁，请稍后再试"})
+				return
+			}
+		}
+	}
 	if !auth.VerifyState(r, r.URL.Query().Get("state")) {
 		auth.ClearStateCookie(w)
 		s.renderCallbackError(w, http.StatusBadRequest, "登录校验失败", "state mismatch")

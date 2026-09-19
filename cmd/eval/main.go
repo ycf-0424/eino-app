@@ -37,6 +37,7 @@ func main() {
 	minCitation := flag.Float64("min-citation", 1, "最低引用率，未达到时返回非零退出码")
 	minRefusal := flag.Float64("min-refusal", 1, "最低拒答率，未达到时返回非零退出码")
 	minRouting := flag.Float64("min-routing", -1, "最低路由准确率，未达到时返回非零退出码；-1 表示不检查")
+	minEvidence := flag.Float64("min-tool-evidence", -1, "最低工具/预加载证据率；-1 表示不检查")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -90,6 +91,14 @@ func main() {
 		report.Routing = routing
 		report.RoutingTotal = len(routing)
 		report.RoutingAccuracy = accuracy
+		for _, item := range routing {
+			if item.ToolEvidence {
+				report.ToolEvidenceTotal++
+			}
+		}
+		if len(routing) > 0 {
+			report.ToolEvidenceRate = float64(report.ToolEvidenceTotal) / float64(len(routing))
+		}
 	}
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -104,6 +113,9 @@ func main() {
 	// 需要卡门禁时用 -min-routing 显式开启。
 	if *minRouting >= 0 && report.RoutingAccuracy < *minRouting {
 		fail(fmt.Errorf("routing accuracy %.2f below %.2f (scored %d cases)", report.RoutingAccuracy, *minRouting, report.RoutingTotal))
+	}
+	if *minEvidence >= 0 && report.ToolEvidenceRate < *minEvidence {
+		fail(fmt.Errorf("tool evidence rate %.2f below %.2f (scored %d cases)", report.ToolEvidenceRate, *minEvidence, report.RoutingTotal))
 	}
 }
 
@@ -237,6 +249,9 @@ func routingFromEvents(events []execution.Event) evaluation.Routing {
 			routing.Requested = append(routing.Requested, stringsOf(ev.Payload["requested_names"])...)
 		case execution.SkillPreloaded:
 			routing.Preloaded = append(routing.Preloaded, stringsOf(ev.Payload["skill_names"])...)
+		}
+		if ev.Type == execution.ToolStarted || ev.Type == execution.ToolCompleted || ev.Type == execution.ToolFailed || ev.Type == execution.SkillPreloaded {
+			routing.ToolEvidence = true
 		}
 	}
 	routing.Loaded = uniqueSorted(routing.Loaded)

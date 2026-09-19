@@ -76,8 +76,8 @@ func TestRunRoutingUsesCoverageNotEquality(t *testing.T) {
 	}
 }
 
-// 预加载是调用方注入的，不代表模型的选择，不能算命中。
-func TestRunRoutingIgnoresPreloaded(t *testing.T) {
+// 服务端确定性预加载是生产路由证据，应与模型自主加载一起计入命中。
+func TestRunRoutingAcceptsPreloaded(t *testing.T) {
 	router := &fakeRouter{results: map[string]Routing{
 		"q": {Preloaded: []string{"documents"}},
 	}}
@@ -85,8 +85,8 @@ func TestRunRoutingIgnoresPreloaded(t *testing.T) {
 		{Question: "q", ExpectSkills: []string{"documents"}},
 	})
 
-	if results[0].Matched || accuracy != 0 {
-		t.Fatalf("预加载不应算命中: %+v accuracy=%v", results[0], accuracy)
+	if !results[0].Matched || accuracy != 1 {
+		t.Fatalf("预加载应算命中: %+v accuracy=%v", results[0], accuracy)
 	}
 	if len(results[0].Preloaded) != 1 {
 		t.Fatalf("预加载仍应被记录: %+v", results[0])

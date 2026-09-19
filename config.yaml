@@ -23,6 +23,8 @@ skills:
 runtime:
   request_timeout: 180s
   max_concurrency: 2
+  queue_limit: 4
+  queue_timeout: 10s
   # per-user（未认证时 per-IP）限流，只作用于 POST /chat 与 GET /ws（步骤 5.2）。
   # 单副本、进程内计数；多副本部署需换成 Redis。
   rate_limit:

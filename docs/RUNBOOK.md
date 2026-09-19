@@ -1821,3 +1821,38 @@ docker compose -f docker-compose.milvus.yml up -d   # milvus/etcd/minio 需要�
 本批修复对应提交 `02fad4f`，包含会话签发、WebSocket 限流、readiness、备份脚本和方案文档；后续回退应按提交整体使用 `git revert 02fad4f`，不要在共享工作区重置。
 
 飞书凭据状态也已复核：`scripts/feishu-check.ps1` 五项通过，14.15 中旧的“Secret 无效”状态已更新。
+
+### 14.25 生产 Compose、1Panel/OpenResty 与 Linux 运维
+
+生产栈使用仓库根目录的 `docker-compose.prod.yml`，它与开发 Compose 独立，不使用 `build:`，只接受不可变的 `APP_IMAGE`。先复制 `.env.prod.example` 为部署机 `.env.prod`，填入数据库、模型、飞书、指标 bearer token 和域名回调地址；再执行：
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml config
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --no-build
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
+```
+
+第一次上线如果需要从开发数据迁移，必须在切换生产 Compose 前完成 `session-migrate -claim-owner=<owner>` 和管理员建号；生产 Compose 使用独立 MySQL 卷 `eino-prod-mysql`，不要把开发的 `gozero_mysql_data` 直接作为生产默认卷。测试复用卷时必须显式设置 `MYSQL_VOLUME_NAME` 和 `MYSQL_VOLUME_EXTERNAL=true`，并先做备份。
+
+1Panel 网站配置使用 `deploy/openresty/my-eino-app.conf`：绑定域名和受信任证书，替换 `server_name` 与证书路径；上游指向 `127.0.0.1:18180`。保留 `/ws` 的 Upgrade/Connection 透传、`proxy_buffering off`、至少 210 秒读写超时；`/auth/local` 和 `/auth/callback` 使用真实客户端 IP 的 `limit_req`。飞书后台的回调地址必须与 `.env.prod` 的 `FEISHU_REDIRECT_URL` 完全一致且为 HTTPS。
+
+Linux 备份与恢复演练：
+
+```bash
+chmod +x scripts/*.sh
+make backup-linux
+make restore-check-linux
+make health-alert-linux
+```
+
+`backup.sh` 会备份 MySQL、Milvus/etcd/MinIO 和 `app-data`，manifest 包含 SHA256、非空 `INSERT INTO` 判据和文件清单；`restore-check.sh` 先校验 SHA256，再导入临时库并逐表检查，默认完成后删除临时库。备份目录必须复制到另一台主机或对象存储，同机同盘只算临时副本。
+
+发布与回滚使用已构建镜像：
+
+```bash
+make image VERSION=2026.09.19-<git-sha>
+make prod-up VERSION=2026.09.19-<git-sha>
+make prod-rollback VERSION=2026.09.18-<previous-sha>
+```
+
+这些命令均带 `--no-build`，回滚只切换已有镜像，不重新构建源码。指标抓取使用 `Authorization: Bearer <METRICS_TOKEN>`；无 bearer 时 `/metrics` 必须返回 401。

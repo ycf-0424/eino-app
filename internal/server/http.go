@@ -171,7 +171,22 @@ func (s *Service) Handler() http.Handler {
 	// 供 compose 的 app 服务健康检查使用（Dockerfile 的 HEALTHCHECK 仍打 /health）。
 	// 与 /health 一样免认证。
 	mux.HandleFunc("GET /health/ready", s.handleReady)
-	mux.Handle("GET /metrics", s.protected(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, response{Data: s.Stats()}) })))
+	metrics := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.metricsToken != "" {
+			const prefix = "Bearer "
+			authHeader := r.Header.Get("Authorization")
+			if !strings.HasPrefix(authHeader, prefix) || strings.TrimSpace(strings.TrimPrefix(authHeader, prefix)) != s.metricsToken {
+				writeJSON(w, http.StatusUnauthorized, response{Error: "metrics authorization required"})
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, response{Data: s.Stats()})
+	})
+	if s.metricsToken == "" {
+		mux.Handle("GET /metrics", s.protected(metrics))
+	} else {
+		mux.Handle("GET /metrics", metrics)
+	}
 	// 技能目录属于内部实现，非调试模式不注册该路由，请求直接 404。
 	if s.debugEnabled() {
 		mux.Handle("GET /skills", s.protected(http.HandlerFunc(s.handleSkills)))
@@ -231,7 +246,20 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeSessionError(w, err)
 			return
 		}
-		writeJSON(w, 500, response{Error: err.Error()})
+		switch {
+		case errors.Is(err, ErrQueueFull), errors.Is(err, ErrQueueTimeout):
+			s.nonTimeout5xx.Add(1)
+			s.status5xx.Add(1)
+			writeJSON(w, http.StatusServiceUnavailable, response{Error: "服务繁忙，请稍后重试"})
+		case errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded):
+			s.timeouts.Add(1)
+			s.status5xx.Add(1)
+			writeJSON(w, http.StatusGatewayTimeout, response{Error: "请求处理超时"})
+		default:
+			s.nonTimeout5xx.Add(1)
+			s.status5xx.Add(1)
+			writeJSON(w, http.StatusInternalServerError, response{Error: err.Error()})
+		}
 		return
 	}
 	result.Answer = strings.TrimSpace(output.String())

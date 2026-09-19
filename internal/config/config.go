@@ -72,6 +72,10 @@ type LocalFiles struct {
 type Runtime struct {
 	RequestTimeout Duration `yaml:"request_timeout"`
 	MaxConcurrency int      `yaml:"max_concurrency"`
+	// QueueLimit bounds requests waiting for a model slot. QueueTimeout is
+	// deliberately shorter than RequestTimeout so overload fails clearly.
+	QueueLimit   int      `yaml:"queue_limit"`
+	QueueTimeout Duration `yaml:"queue_timeout"`
 	// RateLimit 是 per-user（未认证时 per-IP）的请求限流，步骤 5.2 新增。
 	RateLimit RateLimit `yaml:"rate_limit"`
 }
@@ -278,6 +282,18 @@ func (c *Config) Validate() error {
 	}
 	if c.Runtime.MaxConcurrency < 1 {
 		return fmt.Errorf("runtime.max_concurrency must be greater than zero")
+	}
+	if c.Runtime.QueueLimit == 0 {
+		c.Runtime.QueueLimit = c.Runtime.MaxConcurrency * 2
+	}
+	if c.Runtime.QueueLimit < 1 {
+		return fmt.Errorf("runtime.queue_limit must be greater than zero")
+	}
+	if c.Runtime.QueueTimeout == 0 {
+		c.Runtime.QueueTimeout = Duration(10 * time.Second)
+	}
+	if c.Runtime.QueueTimeout < 0 {
+		return fmt.Errorf("runtime.queue_timeout must not be negative")
 	}
 	if c.Runtime.RateLimit.Enabled {
 		// 只在开启时补默认值：关闭时保持零值，便于判断「未启用」，

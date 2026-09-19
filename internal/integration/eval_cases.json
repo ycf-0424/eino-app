@@ -5,24 +5,21 @@
   {"question":"星河系统的默认管理员是谁？","expected":"张三","must_cite":"milvus-validation.md"},
   {"question":"星河系统的生产部署区域在哪里？","expected":"上海","must_cite":"milvus-validation.md"},
   {"question":"星河系统的内部版本号是什么？","expected":"XH-2026-09","must_cite":"milvus-validation.md"},
+  {"question":"知识库中是否记载了星河系统在火星的办公室地址？","expected":"","must_cite":"","should_refuse":true},
 
-  {"question":"请读取 workspace-files 目录下的文档并总结要点。","expected":"","must_cite":"","expect_skills":["documents"]},
-  {"question":"把 workspace-files 里的 README.txt 读出来做个摘要。","expected":"","must_cite":"","expect_skills":["documents"]},
-  {"question":"这份 DOCX 工单里写了什么？请读取正文并总结。","expected":"","must_cite":"","expect_skills":["documents"]},
-  {"question":"我需要一份工单内容的摘要，请从授权目录里读取文件。","expected":"","must_cite":"","expect_skills":["documents"]},
+  {"question":"请读取 workspace-files 目录下的文档并总结要点。","expected":"读取","must_cite":"","expect_skills":["documents"]},
+  {"question":"把 workspace-files 里的 README.txt 读出来做个摘要。","expected":"摘要","must_cite":"","expect_skills":["documents"]},
+  {"question":"这份 DOCX 工单里写了什么？请读取正文并总结。","expected":"文档","must_cite":"","expect_skills":["documents"]},
+  {"question":"我需要一份工单内容的摘要，请从授权目录里读取文件。","expected":"摘要","must_cite":"","expect_skills":["documents"]},
 
-  {"question":"根据以下事实写一份结构化的中文报告：本月完成 3 个工单，遗留 1 个性能问题。","expected":"","must_cite":"","expect_skills":["report_writer"]},
-  {"question":"把刚才检索到的结论整理成一份中文报告。","expected":"","must_cite":"","expect_skills":["report_writer"]},
-  {"question":"我要写一份项目周报，事实我会提供，请按报告结构组织。","expected":"","must_cite":"","expect_skills":["report_writer"]},
-  {"question":"先读取 workspace-files 里的工单，然后据此写一份中文报告。","expected":"","must_cite":"","expect_skills":["documents","report_writer"]},
+  {"question":"根据以下事实写一份结构化的中文报告：本月完成 3 个工单，遗留 1 个性能问题。","expected":"报告","must_cite":"","expect_skills":["report_writer"]},
+  {"question":"把刚才检索到的结论整理成一份中文报告。","expected":"报告","must_cite":"","expect_skills":["report_writer"]},
+  {"question":"我要写一份项目周报，事实我会提供，请按报告结构组织。","expected":"报告","must_cite":"","expect_skills":["report_writer"]},
+  {"question":"先读取 workspace-files 里的工单，然后据此写一份中文报告。","expected":"报告","must_cite":"","expect_skills":["documents","report_writer"]},
 
-  {"question":"下面是一段表格数据，帮我分析它的结构并设计对应的公式。","expected":"","must_cite":"","expect_skills":["spreadsheets"]},
-  {"question":"我想把这份数据整理成一份 Excel 表格文件，该按什么思路做？","expected":"","must_cite":"","expect_skills":["spreadsheets"]},
-
-  {"question":"解释一下这个流程，并给出对比两个方案的图表结构设计。","expected":"","must_cite":"","expect_skills":["visualize"]},
-  {"question":"帮我组织一份季度汇报的演示大纲和叙事结构。","expected":"","must_cite":"","expect_skills":["presentations"]},
-  {"question":"这份 PDF 里的文字要怎么提取出来？","expected":"","must_cite":"","expect_skills":["pdf"]},
-  {"question":"我想给系统新增一个技能，需要走什么流程？","expected":"","must_cite":"","expect_skills":["skill-installer"]},
-  {"question":"帮我设计一个可以复用的周报模板结构。","expected":"","must_cite":"","expect_skills":["template-creator"]},
-  {"question":"怎么操作一个已经打开的 Excel 工作簿里的活动工作表？","expected":"","must_cite":"","expect_skills":["excel-live-control"]}
+  {"question":"下面是一段表格数据，帮我分析它的结构并设计对应的公式。","expected":"未接入","must_cite":""},
+  {"question":"我想把这份数据整理成一份 Excel 表格文件，该按什么思路做？","expected":"未接入","must_cite":""},
+  {"question":"解释一下这个流程，并给出对比两个方案的图表结构设计。","expected":"图表","must_cite":""},
+  {"question":"帮我组织一份季度汇报的演示大纲和叙事结构。","expected":"未接入","must_cite":""},
+  {"question":"这份 PDF 里的文字要怎么提取出来？","expected":"未接入","must_cite":""}
 ]
