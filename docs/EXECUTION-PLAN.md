@@ -1,10 +1,10 @@
 # 统一执行方案（自包含 · 可线性执行）
 
-> 本文是三份方案合并后的**唯一执行来源**：
+> 本文是项目生产与后续产品化的**唯一执行来源**：
 > `AUTH-PLAN.md`（飞书登录 + 多用户隔离）、`REFACTOR-PLAN.md`（P-REFACTOR + P-SKILL-QUALITY）、`PLAN-SKILL-QUALITY-AND-LAUNCH-GAP.md`（上线差距评估）。
 >
 > **合并原则**
-> 1. 全部步骤重排为单一线性编号（0.1 → 5.10，共 38 步），不再有「P-REFACTOR 阶段 / S1–S8 / AUTH 阶段 1–5」三套体系并存；
+> 1. 上线主线步骤重排为单一线性编号（0.1 → 5.10，共 38 步）；上线后的业务数据与多模态能力统一归入阶段 6，不再有「P-REFACTOR 阶段 / S1–S8 / AUTH 阶段 1–5」三套体系并存；
 > 2. 源文档里 11 条待决策事项及生产新增决策都给出推荐默认值，评估确认后作为执行约束；
 > 3. 每一步都给出「改什么 / 具体动作 / 验收 / 回滚」，无跨文档跳转；
 > 4. 源文档保留作证据与设计动因的历史记录，**执行一律以本文为准**；生产部署与灰度要求也在阶段 5 中统一维护。
@@ -19,7 +19,7 @@
 
 | 约定 | 内容 |
 |---|---|
-| 执行单元 | 代码/配置步骤原则上**一个步骤 = 一个 commit**；存在硬依赖时按“关键交集”表合并。历史步骤已有实际提交，5.10b 也可能只形成灰度记录，因此不再给出容易失真的总提交数；剩余工作以阶段 5 子步骤表中的提交边界为准 |
+| 执行单元 | 代码/配置步骤原则上**一个步骤 = 一个 commit**；存在硬依赖时按“关键交集”表合并。历史步骤已有实际提交，5.10b 也可能只形成灰度记录，因此不再给出容易失真的总提交数；剩余工作以对应阶段子步骤表中的提交边界为准 |
 | 验收时机 | 每步验收全部通过才进入下一步 |
 | **推送节奏** | **阶段级推送 + `3.1` 单独推**，共 6 次（见 `RUNBOOK.md` 第二节）。commit 是给「回退」用的，push 是给「离开这台机器」用的，粒度不必一致。推送由**用户在自己的终端执行**——自动化环境拿不到凭据管理器登录态 |
 | 回滚方式 | 每个子步骤开始前先确认 `git status --short` 干净；提交后用 `git revert <commit>` 回退该步骤。工作区非空时禁止执行 `git reset --hard`、`git checkout --` 或 `git clean`，必须先把已验证改动提交或另存补丁 |
@@ -28,7 +28,7 @@
 | 工作目录 | `E:/11/my-eino-app` |
 | **执行手册** | 逐 commit 的命令、commit message、推送点、回滚速查见 **`docs/RUNBOOK.md`**。本文负责「改什么」，手册负责「怎么走」，内容不重复；本文是唯一方案入口 |
 
-### 六个阶段总览
+### 七个阶段总览
 
 | 阶段 | 内容 | 步骤数 | 性质 | 阻塞上线 |
 |---|---|---|---|---|
@@ -38,8 +38,9 @@
 | **3** | eino 框架收敛 | 3（3.1–3.3） | 结构与 import | 否 |
 | **4** | 评测与可观测性收口 | 2（4.1–4.2） | 代码 | 否 |
 | **5** | 上线收口、生产部署与内部灰度 | 10（5.1–5.10） | 代码 + 运维 + 业务验收 | **是** |
+| **6** | 业务数据查询、多模态预处理与五类意图路由 | 10（6.1–6.10） | 上线后的产品能力增量 | **否；阶段 5 灰度完成后实施** |
 
-**合计 38 个基础步骤**。其中 5.5a、5.6–5.10 拆为 15 个可执行子步骤；提交数量以子步骤表和实际历史为准。步骤编号连续、无跳号，从头执行到尾即可。
+**上线主线合计 38 个基础步骤**。其中 5.5a、5.6–5.10 拆为 15 个可执行子步骤；阶段 6 另有 10 个产品化步骤，不改变阶段 5 的上线判定。提交数量以各阶段子步骤表和实际历史为准。步骤编号连续、无跳号，从头执行到尾即可。
 
 **顺序的三条依据**
 
@@ -109,6 +110,16 @@
 | D23 | 知识库无命中时的回答 | **先查项目长期记忆；文档和长期记忆都无命中时放行通用模型，并明确标注不是项目内部资料结论** | 保留证据边界，同时避免知识库为空时普通问题完全无法回答 |
 | D24 | 第一阶段传输协议 | **HTTPS；反向代理终止 TLS，应用 Cookie `Secure=true`** | 灰度也可能包含敏感业务内容，避免后续从 HTTP 切 HTTPS 造成 Cookie 和代理配置二次变更 |
 | D25 | 真实 IP 限流位置 | **代理层按真实 IP 主限流；应用只保留用户名维度和代理失效时的 RemoteAddr 兜底** | 代理后的 `RemoteAddr` 是代理地址，不能把应用 IP 桶当作正常用户限流；当前 Go 应用刻意不信任客户端 XFF |
+| D26 | 五类意图的判定方式 | **服务端确定性规则优先；低置信度时使用结构化分类器；分类结果必须是固定枚举** | 不能让模型自由输出路由文字，也不能让普通问题误触发知识库、记忆库或业务查询 |
+| D27 | 结构化数据查询边界 | **只允许服务端注册的只读查询和 API 操作；模型不能生成任意 SQL、URL 或命令** | 防止越权、注入、SSRF、全表扫描和把业务系统当成通用工具 |
+| D28 | 实时数据来源 | **业务只读数据库或企业 API 与会话 MySQL 分离；每个来源有 owner 过滤、超时、字段白名单和审计记录** | 会话库保存对话，不等于业务事实库；两者混用会造成权限和时效错误 |
+| D29 | 实时数据时效 | **结果必须带 `as_of` 和 `fresh_until`；超过 TTL 直接标记过期，不用长期记忆替代实时值** | 长期记忆适合项目背景，不适合订单量、库存、状态等变化数据 |
+| D30 | 多模态第一批范围 | **先做图片与扫描 PDF 的 OCR/版面解析；Excel、音频、视频分别立项，不在第一批伪装已支持** | 先交付可验证的文件理解链路，避免一次引入过多解析器和模型依赖 |
+| D31 | 多模态存储边界 | **原文件保存到受控对象/`app-data`，解析产物保存文件元数据和文本块，向量只索引可检索文本；不把原图或原音频写入长期记忆** | 原文件、解析证据、项目记忆和文档向量分别治理，便于删除、权限和审计 |
+| D32 | 文件输入方式 | **只处理用户明确上传或明确指定的 `attachment_id`；不扫描整个工作区，不猜测文件范围** | 延续现有 `local_file_read` 的最小权限原则 |
+| D33 | 多模态模型接入 | **视觉/OCR/语音模型通过独立 provider 配置接入，缺失时降级到文本解析或明确提示能力不可用** | 多模态模型不可用时不能静默编造图像、表格或音视频内容 |
+| D34 | 执行操作边界 | **执行类意图只能调用 allowlist 工具；写操作必须审批、幂等键和审计事件；查询和执行严格分开** | “查订单”和“取消订单”不是同一种能力，不能共用一个自由参数工具 |
+| D35 | 阶段 6 上线方式 | **按意图和数据源逐项灰度，默认关闭新增实时查询和多模态入口；每项达到门槛后再扩大范围** | 现有文档→项目记忆→通用模型链路保持稳定，可随时关闭新增能力 |
 
 **与源文档的两处主动偏离**（已核实，非笔误）：
 
@@ -1276,7 +1287,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 ⚠️ `auth.enabled: true` 时若 `session.store != mysql`（`config.docker.yaml` 已是 mysql）或 `FEISHU_*` 缺失，`ValidateAuth()` 会让启动**直接失败**——这是刻意设计（清晰失败优于静默）。
 
-**验收**：按「十、总验收清单 → 上线前最终检查」逐项打勾；容器重启后走一遍完整登录 + 一次对话 + 一次工具审批。
+**验收**：按「十一、总验收清单 → 上线前最终检查」逐项打勾；容器重启后走一遍完整登录 + 一次对话 + 一次工具审批。
 
 ### 步骤 5.6　生产部署边界与网络收口　✅ 配置完成并在独立生产测试栈验证
 
@@ -1379,10 +1390,282 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 | 5.9a–c | ✅/⏳ | Windows 备份恢复、日志轮转、受保护指标和告警脚本已验证；Linux 目标机异地复制需执行 |
 | 5.10a | ✅ | 20 题评测：`asserted_total=14`、`correct_rate=1`、`citation_rate=1`、`refusal_rate=1`、`routing_accuracy=1`、`tool_evidence_rate=1` |
 | 5.10b、5.5b | ⏳ | 需在真实 1Panel/HTTPS/飞书回调环境完成 3–7 天内部灰度；完成前不宣称正式上线 |
+| 6.1–6.10 | ⏳ | 阶段 5 灰度完成后实施；先完成五类意图契约和只读业务数据样板，再扩展图片/扫描 PDF，表格、音频、视频与执行操作按独立门槛灰度 |
 
 ---
 
-## 八、明确不做的事
+## 八、阶段 6：业务数据查询、多模态预处理与五类意图路由
+
+### 阶段目标
+
+阶段 5 解决的是“系统能安全上线”；阶段 6 解决的是“上线后回答得更像企业助手”。本阶段不改变已经验证的文档知识库 → 项目长期记忆 → 通用模型链路，而是在它前面增加明确的问题分类，并为实时业务数据和文件理解提供各自的证据来源：
+
+```text
+用户请求
+  → 服务端五类意图判定
+      ├─ general            → 通用模型
+      ├─ project_fact       → 文档知识库 → 项目长期记忆 → 通用模型边界
+      ├─ realtime_data      → 注册的只读业务查询/API → 时间戳与来源
+      ├─ file_understanding → attachment_id → 解析/OCR/视觉 → 文件证据
+      └─ execution          → allowlist 工具 → 审批/幂等/审计 → 执行结果
+```
+
+阶段 6 的核心原则：
+
+1. **分类先于检索**。普通问题不经过知识库和长期记忆；实时问题不使用过期记忆冒充当前值。
+2. **数据查询不是向量检索**。订单、库存、工单状态等变化数据必须从只读数据库或企业 API 查询，不能把每次结果写入 Milvus 再检索。
+3. **文件理解不是自动入库**。用户上传的文件默认只服务当前请求；只有用户或管理员明确执行“加入项目知识库”并通过权限检查后，才进入文档索引流程。
+4. **模型只能选择已注册能力**。模型不能生成任意 SQL、URL、shell 命令、文件路径或执行参数。
+5. **所有新增能力可关闭、可审计、可回滚**。阶段 6 的新增入口默认关闭，按意图和数据源逐项灰度。
+
+### 步骤 6.1　定义五类意图契约和证据优先级
+
+**改什么**：把当前 `internal/routing/routing.go` 的关键词布尔判断扩展为固定枚举的 `IntentPlan`，保留现有 `Decision` 兼容包装，避免一次改动所有调用方。
+
+**建议类型**：
+
+```go
+type IntentKind string
+
+const (
+    IntentGeneral          IntentKind = "general"
+    IntentProjectFact      IntentKind = "project_fact"
+    IntentRealtimeData     IntentKind = "realtime_data"
+    IntentFileUnderstanding IntentKind = "file_understanding"
+    IntentExecution        IntentKind = "execution"
+)
+
+type IntentPlan struct {
+    Kind              IntentKind
+    Confidence        float64
+    ReasonCode        string
+    RequiredSources   []string
+    AttachmentIDs     []string
+    Operation         string
+    RequiresApproval  bool
+    FreshnessRequired bool
+    NeedsClarification bool
+}
+```
+
+判定优先级固定为：显式执行动作和安全规则 → 明确附件/文件请求 → 实时数据信号 → 项目内部事实信号 → 通用问题。无法从请求确定对象、时间范围、附件或操作名称时，返回 `NeedsClarification=true`，不能猜测。
+
+第一版采用“确定性规则优先 + 结构化分类器兜底”：
+
+- 确定性规则处理安全、上传文件、已注册业务操作、明显的项目事实词；
+- 只有规则无法区分时，才调用低成本分类器；分类器只能输出 JSON 枚举，解析失败按 `general` 或要求澄清处理；
+- 分类器不得直接决定 SQL、URL、owner、文件路径或审批结果；
+- 分类结果写入 `intent_classified` 事件，payload 只保留类别、置信度和规则码，不保存敏感原文。
+
+**受影响文件**：`internal/routing/intent.go`（新增）、`internal/routing/routing.go`、`internal/routing/routing_test.go`、`internal/execution/event.go`、对应事件测试。
+
+**提交边界**：`feat(routing): define typed intent plans`。
+
+**验收**：至少 50 个固定样本覆盖五类意图、歧义和越权表达；规则结果稳定；分类器返回非法枚举、额外字段或低置信度时不会进入业务查询或执行工具；`make check` 通过。
+
+### 步骤 6.2　把五类意图接入服务端编排器
+
+**改什么**：在 `internal/server/service.go` 的 `ChatWithSink` 中，把当前“先判断是否知识问题”的路径改为统一 `IntentPlan` 编排。每类意图只能进入对应分支：
+
+| 意图 | 首选证据 | 无证据时的行为 | 禁止行为 |
+|---|---|---|---|
+| `general` | 通用模型 | 直接回答通用知识 | 无理由调用知识库、长期记忆或业务查询 |
+| `project_fact` | 文档知识库 → 项目长期记忆 | 允许通用模型，但必须标明不是项目事实结论 | 用用户偏好或过期业务数据冒充项目事实 |
+| `realtime_data` | 注册的只读 DB/API 查询 | 明确说明数据源不可用、过期或无权限 | 回退到长期记忆回答当前数值 |
+| `file_understanding` | 指定 `attachment_id` 的解析产物 | 返回解析失败、文件不支持或需补充附件 | 扫描整个工作区或猜测文件 |
+| `execution` | allowlist 工具执行 | 需要澄清、审批或报告失败 | 自由生成命令、SQL、URL 或写操作 |
+
+普通对话不再被 `knowledge_search` 拖慢；项目事实仍维持已经实现的文档 → 记忆 → 通用模型顺序；实时数据和文件理解不共享项目事实的兜底逻辑。
+
+**受影响文件**：`internal/server/service.go`、`internal/server/http.go`、`internal/server/ws.go`、`internal/eino/agent/agent.go`、`internal/eino/prompt/prompt.go`。
+
+**提交边界**：`feat(server): route chat by typed intent`。
+
+**验收**：普通问题没有 `knowledge_search`/memory 事件；项目问题顺序正确；实时问题不会调用项目记忆作为当前值；未提供附件的文件问题要求补充；执行问题没有审批前不会产生写操作。
+
+### 步骤 6.3　建立结构化数据查询注册表
+
+**改什么**：新增 `internal/dataquery`，将业务数据查询从 Agent 工具和会话存储中隔离出来。模型只接触一个受限的 `structured_query` 工具，其输入是注册的 `source`、`operation` 和经过 schema 校验的参数。
+
+查询注册表必须包含：
+
+- `source`：业务库或 API 名称；
+- `operation`：固定操作 ID，例如 `orders.daily_summary`、`tickets.by_id`；
+- 参数类型、必填项、最大长度和允许枚举；
+- 返回字段白名单和脱敏规则；
+- owner/tenant 过滤方式；
+- 超时、最大行数、最大响应字节数和 `freshness_ttl`；
+- 是否只读、是否需要审批、是否允许批量查询。
+
+业务查询不能接收模型生成的原始 SQL 或完整 URL。SQL 使用代码或受审查的模板注册，参数使用 `database/sql` 的占位符；HTTP 使用固定 base URL、固定 path、固定 method，禁止根据用户输入拼接目标主机。配置只保存连接名和环境变量引用，不把口令写入仓库。
+
+**建议接口**：
+
+```go
+type QueryRequest struct {
+    Source    string
+    Operation string
+    Arguments map[string]any
+    OwnerID   string
+}
+
+type QueryResult struct {
+    Rows       []map[string]any
+    Source     string
+    Operation  string
+    AsOf       time.Time
+    FreshUntil time.Time
+    Redactions []string
+}
+```
+
+**受影响文件**：`internal/dataquery/types.go`、`registry.go`、`mysql.go`、`http.go`、`internal/config/config.go`、`config.yaml`、`config.docker.yaml`、`config.prod.yaml`、`internal/eino/tool/structured_query.go`。
+
+**提交边界**：`feat(data): add allowlisted structured query registry`。
+
+**验收**：单测覆盖非法 source、非法 operation、缺少参数、超长参数、owner 不匹配、超过行数和超时；任意 SQL/URL 输入都被拒绝；真实测试库使用只读账号；`go test -p 1 ./internal/dataquery/... ./internal/eino/tool/...` 通过。
+
+### 步骤 6.4　接入第一个实时业务数据源
+
+**改什么**：只接入一个高价值、低风险的业务对象作为样板，优先选择“工单状态”或“订单汇总”，不要一开始接入所有业务表。业务数据使用独立只读账号或企业 API token，不复用会话 MySQL 的写账号。
+
+推荐先实现两个操作：
+
+1. `by_id`：按明确 ID 查询单条记录；
+2. `summary`：按明确时间范围返回聚合结果。
+
+每个结果必须附带 `source`、`operation`、`as_of`、`fresh_until` 和查询范围。业务 API 的响应要先按 schema 解码，再交给模型；未知字段、错误码和空结果都要结构化表示。
+
+**受影响文件**：`internal/dataquery/mysql.go` 或 `http.go`、`internal/server/service.go`、`internal/eino/tool/structured_query.go`、`internal/execution/event.go`、集成测试和 `.env.example`。
+
+**提交边界**：`feat(data): add first realtime business connector`。
+
+**验收**：mock API/测试数据库能返回正确结果和时间戳；网络超时、401/403、空结果、旧数据和上游 5xx 均能区分；回答引用操作 ID 和数据时间；业务查询失败时不会退回长期记忆猜测当前状态。
+
+### 步骤 6.5　完成实时数据的新鲜度和权限控制
+
+**改什么**：把 `freshness_ttl` 变成强约束，而不是提示词建议。`fresh_until` 之后查询结果只能标记为过期并重新拉取；重新拉取失败时返回“当前数据不可用/已过期”，不能继续使用旧结果。长期记忆只可以补充字段含义、项目背景或历史决策。
+
+每次查询必须执行：
+
+1. 从认证上下文取得 owner/tenant；
+2. 由服务端注入 owner 条件，模型不能覆盖；
+3. 校验参数范围与时间窗口；
+4. 设置独立超时和最大返回量；
+5. 记录 `data_query_started/completed/failed` 事件，payload 脱敏；
+6. 在回答中显示数据时间，必要时提示用户刷新。
+
+**受影响文件**：`internal/dataquery/`、`internal/auth/`、`internal/server/service.go`、`internal/server/http.go`、`internal/execution/event.go`、`internal/evaluation/evaluation.go`。
+
+**提交边界**：`fix(data): enforce freshness and owner isolation`。
+
+**验收**：跨 owner 查询返回 403 或空结果；过期数据不能进入最终上下文；查询事件不含 token、密码或完整 SQL；同一问题重复查询按 TTL 工作；数据 P95 延迟和错误率可从 `/metrics` 区分。
+
+### 步骤 6.6　建立附件和多模态预处理基础设施
+
+**改什么**：新增显式附件流程，不让模型直接读取任意本地路径。新增 `attachments` 和 `attachment_artifacts` 数据结构，保存 owner、原始文件 hash、MIME、大小、存储 key、处理状态、错误原因、保留期限和解析器版本。
+
+建议状态：`uploaded` → `processing` → `ready` / `failed` / `expired`。文件原件保存到受控 `app-data` 或对象存储；数据库只保存元数据和索引，不把大文件塞进 MySQL。聊天请求新增 `attachment_ids`，服务端校验 owner 和状态后才允许进入 `file_understanding` 分支。
+
+第一批限制：单文件大小、总附件数、总解析页数和总处理时长都配置化；文件名只作为不可信展示文本；压缩包默认拒绝，防止路径穿越和解压炸弹；杀毒/扩展名与 MIME 双重校验。
+
+**受影响文件**：`internal/attachments/`（新增）、`internal/session/migrations/`、`internal/config/config.go`、`internal/server/http.go`、`internal/server/ws.go`、`internal/server/service.go`、`docker-compose.prod.yml`、`scripts/backup.sh`、`scripts/backup.ps1`。
+
+**提交边界**：`feat(files): add owner-scoped attachment lifecycle`。
+
+**验收**：上传、状态查询、失败重试、过期清理和删除均按 owner 隔离；越权 attachment ID 返回 404/403；原文件进入备份范围；未明确指定 attachment 时不会扫描工作区；`make check` 通过。
+
+### 步骤 6.7　接入图片与扫描 PDF 的 OCR/视觉解析
+
+**改什么**：新增 `internal/multimodal` 的 extractor 接口，第一批只实现 PNG/JPEG 和扫描 PDF。对可提取文本的 PDF 继续走现有文本解析；页面无文本或文本质量不足时再渲染页面并执行 OCR。需要理解图表、印章或布局时，调用独立视觉模型并保存模型/版本信息。
+
+解析产物至少包含：
+
+- `source_ref`：文件名、页码、图片区域或坐标；
+- `text`：OCR/文本提取结果；
+- `blocks`：标题、段落、表格、图片说明等结构；
+- `ocr_confidence` 和 `extractor_version`；
+- `created_at`、`content_hash` 和权限范围。
+
+解析产物可在用户明确选择“加入项目知识库”后进入 `my_eino_knowledge` 的文档索引，并保留 `attachment_id/page/block` 元数据；默认只作为本次文件问题的上下文。不得把原图、OCR 全文或视觉模型猜测自动写入 `my_eino_memory`。
+
+**受影响文件**：`internal/multimodal/`（新增）、`internal/eino/rag/documents.go`、`internal/eino/rag/parsers.go`、`internal/eino/rag/manifest.go`、`internal/eino/tool/local_file.go`、`internal/eino/agent/agent.go`、`internal/server/service.go`。
+
+**提交边界**：`feat(multimodal): parse images and scanned pdfs with provenance`。
+
+**验收**：文本 PDF 不重复 OCR；扫描 PDF 能返回页码和 OCR 置信度；图片问答能引用文件/页码/区域；OCR 失败、视觉模型不可用或低置信度时明确告知；恶意文件、超限文件和不支持 MIME 被拒绝；现有文档知识库索引无回归。
+
+### 步骤 6.8　第二批文件能力：表格、音频和视频（条件步骤）
+
+本步骤只有在 6.6–6.7 的附件隔离、来源和删除流程稳定后才开始。它是第二批能力，不得提前在产品文案中宣称已完成。
+
+- **表格**：使用结构化解析器读取工作表、列名、公式和类型；简单聚合优先在受限表格引擎中执行，向量索引只保存摘要和字段说明；回答必须指出工作表、单元格范围或计算口径。
+- **音频**：先语音转文字，保存说话人（若可用）、时间戳和转写置信度；检索返回时间段，不把转写猜测写成事实。
+- **视频**：拆出字幕、音频转写和按间隔抽取的关键帧；查询返回时间戳和帧引用，限制最大时长与帧数。
+
+**受影响文件**：`internal/multimodal/`、`internal/attachments/`、`internal/eino/rag/`、对应 provider 配置、前端附件展示和评测夹具。
+
+**提交边界**：按模态分别提交，例如 `feat(multimodal): add spreadsheet extraction`、`feat(multimodal): add audio transcription`；不把三种模态合并成一个不可回滚提交。
+
+**验收**：每种模态有真实样本、失败样本和越权样本；来源包含页/表/单元格/时间戳；解析失败不会调用通用模型编造内容；处理耗时、队列长度和存储量有指标。
+
+### 步骤 6.9　执行类意图和业务操作安全收口
+
+**改什么**：把“查询实时数据”和“修改业务状态”彻底分开。执行工具每个操作必须有固定 ID、参数 schema、权限要求、是否需要审批、幂等键生成规则、超时和补偿说明。沿用现有 `write_note` 的审批中断机制，但不能把任意业务 API 直接暴露给模型。
+
+执行流程：解析操作 → 校验 owner/权限 → 生成 dry-run 摘要 → 用户审批 → 带幂等键执行 → 记录结果和外部 request ID。审批前可以读取信息和生成预览，但不能产生写入副作用。重复提交同一幂等键必须返回同一执行结果或明确处理中状态。
+
+**受影响文件**：`internal/eino/tool/`、`internal/server/service.go`、`internal/auth/`、`internal/checkpoint/`、`internal/execution/event.go`、前端审批组件、`docs/API.md`。
+
+**提交边界**：`feat(execution): add allowlisted business operations`。
+
+**验收**：未授权用户、越权 owner、缺少审批和重复请求均不能产生写操作；dry-run 与实际执行事件可区分；失败重试不重复扣款/改状态；审计记录包含操作 ID、执行人、审批人、幂等键和结果摘要，不包含密钥。
+
+### 步骤 6.10　评测、指标和分阶段灰度
+
+**改什么**：扩展 `internal/integration/eval_cases.json` 和 `cmd/eval`，让评测不只看答案，还检查“是否选对来源、是否避免不必要查询、是否返回新鲜度和文件来源”。新增指标：
+
+| 指标 | 阶段 6 门槛 |
+|---|---:|
+| 五类意图准确率 | ≥ 95%（至少 50 个固定样本） |
+| 普通问题误触发知识库/记忆/业务查询率 | ≤ 1% |
+| 实时数据过期结果进入最终回答 | 0 |
+| 未注册 SQL/URL/操作被执行 | 0 |
+| 业务查询 owner 越权成功率 | 0 |
+| 文件来源可追溯率 | ≥ 95% |
+| 图片/扫描 PDF 解析成功率 | ≥ 95%（有效样本） |
+| 执行操作审批绕过率 | 0 |
+
+灰度顺序固定为：
+
+1. 只启用 `general` 与现有 `project_fact` 新路由，确认普通问题不再触发无关检索；
+2. 只开放一个只读业务数据源给内部用户；
+3. 再开放图片/扫描 PDF 附件，限制用户、大小和并发；
+4. 通过 3–7 天指标后，逐项开放表格、音频、视频或执行操作；
+5. 任一安全指标为非零，立即关闭对应 feature flag，不回滚已验证的阶段 5 主链路。
+
+**受影响文件**：`internal/evaluation/evaluation.go`、`cmd/eval/main.go`、`internal/integration/eval_cases.json`、`internal/server/service.go`、`internal/server/http.go`、`docs/API.md`、`docs/RUNBOOK.md`。
+
+**提交边界**：`test(product): add intent data and multimodal launch gates`。
+
+**验收**：`make check`、结构化数据集成测试、附件/解析测试、权限交叉测试和 `make eval` 全部通过；生产灰度记录包含意图分布、查询延迟、解析失败、存储增长、来源覆盖和停止条件；每项新增能力可独立关闭。
+
+### 阶段 6 的数据存储边界
+
+| 数据 | 保存位置 | 是否进入现有文档知识库 | 是否进入长期记忆 |
+|---|---|---|---|
+| 项目文档 | `my_eino_knowledge` | 是 | 否 |
+| 项目长期事实/决策 | MySQL Memory 表 + `my_eino_memory_v1` | 否 | 是，按既有规则 |
+| 实时业务数据查询结果 | 业务 DB/API；回答只保存必要审计摘要 | 否 | 否，除非用户明确要求记录决策 |
+| 用户上传原文件 | `app-data`/对象存储 | 默认否 | 否 |
+| 文件解析文本/页块 | `attachment_artifacts`，用户明确入库后才索引 | 可选 | 否 |
+| 执行结果与审计 | MySQL `execution_*`/业务审计表 | 否 | 否 |
+
+**阶段 6 的完成定义**：五类意图能稳定选择正确数据源；实时数据不会被长期记忆替代；文件理解有真实解析证据和来源；执行操作有审批和幂等；普通问题不再因知识库预检索而增加不必要延迟。完成前只算灰度能力，不能在产品文案中写成“已支持所有 PDF、表格、音视频和业务系统操作”。
+
+---
+
+## 九、明确不做的事
 
 | 项 | 出处 | 不做理由 |
 |---|---|---|
@@ -1401,7 +1684,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 ---
 
-## 九、必须处理的坑（合并去重 · 统一编号）
+## 十、必须处理的坑（合并去重 · 统一编号）
 
 ### 技能侧
 
@@ -1443,7 +1726,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 ---
 
-## 十、总验收清单
+## 十一、总验收清单
 
 ### 阶段级
 
@@ -1554,6 +1837,16 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 - `scripts/backup.ps1`、`scripts/restore-check.ps1`、`scripts/backup.sh`、`scripts/restore-check.sh`、`scripts/health-alert.sh`、Compose 日志配置（步骤 5.9b–c）
 - `docs/RUNBOOK.md` 灰度操作章节（步骤 5.10b）
 
+### 阶段 6（10 个产品化步骤）
+
+- `internal/routing/intent.go`、`internal/routing/routing.go`、路由测试、`internal/execution/event.go`（步骤 6.1）
+- `internal/server/service.go`、`internal/server/http.go`、`internal/server/ws.go`、`internal/eino/agent/agent.go`、`internal/eino/prompt/prompt.go`（步骤 6.2）
+- `internal/dataquery/`、`internal/eino/tool/structured_query.go`、配置和只读查询测试（步骤 6.3–6.5）
+- `internal/attachments/`、附件迁移、上传/状态/删除 API、生产备份配置（步骤 6.6）
+- `internal/multimodal/`、`internal/eino/rag/documents.go`、`internal/eino/rag/parsers.go`、`internal/eino/rag/manifest.go`（步骤 6.7–6.8）
+- `internal/eino/tool/`、`internal/checkpoint/`、执行事件、前端审批组件、`docs/API.md`（步骤 6.9）
+- `internal/evaluation/evaluation.go`、`cmd/eval/main.go`、`internal/integration/eval_cases.json`、`docs/RUNBOOK.md`（步骤 6.10）
+
 ### 关键交集（必须按顺序，否则二次改写）
 
 | 文件 | 阶段 | 约束 |
@@ -1570,6 +1863,10 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 | `internal/integration/eval_cases.json` | 4（路由评测）+ 5.7b（答案边界） | 统一重写断言，避免旧模型自主路由期望残留 |
 | `scripts/backup.ps1` / `scripts/restore-check.ps1` | 5.3（初版）+ 5.9b（app-data 扩展） | 5.9b 只扩展备份范围和判据，保留已验证的 SHA256/恢复流程 |
 | `internal/evaluation/evaluation.go` / `cmd/eval/main.go` | 阶段 4 + 5.7b/5.10a | 合并为一次评测指标提交，只计算工具证据和拒答边界，不计算 HTTP 5xx；避免门槛分母不一致 |
+| `internal/server/service.go` | 阶段 5.7a/5.7c + 6.2/6.5/6.9 | 先保留已验证的文档→记忆链路，再按 IntentPlan 分支接入实时数据、附件和执行操作；新增能力必须有 feature flag |
+| `internal/server/http.go` / `ws.go` | 阶段 2/5 + 6.2/6.6/6.9 | 认证、附件 owner 校验、查询超时和审批路径不能分散实现；HTTP/WS 使用同一服务编排器 |
+| `internal/config/config.go` | 阶段 2/5 + 6.3/6.6/6.7 | 数据源、附件、provider 和 feature flag 一次完成配置校验，禁止从用户输入读取连接信息 |
+| `internal/evaluation/evaluation.go` / `cmd/eval/main.go` | 阶段 4/5 + 6.10 | 评测指标新增意图、实时数据新鲜度、附件来源和越权断言；不能改变既有上线门槛口径 |
 
 ### 阶段 5 生产来源与执行对应
 
@@ -1580,6 +1877,15 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 | 5.8a–c | 并发队列、HTTP 状态码/指标、不可变镜像和回滚命令 |
 | 5.9a–c | 执行记录定时清理、全量备份恢复、日志轮转和通知规则 |
 | 5.10a–b | `make eval`/`/metrics` 门槛指标、内部灰度记录和停止条件 |
+
+### 阶段 6 产品来源与执行对应
+
+| 本方案步骤 | 具体来源/交付物 |
+|---|---|
+| 6.1–6.2 | 五类意图枚举、分类器契约、服务端统一编排和 `intent_classified` 事件 |
+| 6.3–6.5 | 只读业务查询注册表、数据库/API connector、owner 过滤、数据新鲜度和查询审计 |
+| 6.6–6.8 | attachment 生命周期、OCR/视觉解析、文本/页块证据和后续表格/音频/视频适配器 |
+| 6.9–6.10 | allowlist 执行操作、审批/幂等、评测门槛、feature flag 和灰度记录 |
 
 ---
 
@@ -1618,6 +1924,10 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 | 步骤 5.8a–c | **本方案新增**：有界并发、504 与指标拆分、不可变镜像回滚 |
 | 步骤 5.9a–c | **本方案新增**：执行记录周期清理、完整备份、日志轮转与告警 |
 | 步骤 5.10a–b | **本方案新增**：上线门槛度量与内部灰度流程 |
+| 步骤 6.1–6.2 | **本方案新增**：五类意图契约与服务端统一编排 |
+| 步骤 6.3–6.5 | **本方案新增**：只读结构化业务查询、owner 隔离与数据新鲜度 |
+| 步骤 6.6–6.8 | **本方案新增**：附件生命周期、图片/扫描 PDF 解析及后续模态扩展 |
+| 步骤 6.9–6.10 | **本方案新增**：allowlist 执行操作、评测门槛与分阶段灰度 |
 | 「明确不做」 | `REFACTOR-PLAN.md` 阶段 4、S8、决策 5；`AUTH-PLAN.md` 坑 5 |
 
 ---
