@@ -1,11 +1,11 @@
 [
   {"question":"星河系统的幸运数字是什么？","expected":"7319","must_cite":"milvus-validation.md"},
   {"question":"星河系统使用什么技术栈？","expected":"Go、Eino 和 Milvus","must_cite":"milvus-validation.md"},
-  {"question":"星河系统首席财务官是谁？","expected":"","must_cite":"","should_refuse":true},
+  {"question":"星河系统首席财务官是谁？","expected":"","must_cite":""},
   {"question":"星河系统的默认管理员是谁？","expected":"张三","must_cite":"milvus-validation.md"},
   {"question":"星河系统的生产部署区域在哪里？","expected":"上海","must_cite":"milvus-validation.md"},
   {"question":"星河系统的内部版本号是什么？","expected":"XH-2026-09","must_cite":"milvus-validation.md"},
-  {"question":"知识库中是否记载了星河系统在火星的办公室地址？","expected":"","must_cite":"","should_refuse":true},
+  {"question":"知识库中是否记载了星河系统在火星的办公室地址？","expected":"","must_cite":""},
 
   {"question":"请读取 workspace-files 目录下的文档并总结要点。","expected":"","must_cite":"","expect_skills":["documents"]},
   {"question":"把 workspace-files 里的 README.txt 读出来做个摘要。","expected":"摘要","must_cite":"","expect_skills":["documents"]},

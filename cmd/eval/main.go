@@ -32,7 +32,7 @@ func main() {
 	threshold := flag.Float64("threshold", -1, "覆盖相似度阈值；-1 使用 config.yaml")
 	minCorrect := flag.Float64("min-correct", 0.8, "最低正确率，未达到时返回非零退出码")
 	minCitation := flag.Float64("min-citation", 1, "最低引用率，未达到时返回非零退出码")
-	minRefusal := flag.Float64("min-refusal", 1, "最低拒答率，未达到时返回非零退出码")
+	minRefusal := flag.Float64("min-refusal", 0, "最低拒答率；只有评测集声明 should_refuse 时才建议设置为正数")
 	minRouting := flag.Float64("min-routing", -1, "最低路由准确率，未达到时返回非零退出码；-1 表示不检查")
 	minEvidence := flag.Float64("min-tool-evidence", -1, "最低工具/预加载证据率；-1 表示不检查")
 	flag.Parse()

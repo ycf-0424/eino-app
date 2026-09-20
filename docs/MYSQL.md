@@ -1,6 +1,6 @@
 # MySQL 会话存储
 
-项目复用已有 MySQL 实例，在 `eino` 中保存会话。Milvus 继续保存知识库向量，聊天不会自动写入 Milvus。
+项目复用已有 MySQL 实例，在 `eino` 中保存会话。Milvus 保存文档知识库向量；符合长期记忆规则的项目事实会进入独立的 `my_eino_memory_v1` 集合，聊天不会自动写入文档知识库 `my_eino_knowledge`。
 
 ## 本机已完成的接入
 

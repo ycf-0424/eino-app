@@ -106,7 +106,7 @@
 | D20 | 数据保护目标 | **RPO ≤ 6 小时，RTO ≤ 2 小时；备份包含 MySQL、Milvus 和 `app-data`，并放在不同存储位置** | 只备 MySQL 或只看脚本退出码不足以证明可恢复 |
 | D21 | 生产运行环境 | **明确选择 Windows/Docker Desktop 或 Linux/Docker，并在同一环境验证备份和定时任务** | 当前脚本和任务计划偏向 Windows，跨 OS 搬运会使运维流程失效 |
 | D22 | `knowledge_qa` 的定位 | **保留为知识问答能力的说明层，实际检索由服务端强制 `knowledge_search` 完成** | 避免模型跳过检索，同时不重复建设第二套知识库工具 |
-| D23 | 知识库无命中时的回答 | **明确回答“知识库中没有足够资料，无法确认”，不放开常识补全** | 私有知识问答必须可审计，避免把模型常识伪装成内部事实 |
+| D23 | 知识库无命中时的回答 | **先查项目长期记忆；文档和长期记忆都无命中时放行通用模型，并明确标注不是项目内部资料结论** | 保留证据边界，同时避免知识库为空时普通问题完全无法回答 |
 | D24 | 第一阶段传输协议 | **HTTPS；反向代理终止 TLS，应用 Cookie `Secure=true`** | 灰度也可能包含敏感业务内容，避免后续从 HTTP 切 HTTPS 造成 Cookie 和代理配置二次变更 |
 | D25 | 真实 IP 限流位置 | **代理层按真实 IP 主限流；应用只保留用户名维度和代理失效时的 RemoteAddr 兜底** | 代理后的 `RemoteAddr` 是代理地址，不能把应用 IP 桶当作正常用户限流；当前 Go 应用刻意不信任客户端 XFF |
 
@@ -1303,7 +1303,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 路由规则必须结合动作和对象，而不是只匹配单个关键词；技能、工具、提示词或 embedding 模型变更后必须重新执行 `make eval`。
 
-**验收**：知识库请求都有检索事件和来源；无命中统一回答“知识库中没有足够资料，无法确认”；报告/文档场景有实际技能事件；空壳技能场景不声称已生成文件；`debug=false` 的用户可见回答不出现技能名；评测集覆盖上述边界。
+**验收**：知识库请求都有检索事件和来源；文档无命中时先查询项目长期记忆；两者都无命中时实际调用模型并明确通用回答边界；报告/文档场景有实际技能事件；空壳技能场景不声称已生成文件；`debug=false` 的用户可见回答不出现技能名；评测集覆盖上述边界。
 
 ### 步骤 5.7c　已接入技能的服务端选择
 
@@ -1350,7 +1350,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 | 5.6a 网络 Compose | 新增独立生产 Compose 文件 `docker-compose.prod.yml`，不与开发 Compose 叠加；生产文件不包含 MySQL、Milvus、Attu 的宿主机 `ports`，应用只绑定代理内网；Attu 默认不启动；应用镜像使用 `${APP_IMAGE}` 不可变标签 | `chore(deploy): add production network compose` | 停止开发 Compose 后执行 `docker compose -f docker-compose.prod.yml --env-file .env.prod config` 和 `docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --no-build`；确认 MySQL/Milvus/Attu 无宿主机端口，应用健康检查通过，从用户网段只能访问 HTTPS 入口 |
 | 5.6b 代理配置 | 新增并纳入部署文档的 Nginx 配置：TLS、HSTS、`proxy_read_timeout 210s`、WebSocket Upgrade、关闭 buffering、`limit_req`；按真实客户端 IP 在代理层限流 | `chore(proxy): add production reverse proxy policy` | `nginx -t`；浏览器登录/回调；WebSocket 连通；同一真实 IP 超过阈值返回 429 |
 | 5.6c 回调保护 | `internal/server/auth.go` 为 `/auth/callback` 增加按 IP 和回调状态的限流；应用侧仍只使用 `RemoteAddr` 兜底，不读取 XFF | `fix(auth): throttle oauth callback` | 新增回调限流单测；超过阈值返回 `429 + Retry-After`；合法回调仍能完成登录 |
-| 5.7a 确定性预检索 | 在 `internal/server/service.go` 的请求装配路径增加服务端知识意图判定和 `knowledge_search` 预检索；结果注入 agent instruction/history；复用标准 `tool_started`/`tool_completed` 事件，不通过 debug 技能目录，不向用户暴露技能名；无命中统一回复“知识库中没有足够资料，无法确认” | `feat(routing): enforce knowledge preflight` | 路由单测覆盖命中、无命中、普通问答；集成测试检查预检索事件、来源和拒答文本；非 debug 响应不含技能名 |
+| 5.7a 确定性预检索 | 在 `internal/server/service.go` 的请求装配路径增加服务端知识意图判定和 `knowledge_search` 预检索；文档命中时只注入文档资料；文档无命中时改查项目范围长期记忆；两者都无命中时放行模型并注入通用回答边界；复用标准 `tool_started`/`tool_completed` 事件，不通过 debug 技能目录，不向用户暴露技能名 | `feat(routing): enforce knowledge preflight` | 路由单测覆盖命中、文档无命中+记忆命中、双无命中和普通问答；集成测试检查检索顺序、模型确实被调用、来源和通用回答标记；非 debug 响应不含技能名 |
 | 5.7b 评测重写 | 重写 `internal/integration/eval_cases.json`：执行类题增加可判定答案断言；空壳文件技能改为能力限制断言；增加知识库无命中用例 | `test(eval): assert production routing and answer boundaries` | `go test -p 1 ./internal/evaluation/...`；`make eval` 输出路由、断言、拒答和工具证据指标 |
 | 5.7c 已接入技能预加载 | `SkillPreloaded` 已在 `internal/execution/event.go` 定义并列入 `knownTypes`；本步骤在 `internal/skill/runtime.go` 支持多技能预加载，在 `internal/server/service.go` 增加报告/文档动作+对象判定，服务端预加载 `report_writer`/`documents`；`requestedSkill()` 继续保护客户端技能指定 | `feat(routing): preload connected skills server side` | `go test -p 1 ./internal/server/... ./internal/skill/...`；报告、文档和组合请求产生预加载事件，空壳技能不预加载，debug=false 不暴露技能名，知识来源可见 |
 | 5.8a 并发保护 | 在 `internal/server/service.go:enter` 增加 `runtime.queue_limit` 和 `runtime.queue_timeout`；满队列立即返回可识别错误 | `feat(runtime): bound concurrency queue` | 单测：并发槽满时等待不超过 5 秒，返回 503；配置校验拒绝非正数 |
@@ -1454,7 +1454,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 | 2 | `make db-migrate` 连跑两次；`go test -p 1 ./...` | A/B 加 L1/L2 **四种身份**交叉测试全项通过（见步骤 2.15） |
 | 3 | `make boundary`；`go test -p 1 ./...`（通过数与基线一致） | — |
 | 4 | `make eval` 输出含 `routing_accuracy` | 易混场景判定正确 |
-| 5 | `go test -p 1 ./...`；`make backup` + `restore-check`；`docker compose -f docker-compose.prod.yml config`；代理/回调/队列/504/指标/清理测试；`make eval` 输出上线门槛 | 仅 HTTPS 入口可达；`/health` 与 `/health/ready` 分离；知识库无命中明确拒答；空壳技能不承诺文件能力；可切换上一版本；备份、告警、灰度记录全部通过 |
+| 5 | `go test -p 1 ./...`；`make backup` + `restore-check`；`docker compose -f docker-compose.prod.yml config`；代理/回调/队列/504/指标/清理测试；`make eval` 输出上线门槛 | 仅 HTTPS 入口可达；`/health` 与 `/health/ready` 分离；文档无命中先查项目记忆，双无命中实际调用模型并标明通用回答；空壳技能不承诺文件能力；可切换上一版本；备份、告警、灰度记录全部通过 |
 
 ### 上线前最终检查
 

@@ -42,8 +42,9 @@ $env:RUN_RAG_EVAL = "1"           # 脚本同时运行固定 RAG 问答评测
 .\scripts\test-integration.ps1
 ```
 
-`cmd/eval` 默认要求正确率至少 `0.8`，引用率和拒答率均为 `1.0`；未达到时返回
-非零退出码。可用 `-min-correct`、`-min-citation`、`-min-refusal` 调整门槛。
+`cmd/eval` 默认要求正确率至少 `0.8`、引用率至少 `1.0`；拒答率只在评测集声明
+`should_refuse` 时作为业务门槛。未达到时返回非零退出码。可用 `-min-correct`、
+`-min-citation`、`-min-refusal` 调整门槛。
 
 普通 `go test -p 1 ./...` 不会访问 Ollama/Milvus。当前机器内存较紧时使用
 `-p 1` 串行编译；外部依赖测试只有设置 `RUN_E2E=1` 或执行上述脚本才运行。
@@ -74,5 +75,4 @@ WebSocket 连接后先收到 `ready`，发送与 `/chat` 相同的 JSON；服务
   `events` 字段内联本轮事件数组；实时推送仅由 WebSocket 提供。
 - 刷新页面时按 `run_id` 回放历史事件：`GET /sessions/{id}/execution` 返回
   `runs`（含 `assistant_sequence`）与 `events`，据此把事件挂回对应助手消息。
-
 

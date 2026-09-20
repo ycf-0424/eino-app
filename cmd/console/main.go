@@ -29,6 +29,7 @@ import (
 	"my-eino-app/internal/eino/rag"
 	toolset "my-eino-app/internal/eino/tool"
 	"my-eino-app/internal/health"
+	"my-eino-app/internal/memory"
 	appserver "my-eino-app/internal/server"
 	"my-eino-app/internal/session"
 	"my-eino-app/internal/skill"
@@ -146,6 +147,23 @@ func main() {
 		fmt.Printf("正在恢复会话: %s\n", *sessionID)
 	}
 	defer store.Close()
+	var memoryEngine *memory.Engine
+	if cfg.Memory.Enabled {
+		memoryEngine, err = memory.Open(ctx, cfg, store, cm)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "memory:", err)
+			os.Exit(1)
+		}
+		memoryEngine.Start(ctx)
+		defer memoryEngine.Close()
+		if ragChain != nil {
+			if cfg.Memory.IdentityMode == "local_single_user" {
+				ragChain.SetMemoryFallback(func(fallbackCtx context.Context, query string) (string, bool, error) {
+					return memoryEngine.ProjectContext(fallbackCtx, memoryEngine.OwnerScope(consoleOwner), query)
+				})
+			}
+		}
+	}
 	chat.SetPersistence(func(messages []*schema.Message) error { return store.Save(consoleOwner, *sessionID, messages) }, cfg.Session.MaxMessages, cfg.Session.MaxChars)
 	chat.SetSessionID(*sessionID)
 	approvalScanner := bufio.NewScanner(os.Stdin)

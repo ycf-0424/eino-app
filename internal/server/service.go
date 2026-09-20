@@ -422,6 +422,13 @@ func (s *Service) acquireSession(ctx context.Context, id string) (func(), error)
 
 // newAgent 创建本轮 Agent，并返回本轮直接预加载的技能名。
 func (s *Service) newAgent(ctx context.Context, id, skillName string, preloadSkills ...string) (*agent.ChatAgent, []string, error) {
+	return s.newAgentWithMemory(ctx, id, skillName, true, preloadSkills...)
+}
+
+// newAgentWithMemory controls whether the normal user/project memory context
+// is attached. Private knowledge requests first use the document preflight;
+// only a document miss may replace it with project-memory fallback.
+func (s *Service) newAgentWithMemory(ctx context.Context, id, skillName string, includeMemory bool, preloadSkills ...string) (*agent.ChatAgent, []string, error) {
 	// owner 在这里取出并捕获进闭包：SetPersistence 的回调可能在请求 context
 	// 已取消之后才被调用，那时再读 context 已经取不到值。
 	owner := auth.OwnerFromContext(ctx)
@@ -465,7 +472,7 @@ func (s *Service) newAgent(ctx context.Context, id, skillName string, preloadSki
 	}
 	// 持久化完整历史；只有传给模型的上下文才会压缩。
 	chat.SetHistory(history)
-	if s.memories != nil {
+	if includeMemory && s.memories != nil {
 		chat.SetMemoryContext(s.memories.ContextFor(s.memories.OwnerScope(owner)))
 	}
 	chat.SetPersistence(func(messages []*schema.Message) error { return s.sessions.Save(owner, id, messages) }, s.cfg.Session.MaxMessages, s.cfg.Session.MaxChars)
@@ -639,10 +646,16 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 			return ChatResult{}, err
 		}
 	}
-	chat, preloaded, err := s.newAgent(ctx, id, skillName, route.preloadSkills...)
+	chat, preloaded, err := s.newAgentWithMemory(ctx, id, skillName, !route.preloadKnowledge, route.preloadSkills...)
 	if err != nil {
 		finishRun(em, execution.StatusFailed, "agent_init_failed")
 		return ChatResult{}, err
+	}
+	// 文档知识库无命中时，第二级只允许读取项目范围长期记忆；用户偏好
+	// 仍可用于普通聊天，但不能被当作项目内部事实的证据。
+	if route.preloadKnowledge && preflight.Hit == 0 && s.memories != nil {
+		owner := auth.OwnerFromContext(ctx)
+		chat.SetMemoryContext(s.memories.ProjectContextFor(s.memories.OwnerScope(owner)))
 	}
 	if em != nil && len(preloaded) > 0 {
 		em.Emit(execution.Event{Type: execution.SkillPreloaded, Payload: map[string]any{"skill_names": preloaded}})
@@ -652,18 +665,15 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 	}
 	if route.preloadKnowledge {
 		if preflight.Hit == 0 {
-			const answer = "知识库中没有足够资料，无法确认"
-			if err = chat.Respond(query, answer); err != nil {
-				finishRun(em, execution.StatusFailed, "save_failed")
-				return ChatResult{}, err
-			}
-			if writer != nil {
-				_, _ = io.WriteString(writer, answer)
-			}
-			finishRun(em, execution.StatusCompleted, "")
-			return ChatResult{SessionID: id, RunID: runIDOf(em), TurnID: latestTurn(chat.History())}, nil
+			chat.SetPreflightContext(`<knowledge_preflight status="miss">
+服务端已检索项目文档知识库，但没有找到足够的文档依据。
+本轮不要再次调用 knowledge_search。
+如果 <memory_context> 中有与问题直接相关的项目长期记忆，可以使用，并明确说明依据来自项目长期记忆；如果长期记忆也没有相关内容，请按通用模型知识回答，并明确说明这不是项目文档中的已确认事实。
+不要因为文档知识库无命中就直接拒答，也不要把通用知识、推测或长期记忆伪装成项目文档事实。
+</knowledge_preflight>`)
+		} else {
+			chat.SetPreflightContext("<knowledge_preflight status=\"hit\">\n服务端已完成项目文档知识库检索，本轮不要再次调用 knowledge_search。以下内容是本轮可引用的文档资料，请基于它回答并列出来源；不要猜测或补充资料中没有的项目事实。\n<knowledge_results>\n" + preflight.Answer + "\n</knowledge_results>\n</knowledge_preflight>")
 		}
-		chat.SetPreflightContext("服务端已完成知识库检索。以下内容是本轮唯一可引用的私有资料，请基于它回答并列出来源；不要再次猜测或补充资料中没有的事实。\n<knowledge_results>\n" + preflight.Answer + "\n</knowledge_results>")
 	}
 	if route.capabilityNotice != "" {
 		if err = chat.Respond(query, route.capabilityNotice); err != nil {
