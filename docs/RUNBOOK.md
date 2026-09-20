@@ -149,36 +149,36 @@ powershell -File scripts/feishu-check.ps1
 | — | 0.1 | 基线提交 `92b2833` | ✅ 已完成（已推送） |
 | — | — | 阶段 0 的两条文档提交（基线记录 + 本手册） | ✅ 已完成（**待推送**） |
 | — | — | **P0 推送** | ☐（见第四节） |
-| **C1** | 1.1 | 删除死配置 | ☐ |
-| **C2** | 1.2+1.3+1.4 | 补能力边界 / 改写主信号 / 补互斥分界 | ☐ |
-| **C3** | 1.5+1.6 | 打开事件采集 / 放宽输出上限 | ☐ |
-| — | 1.7 | 阶段 1 验收（无 commit）→ **P1** | ☐ |
-| **C4** | 2.1 | auth 配置层 | ☐ |
-| **C5** | 2.2 | 数据库迁移 | ☐ |
-| **C6** | 2.3 | 认证模块 | ☐ |
-| **C7** | 2.4 | 路由与中间件 | ☐ |
-| **C8** | 2.5 | Session 隔离 | ☐ |
-| **C9** | 2.6 | Memory 隔离 | ☐ |
-| **C10** | 2.7 | Checkpoint 隔离 | ☐ |
-| **C11** | 2.8 | Execution 隔离 | ☐ |
-| **C12** | 2.9 | 前端 | ☐ |
-| **C13** | 2.10+2.11 | 自有账号：配置与数据层 / 密码哈希与建号 CLI | ☐ |
-| **C14** | 2.12+2.13 | 自有账号：登录逻辑与路由 / 登录限流与 owner 前缀收口 | ☐ |
-| **C15** | 2.14 | 自有账号：前端登录表单 | ☐ |
-| — | 2.15 | 阶段 2 验收（A/B × L1/L2 交叉测试，无 commit）→ **P2** | ☐ |
-| **C16** | 3.1 | eino 机械平移 | ☐ → **P2.5** |
-| **C17** | 3.2 | 边界守卫 | ☐ |
-| **C18** | 3.3 | 消除构造泄漏 | ☐ |
-| — | — | 阶段 3 验收 → **P3** | ☐ |
-| **C19** | 4.1 | 评测路由维度 | ☐ |
-| **C20** | 4.2 | 评测集扩题 | ☐ |
-| — | — | 阶段 4 验收 → **P4** | ☐ |
-| **C21** | 5.1 | 优雅停机 | ☐ |
-| **C22** | 5.2 | 限流与配额 | ☐ |
-| **C23** | 5.3 | 备份与恢复演练 | ☐ |
-| **C24** | 5.4 | 健康检查分离 | ☐ |
-| **C25** | 5.5 | 上线前配置切换 | ☐ |
-| — | — | 阶段 5 验收 → **P5** | ☐ |
+| **C1** | 1.1 | 删除死配置 | ✅ 已完成 |
+| **C2** | 1.2+1.3+1.4 | 补能力边界 / 改写主信号 / 补互斥分界 | ✅ 已完成 |
+| **C3** | 1.5+1.6 | 打开事件采集 / 放宽输出上限 | ✅ 已完成 |
+| — | 1.7 | 阶段 1 验收（无 commit）→ **P1** | ✅ 已验收 |
+| **C4** | 2.1 | auth 配置层 | ✅ 已完成 |
+| **C5** | 2.2 | 数据库迁移 | ✅ 已完成 |
+| **C6** | 2.3 | 认证模块 | ✅ 已完成 |
+| **C7** | 2.4 | 路由与中间件 | ✅ 已完成 |
+| **C8** | 2.5 | Session 隔离 | ✅ 已完成 |
+| **C9** | 2.6 | Memory 隔离 | ✅ 已完成 |
+| **C10** | 2.7 | Checkpoint 隔离 | ✅ 已完成 |
+| **C11** | 2.8 | Execution 隔离 | ✅ 已完成 |
+| **C12** | 2.9 | 前端 | ✅ 已完成 |
+| **C13** | 2.10+2.11 | 自有账号：配置与数据层 / 密码哈希与建号 CLI | ✅ 已完成 |
+| **C14** | 2.12+2.13 | 自有账号：登录逻辑与路由 / 登录限流与 owner 前缀收口 | ✅ 已完成 |
+| **C15** | 2.14 | 自有账号：前端登录表单 | ✅ 已完成 |
+| — | 2.15 | 阶段 2 验收（A/B × L1/L2 交叉测试，无 commit）→ **P2** | ✅ 已验收 |
+| **C16** | 3.1 | eino 机械平移 | ✅ 已完成 |
+| **C17** | 3.2 | 边界守卫 | ✅ 已完成 |
+| **C18** | 3.3 | 消除构造泄漏 | ✅ 已完成 |
+| — | — | 阶段 3 验收 → **P3** | ✅ 已验收 |
+| **C19** | 4.1 | 评测路由维度 | ✅ 已完成 |
+| **C20** | 4.2 | 评测集扩题 | ✅ 已完成 |
+| — | — | 阶段 4 验收 → **P4** | ✅ 已验收 |
+| **C21** | 5.1 | 优雅停机 | ✅ 已完成 |
+| **C22** | 5.2 | 限流与配额 | ✅ 已完成 |
+| **C23** | 5.3 | 备份与恢复演练 | ✅ 已完成 |
+| **C24** | 5.4 | 健康检查分离 | ✅ 已完成 |
+| **C25** | 5.5 | 上线前配置切换 | ⏳ 目标服务器执行 |
+| — | — | 阶段 5 验收 → **P5** | ⏳ 5.5b/灰度待完成 |
 
 ---
 
@@ -1832,6 +1832,16 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --no-build
 docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 ```
 
+生产镜像同时包含 `session-migrate` 和 `user-admin` 运维 CLI，但它们不会作为用户流量进程启动。第一次启动空生产卷时，先启动依赖，再使用同一镜像、同一 Compose 网络执行迁移和建号：
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d mysql etcd minio milvus
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-deps --entrypoint ./session-migrate app
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-deps --entrypoint ./user-admin app -create -username=admin -admin
+```
+
+建号命令省略 `-password` 时从标准输入读取；完成管理员建号后再启动 `app`。这样 bootstrap 不需要向宿主机发布 MySQL 端口，也不会把开发 Compose 的 CLI 或数据卷带入生产栈。
+
 第一次上线如果需要从开发数据迁移，必须在切换生产 Compose 前完成 `session-migrate -claim-owner=<owner>` 和管理员建号；生产 Compose 使用独立 MySQL 卷 `eino-prod-mysql`，不要把开发的 `gozero_mysql_data` 直接作为生产默认卷。测试复用卷时必须显式设置 `MYSQL_VOLUME_NAME` 和 `MYSQL_VOLUME_EXTERNAL=true`，并先做备份。
 
 1Panel 网站配置使用 `deploy/openresty/my-eino-app.conf`：绑定域名和受信任证书，替换 `server_name` 与证书路径；上游指向 `127.0.0.1:18180`。保留 `/ws` 的 Upgrade/Connection 透传、`proxy_buffering off`、至少 210 秒读写超时；`/auth/local` 和 `/auth/callback` 使用真实客户端 IP 的 `limit_req`。飞书后台的回调地址必须与 `.env.prod` 的 `FEISHU_REDIRECT_URL` 完全一致且为 HTTPS。
@@ -1856,3 +1866,22 @@ make prod-rollback VERSION=2026.09.18-<previous-sha>
 ```
 
 这些命令均带 `--no-build`，回滚只切换已有镜像，不重新构建源码。指标抓取使用 `Authorization: Bearer <METRICS_TOKEN>`；无 bearer 时 `/metrics` 必须返回 401。
+
+### 14.26 整体方案实测收口（2026-09-19）
+
+本轮按 `EXECUTION-PLAN.md` 从 0.1 到 5.10 的代码、配置和本机验收路径重新核对。以下结果已经完成：
+
+| 验收项 | 结果 |
+|---|---|
+| `make check` | ✅ 通过 |
+| `go test -tags mysql_integration -p 1 -count=1 ./...` | ✅ 通过 |
+| `docker compose -f docker-compose.prod.yml --env-file .env.prod.example config` | ✅ 通过 |
+| `make backup` + `make restore-check` | ✅ 通过；MySQL 16/16 张表行数一致，MySQL、Milvus/etcd/MinIO、`app-data` 产物 SHA256 全通过 |
+| `make eval` | ✅ 20 题、14 题有答案断言；`correct_rate=1`、`citation_rate=1`、`refusal_rate=1`、`routing_accuracy=1`、`tool_evidence_rate=1` |
+| 独立生产 Compose 冷启动 | ✅ 使用独立测试卷；应用仅绑定 `127.0.0.1:18181`，依赖服务无宿主机端口，`/health/ready=200` |
+| 真实生产协议冒烟 | ✅ A/B 本地账号登录、会话归属和越权读删均符合预期；WebSocket `ready → event/chunk → done` 通过 |
+| 不可变镜像回滚 | ✅ `my-eino-app:rollback-b` → `my-eino-app:rollback-a`，两次均 `healthy` 且 `/health/ready=200`，未重新构建 |
+| 1Panel/OpenResty | ⏳ 本机没有 nginx/OpenResty；真实证书、域名、HTTPS、飞书回调需在目标服务器验收 |
+| 3–7 天灰度 | ⏳ 尚未开始，必须在目标环境完成后才可扩大范围 |
+
+本轮临时生产账号 `launchadmin`、`launchadminb` 和测试卷仅用于本机验收，当前已停用；正式上线前不得复用这些账号，使用生产管理员口令。项目当前只提供账号停用，不提供 HTTP 删除操作；如需物理删除，由 DBA 在确认审计保留要求后处理。正式上线仍需执行 5.5b：填入真实 `.env.prod`、完成历史会话归属、配置 1Panel HTTPS/证书和飞书后台回调，并保留最近一次异地备份与恢复记录。

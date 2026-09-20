@@ -1167,7 +1167,7 @@ ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SI
 
 **验收**：容器内起服务，`docker stop` 后日志出现优雅停机路径（不是直接被 kill）；用 `docker stop -t 30` 观察 10 秒优雅期生效。
 
-### 步骤 5.2　限流与配额　✅ 基础能力已实现；生产扩展仍待执行
+### 步骤 5.2　限流与配额　✅ 已实现并在独立生产测试栈验证
 
 > **本节为新增设计，不在原三份方案内**（原方案仅在「尚未归属的缺口」中登记）。这是对外上线前的硬要求。
 
@@ -1195,7 +1195,7 @@ runtime:
 
 **验收**：脚本连续打 40 次 `POST /chat`，第 31 次起返回 429；`burst` 内允许突发；`Retry-After` 合理。
 
-### 步骤 5.3　备份与恢复演练　✅ Windows/Linux 实现已完成；生产环境演练待依赖服务可用后执行
+### 步骤 5.3　备份与恢复演练　✅ Windows/Linux 实现已完成；Windows 本机恢复演练通过
 
 > **本节为新增设计，不在原三份方案内。**
 
@@ -1235,13 +1235,13 @@ runtime:
 
 ### 步骤 5.5a　生产 bootstrap（正式上线前的一次性初始化）
 
-生产镜像只包含 `cmd/server`，不在容器内执行 `user-admin`、`session-migrate`、`indexer` 或 `eval`。在关闭宿主机端口前，使用宿主机 Go 环境通过临时的 `127.0.0.1:3306` 运维映射连接生产 MySQL：
+生产镜像包含 `cmd/server`、`session-migrate` 和 `user-admin`；`indexer`、`eval` 仍只在宿主机或 CI 中运行。bootstrap 使用同一生产镜像的维护 CLI，通过 Compose 内部网络连接 MySQL，不需要把 CLI 暴露为用户流量，也不需要宿主机 Go 环境：
 
-bootstrap 只用于正式上线前的一次性初始化，不是最终运行形态。现有开发 Compose 保持原有默认绑定行为；bootstrap 时必须显式设置 `MYSQL_BIND=127.0.0.1` 后启动数据库，禁止在本项目操作中使用 `0.0.0.0`。这条操作纪律不改变其他项目共用数据卷的默认配置。
+bootstrap 只用于正式上线前的一次性初始化，不是最终运行形态。现有开发 Compose 已读取 `${MYSQL_BIND:-0.0.0.0}`；bootstrap 时必须显式设置 `MYSQL_BIND=127.0.0.0` 后启动数据库，禁止在本项目操作中使用 `0.0.0.0`。这条操作纪律不改变其他项目共用数据卷的默认配置。
 
 bootstrap 验收通过后，必须切换到 5.6a 的独立生产 Compose。正式生产启动不得再使用开发 Compose，不发布 MySQL、Milvus、Attu 的宿主机端口，也不依赖宿主机上的 `user-admin` 或 `session-migrate` 才能启动应用。运维 CLI 只在 bootstrap 和后续维护窗口使用；应用通过 Docker 内部网络连接 MySQL。若选择把 CLI 打进独立运维镜像，也不能把它作为正式用户流量容器运行。
 
-CLI 必须显式指向生产 MySQL，不能依赖当前目录的 `config.yaml` 默认 file store：
+维护 CLI 必须显式指向生产 MySQL，不能依赖当前目录的 `config.yaml` 默认 file store。宿主机维护窗口仍可按下面方式执行；正式生产初始化推荐使用镜像内的 `docker compose run --rm --no-deps --entrypoint` 命令：
 
 ```powershell
 $env:SESSION_STORE="mysql"
@@ -1278,7 +1278,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 **验收**：按「十、总验收清单 → 上线前最终检查」逐项打勾；容器重启后走一遍完整登录 + 一次对话 + 一次工具审批。
 
-### 步骤 5.6　生产部署边界与网络收口
+### 步骤 5.6　生产部署边界与网络收口　✅ 配置完成并在独立生产测试栈验证
 
 第一阶段采用**内部用户灰度、单副本部署**。反向代理负责 HTTPS、访问来源限制、请求大小限制和可信真实客户端 IP；应用负责认证、授权、会话隔离和技能路由。MySQL、Milvus、Ollama 和 Attu 不直接暴露给用户网络。
 
@@ -1288,7 +1288,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 **验收**：完成 5.5a 后关闭临时 loopback MySQL 映射；从用户网络无法连接 MySQL、Milvus、Attu；只有 HTTPS 反向代理入口可访问应用；WebSocket 可建立；代理层登录限流按真实客户端 IP 生效；应用用户名桶仍生效；代理读超时不短于应用超时。
 
-### 步骤 5.7　生产能力边界与确定性路由
+### 步骤 5.7　生产能力边界与确定性路由　✅ 已实现并通过真实评测
 
 第一阶段只承诺以下已接入能力：报告文本生成、授权路径下的文本/DOCX 读取、知识库检索和审批后的笔记写入。当前真正注册的工具只有 `current_time`、`write_note`、`load_skills`、`local_file_read`、`knowledge_search`。
 
@@ -1315,7 +1315,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 **验收**：`report_writer` 和 `documents` 的 4 类正例均产生预加载事件；空壳技能不产生预加载事件；非 debug 响应和 `/skills` 不暴露技能名；`go test -p 1 ./internal/server/...` 全绿。
 
-### 步骤 5.8　发布、回滚和并发保护
+### 步骤 5.8　发布、回滚和并发保护　✅ 已实现并完成标签切换演练
 
 应用发布使用不可变版本标签，并至少保留上一版本镜像或二进制；不能依赖固定的 `my-eino-app:local` 配合 `up -d --build` 回滚。路由规则使用功能开关，允许关闭单个问题能力。
 
@@ -1323,17 +1323,17 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 **验收**：新旧版本可切换；排队超过 5 秒或队列达到上限立即返回 `503`；模型超时返回 `504`；回滚不需要重新构建源码。
 
-### 步骤 5.9　备份、日志和告警
+### 步骤 5.9　备份、日志和告警　✅ 代码与本机演练完成；异地复制待目标环境执行
 
 备份范围必须包括 MySQL dump、Milvus 数据卷以及 `app-data` 中的 notes、checkpoints、executions；同机同盘副本不算灾备。备份成功的判据包括 manifest SHA256、恢复后表行数比对和非空业务数据检查，不能只看脚本退出码。目标暂定 RPO 6 小时、RTO 2 小时。
 
-当前 `/metrics` 是需登录访问的进程内 JSON 计数，重启后归零，不能直接被 Prometheus 抓取。5.9c 增加一个仅允许内网/代理管理网访问、使用 bearer/token 校验的指标入口，不能把整个 `/metrics` 匿名暴露；通知可由该入口或定时探测脚本驱动。为容器日志设置大小上限、保留周期和轮转策略；`execution_events` 增加周期清理，不依赖启动时的一次清理。
+当前 `/metrics` 是需登录访问的进程内 JSON 计数，重启后归零，不能直接被 Prometheus 抓取。5.9c 已增加一个仅允许内网/代理管理网访问、使用 bearer/token 校验的指标入口，不能把整个 `/metrics` 匿名暴露；通知可由该入口或定时探测脚本驱动。Compose 已设置日志大小上限、保留周期和轮转策略；`execution_events` 已增加周期清理，不依赖启动时的一次清理。
 
 `scripts/backup.ps1`、`scripts/backup.sh` 现已覆盖三个 Milvus 依赖卷和 `app-data`；5.9b 的代码实现已完成，仍须在目标环境执行备份、异地复制和恢复演练，不能把静态配置检查误认为灾备验证。
 
 **验收**：定时备份成功；恢复检查通过；备份失败、健康检查失败、模型不可用、技能工具连续失败和磁盘不足都有可见告警；日志不会无限增长。
 
-### 步骤 5.10　内部灰度和上线门槛
+### 步骤 5.10　内部灰度和上线门槛　✅ 门槛出口完成；3–7 天目标环境灰度待执行
 
 先开放给 3–10 名内部用户，灰度 3–7 天，再决定是否扩大范围。扩大范围前满足：认证和跨用户隔离 100% 通过，关键技能必需场景召回率不低于 95%，工具调用有执行证据的比例不低于 95%，关键流程无凭空声称已完成，非超时 5xx 小于 1%，备份成功率 100%，最近一次恢复检查不超过 7 天，严重安全问题为 0。
 
@@ -1362,9 +1362,23 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 | 5.10a 门槛出口 | `internal/evaluation/evaluation.go` / `cmd/eval/main.go` 输出路由、工具/预加载证据率；`internal/server/http.go`/`service.go` 的受保护 `/metrics` 输出 `status_5xx`、`timeouts`、`non_timeout_5xx_rate` | `feat(eval): export launch gate metrics` | `make eval` JSON 含工具证据字段；带 bearer 抓取指标；固定失败样本验证分母和分子可失败 |
 | 5.10b 灰度验收 | 使用已存在的 `docs/RUNBOOK.md` 14.23 灰度章节，填写 3–10 名用户、3–7 天窗口、每日检查和停止条件；不新增第二份方案或独立检查清单 | `docs(launch): record internal canary result`（仅在记录尚未填写时提交） | 连续 3 天指标达到门槛；负责人签字记录；完成 5.5b 前置检查 |
 
-**门槛计算口径**：关键技能召回率只统计确定性路由用例；工具执行证据率由 `make eval` 统计执行类请求中至少存在一组 `tool_started`/`tool_completed`、`knowledge_preflight` 或 `skill_preloaded` 事件的比例；检查清单第 11 项使用同一组事件名。非超时 5xx 由受保护 `/metrics` 统计 HTTP 500–599 中排除 `context deadline exceeded` 的部分。两套出口都必须直接产出指标，不能依靠人工从日志估算。
+**门槛计算口径**：关键技能召回率只统计确定性路由用例；工具执行证据率由 `make eval` 统计执行类请求中至少存在一组 `tool_started`/`tool_completed`/`tool_failed` 或 `skill_preloaded` 事件的比例。知识预检索不是独立事件类型，而是标准工具事件的 `tool_name=knowledge_search` 且 `source=server_preflight` 标记；检查清单第 11 项使用同一组标准事件名。非超时 5xx 由受保护 `/metrics` 统计 HTTP 500–599 中排除 `context deadline exceeded` 的部分。两套出口都必须直接产出指标，不能依靠人工从日志估算。
 
 **最终上线顺序**：5.5a 一次性 bootstrap → 5.6a–c → 5.7a–c → 5.8a–c → 5.9a–c → 5.10a–b → 总验收清单 → 5.5b 配置切换 → 停止开发 Compose → 用 `docker-compose.prod.yml` 从零启动生产栈 → 3–7 天内部灰度。任一子步骤失败都不得进入下一组。
+
+### 当前执行状态（2026-09-19）
+
+| 范围 | 状态 | 实测结果或剩余动作 |
+|---|---|---|
+| 0.1–4.2 | ✅ | 历史提交已落地；`make check`、MySQL 集成测试和真实 `make eval` 已通过 |
+| 5.1–5.4 | ✅ | SIGTERM、限流、备份/恢复、liveness/readiness 已实现并通过本机验证 |
+| 5.5a | ✅ | 独立生产卷完成迁移和管理员建号；维护 CLI 已包含在生产镜像内 |
+| 5.6a–c | ✅/⏳ | 独立生产 Compose、OpenResty 模板和回调限流已完成；真实 1Panel 证书、域名和 `nginx -t` 需在目标服务器执行 |
+| 5.7a–c | ✅ | 知识服务端预检索、报告/文档确定性预加载、能力边界和评测断言已通过 |
+| 5.8a–c | ✅ | 队列上限、504、指标拆分和不可变标签 A/B 切换回滚演练通过 |
+| 5.9a–c | ✅/⏳ | Windows 备份恢复、日志轮转、受保护指标和告警脚本已验证；Linux 目标机异地复制需执行 |
+| 5.10a | ✅ | 20 题评测：`asserted_total=14`、`correct_rate=1`、`citation_rate=1`、`refusal_rate=1`、`routing_accuracy=1`、`tool_evidence_rate=1` |
+| 5.10b、5.5b | ⏳ | 需在真实 1Panel/HTTPS/飞书回调环境完成 3–7 天内部灰度；完成前不宣称正式上线 |
 
 ---
 
@@ -1455,7 +1469,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 - [ ] 反向代理已配置 HTTPS、真实客户端 IP、180 秒以上读超时和 WebSocket Upgrade 透传；`/auth/callback` 已限流
 - [ ] 生产镜像使用不可变版本标签，上一版本可切换，回滚不依赖重新构建
 - [ ] 表格、PDF、PPT 的未接入能力已在产品文案和验收中明确，未承诺生成或编辑文件
-- [ ] 私有知识请求实际产生 `knowledge_preflight`，或标准 `tool_started`/`tool_completed`（`tool_name=knowledge_search`）事件并带来源；技能或 embedding 变更后已重跑 `make eval`
+- [ ] 私有知识请求实际产生标准 `tool_started`/`tool_completed`（`tool_name=knowledge_search`、`source=server_preflight`）事件并带来源；技能或 embedding 变更后已重跑 `make eval`
 - [ ] 并发排队有上限和超时；模型超时返回 `504`，与普通 `500` 分开统计
 - [ ] 备份包含 MySQL、Milvus 和 `app-data`；manifest SHA256、恢复行数和非空数据检查均通过，备份不与生产同盘
 - [ ] 备份告警、健康告警、模型/工具失败告警和磁盘告警已有通知通道；日志有大小上限和轮转策略
@@ -1523,7 +1537,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 ### 阶段 5（10 个基础步骤 + 15 个可执行子步骤）
 
 - `docker-compose.milvus.yml`（步骤 5.5a 的 loopback 运维绑定）
-- `cmd/user-admin`、`cmd/session-migrate`（步骤 5.5a 的宿主机 bootstrap，不打进应用镜像）
+- `Dockerfile`、`cmd/user-admin`、`cmd/session-migrate`（步骤 5.5a 的生产镜像维护 CLI）
 - `cmd/server/main.go`（步骤 5.1）
 - `internal/server/ratelimit.go`（新增）+ `internal/config/config.go`（新增 `rate_limit` 段）+ 三份配置（步骤 5.2）
 - `scripts/backup.ps1`、`scripts/restore-check.ps1`（新增）+ `Makefile`（步骤 5.3）

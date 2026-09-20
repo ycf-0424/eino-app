@@ -2,9 +2,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -12,22 +12,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
-	"my-eino-app/internal/checkpoint"
+	"my-eino-app/internal/auth"
 	"my-eino-app/internal/config"
-	"my-eino-app/internal/eino"
-	"my-eino-app/internal/eino/agent"
 	"my-eino-app/internal/eino/chain"
-	"my-eino-app/internal/eino/model"
-	"my-eino-app/internal/eino/rag"
-	toolset "my-eino-app/internal/eino/tool"
 	"my-eino-app/internal/evaluation"
 	"my-eino-app/internal/execution"
 	"my-eino-app/internal/health"
-	"my-eino-app/internal/skill"
+	"my-eino-app/internal/output"
+	appserver "my-eino-app/internal/server"
 )
 
 func main() {
@@ -57,37 +54,27 @@ func main() {
 	if err := probeVectorStore(ctx, cfg.RAG); err != nil {
 		fail(err)
 	}
-	store, err := rag.NewFromConfig(ctx, cfg.RAG)
-	if err != nil {
-		fail(err)
-	}
-	cm, err := model.NewChatModel(ctx, cfg)
-	if err != nil {
-		fail(err)
-	}
-	runner, err := chain.New(ctx, store, cm)
-	if err != nil {
-		fail(err)
-	}
-	cases, err := evaluation.LoadCases(*file)
-	if err != nil {
-		fail(err)
-	}
 	effectiveThreshold := cfg.RAG.ScoreThreshold
 	if *threshold >= 0 {
 		effectiveThreshold = *threshold
+	}
+	runner, err := newProductionRouter(ctx, cfg, effectiveThreshold)
+	if err != nil {
+		fail(err)
+	}
+	defer runner.Close()
+	cases, err := evaluation.LoadCases(*file)
+	if err != nil {
+		fail(err)
 	}
 	report := evaluation.Run(ctx, runner, cases, func(query string) chain.Input {
 		return chain.Input{Query: query, TopK: cfg.RAG.TopK, ScoreThreshold: effectiveThreshold, MaxContextChars: cfg.RAG.MaxContextChars}
 	})
 	// 路由维度只在评测集声明了 expect_skills 时执行：它要额外装配一次 Agent，
-	// 且每题都会真实调用模型。没有这类题目时不该付这份成本。
+	// 结果从同一个 production runner 的事件缓存读取，避免答案指标和路由指标
+	// 走两套装配逻辑或对同一题重复调用模型。
 	if hasRoutingCases(cases) {
-		router, err := newAgentRouter(ctx, cfg, store, cm)
-		if err != nil {
-			fail(err)
-		}
-		routing, accuracy := evaluation.RunRouting(ctx, router, cases)
+		routing, accuracy := evaluation.RunRouting(ctx, runner, cases)
 		report.Routing = routing
 		report.RoutingTotal = len(routing)
 		report.RoutingAccuracy = accuracy
@@ -157,85 +144,106 @@ func hasRoutingCases(cases []evaluation.Case) bool {
 	return false
 }
 
-// agentRouter 用 Agent 全链路跑一道题，并从执行事件里提取路由结果。
-type agentRouter struct {
-	chat *agent.ChatAgent
+// productionRouter drives the same Service.ChatWithSink path used by HTTP.
+// Its cache lets answer and route metrics inspect one execution per question.
+type productionRouter struct {
+	service  *appserver.Service
+	tempDir  string
+	owner    string
+	mu       sync.Mutex
+	answers  map[string]output.Answer
+	routing  map[string]evaluation.Routing
+	errCache map[string]error
 }
 
-// Route 执行一轮问答。每题都清空历史并换新 session id：路由判断不该受上一题
-// 的上下文影响，否则同一道题在不同次序下会得到不同结论。
-func (r *agentRouter) Route(ctx context.Context, question string) (evaluation.Routing, error) {
+func newProductionRouter(ctx context.Context, source *config.Config, scoreThreshold float64) (*productionRouter, error) {
+	tempDir, err := os.MkdirTemp("", "my-eino-eval-")
+	if err != nil {
+		return nil, fmt.Errorf("create eval workspace: %w", err)
+	}
+	cfg := *source
+	cfg.Auth.Enabled = false
+	cfg.Memory.Enabled = false
+	cfg.Session.Store = "file"
+	cfg.SessionDir = filepath.Join(tempDir, "sessions")
+	cfg.Agent.CheckpointDir = filepath.Join(tempDir, "checkpoints")
+	cfg.ExecutionEvents.Enabled = true
+	cfg.ExecutionEvents.Dir = filepath.Join(tempDir, "executions")
+	cfg.RAG.ScoreThreshold = scoreThreshold
+	service, err := appserver.NewService(ctx, &cfg)
+	if err != nil {
+		_ = os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("create production evaluation service: %w", err)
+	}
+	return &productionRouter{
+		service:  service,
+		tempDir:  tempDir,
+		owner:    "eval:local",
+		answers:  make(map[string]output.Answer),
+		routing:  make(map[string]evaluation.Routing),
+		errCache: make(map[string]error),
+	}, nil
+}
+
+func (r *productionRouter) Close() error {
+	if r == nil {
+		return nil
+	}
+	err := r.service.Close()
+	if removeErr := os.RemoveAll(r.tempDir); err == nil {
+		err = removeErr
+	}
+	return err
+}
+
+func (r *productionRouter) Run(ctx context.Context, in chain.Input) (output.Answer, error) {
+	answer, _, err := r.run(ctx, in.Query)
+	return answer, err
+}
+
+func (r *productionRouter) Route(ctx context.Context, question string) (evaluation.Routing, error) {
+	_, routing, err := r.run(ctx, question)
+	return routing, err
+}
+
+func (r *productionRouter) run(ctx context.Context, question string) (output.Answer, evaluation.Routing, error) {
+	r.mu.Lock()
+	if answer, ok := r.answers[question]; ok {
+		routing := r.routing[question]
+		err := r.errCache[question]
+		r.mu.Unlock()
+		return answer, routing, err
+	}
+	r.mu.Unlock()
+
 	recorder := execution.NewRecorder(0)
-	r.chat.SetHistory(nil)
-	sessionID := uuid.NewString()
-	r.chat.SetSessionID(sessionID)
-	// 与 internal/server 同步接口同一条路径：NewSession 才是 Emitter，
-	// Recorder 只是它的 sink。评测不落库，store 传 nil。
-	em := execution.NewSession(uuid.NewString(), sessionID, nil, recorder, execution.SessionOptions{})
-	defer em.Close()
-	ctx = execution.WithEmitter(ctx, em)
-	var answer strings.Builder
-	if err := r.chat.AskTo(ctx, question, &answer); err != nil {
-		var approval *agent.ApprovalRequest
-		if errors.As(err, &approval) {
-			return evaluation.Routing{}, fmt.Errorf("question triggered approval for tool %s; evaluation has no interactive approver", approval.ToolName)
-		}
-		return evaluation.Routing{}, err
-	}
+	var answerText bytes.Buffer
+	requestCtx := auth.WithOwner(ctx, r.owner)
+	_, err := r.service.ChatWithSink(requestCtx, uuid.NewString(), question, "", &answerText, recorder)
+	answer := output.Answer{Answer: strings.TrimSpace(answerText.String()), Sources: sourcesFromEvents(recorder.Events())}
 	routing := routingFromEvents(recorder.Events())
-	routing.Answer = clip(answer.String(), 500)
-	return routing, nil
+	routing.Answer = clip(answer.Answer, 500)
+	r.mu.Lock()
+	r.answers[question] = answer
+	r.routing[question] = routing
+	r.errCache[question] = err
+	r.mu.Unlock()
+	return answer, routing, err
 }
 
-// newAgentRouter 按与 internal/server 相同的方式装配 Agent。
-// 评测不落库：只给 checkpoint 目录，不接 session 持久化。
-func newAgentRouter(ctx context.Context, cfg *config.Config, knowledge rag.Store, cm eino.ChatModel) (*agentRouter, error) {
-	checkpoints, err := checkpoint.New(cfg.Agent.CheckpointDir)
-	if err != nil {
-		return nil, err
-	}
-	tools := make([]eino.BaseTool, 0, 3)
-	if cfg.LocalFiles.Enabled {
-		fileTool, err := toolset.NewLocalFileReadTool(cfg.LocalFiles.Roots, cfg.LocalFiles.MaxBytes)
-		if err != nil {
-			return nil, err
-		}
-		tools = append(tools, fileTool)
-	}
-	if knowledge != nil {
-		tools = append(tools, toolset.NewKnowledgeToolWithOptions(knowledge, rag.SearchOptions{
-			TopK: cfg.RAG.TopK, ScoreThreshold: cfg.RAG.ScoreThreshold, MaxContextChars: cfg.RAG.MaxContextChars,
-		}))
-	}
-	// 必须把「本次真的注册了哪些工具」告诉技能目录：目录会据此为每个技能标注
-	// 能力状态，缺了这个参数所有技能都会被标成「缺少工具…不能承诺执行」，
-	// 相当于在提示词里劝模型不要加载技能 —— 路由准确率会失真。
-	availableTools := append([]string{"current_time", "write_note", "load_skills"}, toolNames(ctx, tools)...)
-	// preferred 留空，让模型完全自主选择。
-	instruction, skillTool, _, err := skill.NewLoader(cfg.Skills.Dir).Runtime(cfg.Skills.Default, availableTools...)
-	if err != nil {
-		return nil, err
-	}
-	tools = append(tools, skillTool)
-	chat, err := agent.NewWithInstruction(ctx, cm, cfg.Debug, cfg.Agent.MultiAgent, checkpoints, instruction, tools...)
-	if err != nil {
-		return nil, err
-	}
-	return &agentRouter{chat: chat}, nil
+func sourcesFromEvents(events []execution.Event) []string {
+	return uniqueSorted(stringsOfMany(events, "sources"))
 }
 
-// toolNames 取工具注册名。取不到名字的工具不会出现在「当前接入工具」里，
-// 只会让它的能力状态偏保守，不会误报成已接入。
-func toolNames(ctx context.Context, tools []eino.BaseTool) []string {
-	names := make([]string, 0, len(tools))
-	for _, item := range tools {
-		info, err := item.Info(ctx)
-		if err != nil {
+func stringsOfMany(events []execution.Event, key string) []string {
+	var values []string
+	for _, ev := range events {
+		if ev.Type != execution.ToolCompleted {
 			continue
 		}
-		names = append(names, info.Name)
+		values = append(values, stringsOf(ev.Payload[key])...)
 	}
-	return names
+	return values
 }
 
 // routingFromEvents 从执行事件里还原本轮加载的技能。

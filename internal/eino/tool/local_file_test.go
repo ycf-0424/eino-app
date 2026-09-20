@@ -28,6 +28,33 @@ func TestLocalFileReadTool(t *testing.T) {
 	}
 }
 
+func TestLocalFileReadToolAcceptsRootPrefixedRelativePath(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace-files")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(old)
+	if err := os.Chdir(base); err != nil {
+		t.Fatal(err)
+	}
+	tool, err := NewLocalFileReadTool([]string{root}, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := tool.InvokableRun(context.Background(), `{"path":"workspace-files/README.txt"}`)
+	if err != nil || !strings.Contains(got, "hello") {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
 func TestLocalFileReadToolRejectsOutsideAndUnsafeContent(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

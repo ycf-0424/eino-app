@@ -198,6 +198,10 @@ func (r *localFileReader) resolve(input string) (string, error) {
 	if filepath.IsAbs(input) {
 		candidates = append(candidates, input)
 	} else {
+		// Support both a root-relative path (README.txt) and the documented
+		// root-prefixed form (workspace-files/README.txt). The final
+		// pathWithinRoot check still rejects traversal and sibling directories.
+		candidates = append(candidates, input)
 		for _, root := range r.roots {
 			candidates = append(candidates, filepath.Join(root, input))
 		}

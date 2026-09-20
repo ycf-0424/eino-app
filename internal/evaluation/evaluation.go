@@ -10,7 +10,15 @@ import (
 	"unicode"
 
 	"my-eino-app/internal/eino/chain"
+	"my-eino-app/internal/output"
 )
+
+// Runner is the smallest interface needed by the answer evaluation. Keeping
+// it wider than *chain.RAGChain lets production evaluation exercise the same
+// deterministic routing path as the HTTP service.
+type Runner interface {
+	Run(context.Context, chain.Input) (output.Answer, error)
+}
 
 // Case 类型。
 type Case struct {
@@ -80,7 +88,7 @@ func LoadCases(path string) ([]Case, error) {
 }
 
 // Run 逐题执行真实 RAG Chain。指标使用固定规则计算，结果可重复比较。
-func Run(ctx context.Context, runner *chain.RAGChain, cases []Case, input func(string) chain.Input) Report {
+func Run(ctx context.Context, runner Runner, cases []Case, input func(string) chain.Input) Report {
 	report := Report{Total: len(cases)}
 	correct, asserted, citationRequired, cited, refusalRequired, refused, totalMS := 0, 0, 0, 0, 0, 0, int64(0)
 	for _, item := range cases {
@@ -100,7 +108,7 @@ func Run(ctx context.Context, runner *chain.RAGChain, cases []Case, input func(s
 		if err != nil {
 			result.Error = err.Error()
 		} else {
-			result.Refused = strings.Contains(answer.Answer, "无法确认") || strings.Contains(answer.Answer, "不知道") || strings.Contains(answer.Answer, "未知") || strings.Contains(answer.Answer, "无足够依据")
+			result.Refused = isRefusal(answer.Answer)
 			if item.ShouldRefuse {
 				result.Correct = result.Refused
 			} else if assertedCase {
@@ -145,6 +153,19 @@ func Run(ctx context.Context, runner *chain.RAGChain, cases []Case, input func(s
 		report.RefusalRate = float64(refused) / float64(refusalRequired)
 	}
 	return report
+}
+
+// isRefusal recognizes the stable refusal language used by both the fixed RAG
+// chain and the server-side knowledge preflight. The two paths intentionally
+// use slightly different natural-language variants, so the metric must treat
+// them as one product behavior rather than under-counting valid refusals.
+func isRefusal(answer string) bool {
+	for _, marker := range []string{"无法确认", "不知道", "未知", "无足够依据", "没有找到足够", "没有足够资料", "未找到足够", "未记载", "未提及", "无法读取", "不能承诺"} {
+		if strings.Contains(answer, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Router 跑一道题并返回本轮实际加载的技能名。

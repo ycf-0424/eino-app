@@ -29,6 +29,7 @@ import (
 	toolset "my-eino-app/internal/eino/tool"
 	"my-eino-app/internal/execution"
 	"my-eino-app/internal/memory"
+	"my-eino-app/internal/routing"
 	"my-eino-app/internal/session"
 	"my-eino-app/internal/skill"
 )
@@ -477,25 +478,11 @@ type routeDecision struct {
 	capabilityNotice string
 }
 
-// decideRoute is deliberately conservative: it only forces a route when the
-// request names a private source, report, or document-reading action. Other
-// requests remain model-routed and unsupported formats are explained honestly.
+// decideRoute remains a small compatibility wrapper for server tests and
+// callers while the actual rules live in the shared routing package.
 func decideRoute(query string) routeDecision {
-	q := strings.ToLower(strings.TrimSpace(query))
-	decision := routeDecision{}
-	if strings.Contains(q, "知识库") || strings.Contains(q, "项目资料") || strings.Contains(q, "内部资料") || strings.Contains(q, "私有资料") || strings.Contains(q, "知识问答") || strings.Contains(q, "星河系统") || strings.Contains(q, "默认管理员") || strings.Contains(q, "生产部署") || strings.Contains(q, "内部版本") || strings.Contains(q, "技术栈") || strings.Contains(q, "幸运数字") {
-		decision.preloadKnowledge = true
-	}
-	if strings.Contains(q, "报告") || strings.Contains(q, "汇报") || strings.Contains(q, "report") {
-		decision.preloadSkills = append(decision.preloadSkills, "report_writer")
-	}
-	if strings.Contains(q, "docx") || strings.Contains(q, "word") || strings.Contains(q, "工单") || (strings.Contains(q, "读取") && (strings.Contains(q, "文档") || strings.Contains(q, "文件") || strings.Contains(q, "workspace-files"))) || strings.Contains(q, "阅读文档") || strings.Contains(q, "总结文档") {
-		decision.preloadSkills = append(decision.preloadSkills, "documents")
-	}
-	if (strings.Contains(q, "pdf") || strings.Contains(q, "pdf文件") || strings.Contains(q, "表格") || strings.Contains(q, "excel") || strings.Contains(q, "xlsx") || strings.Contains(q, "ppt") || strings.Contains(q, "演示文稿")) && (strings.Contains(q, "读取") || strings.Contains(q, "解析") || strings.Contains(q, "生成") || strings.Contains(q, "编辑") || strings.Contains(q, "提取") || strings.Contains(q, "导出") || strings.Contains(q, "分析") || strings.Contains(q, "整理") || strings.Contains(q, "组织") || strings.Contains(q, "操作")) {
-		decision.capabilityNotice = "当前生产环境已接入文本/DOCX读取、知识库检索和文本报告生成；PDF、表格与演示文稿文件工具尚未接入，不能承诺读取、编辑或生成这类文件。可以先提供纯文本内容，或给出接入工具后的实施方案。"
-	}
-	return decision
+	d := routing.Decide(query)
+	return routeDecision{preloadKnowledge: d.PreloadKnowledge, preloadSkills: d.PreloadSkills, capabilityNotice: d.CapabilityNotice}
 }
 
 type knowledgePreflight struct {
@@ -660,6 +647,9 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 	if em != nil && len(preloaded) > 0 {
 		em.Emit(execution.Event{Type: execution.SkillPreloaded, Payload: map[string]any{"skill_names": preloaded}})
 	}
+	if containsSkill(preloaded, "report_writer") {
+		chat.SetPreflightContext("报告只能使用用户在本轮明确提供的事实，或本轮已成功读取/检索到的资料。不得补充未提供的工单编号、日期、指标、原因、验证结果、责任人或其他细节；缺失信息必须标记为‘待补充’，不能用示例内容冒充事实。")
+	}
 	if route.preloadKnowledge {
 		if preflight.Hit == 0 {
 			const answer = "知识库中没有足够资料，无法确认"
@@ -712,6 +702,15 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 	s.linkRun(context.WithoutCancel(ctx), em, chat.History())
 	finishRun(em, status, code)
 	return ChatResult{SessionID: id, RunID: runIDOf(em), TurnID: latestTurn(chat.History())}, nil
+}
+
+func containsSkill(skills []string, wanted string) bool {
+	for _, name := range skills {
+		if name == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 // Approve 从同一 checkpoint 恢复执行，写操作只有 approved=true 时才会发生。

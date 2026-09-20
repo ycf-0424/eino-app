@@ -9,7 +9,9 @@ COPY . .
 ARG TARGETOS=linux
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/eino-server ./cmd/server
+    go build -trimpath -ldflags="-s -w" -o /out/eino-server ./cmd/server \
+    && go build -trimpath -ldflags="-s -w" -o /out/session-migrate ./cmd/session-migrate \
+    && go build -trimpath -ldflags="-s -w" -o /out/user-admin ./cmd/user-admin
 
 # 运行镜像不包含 Go 编译器，减少镜像体积和攻击面。
 FROM alpine:3.22
@@ -20,6 +22,8 @@ RUN apk add --no-cache ca-certificates tzdata \
 
 WORKDIR /app
 COPY --from=builder /out/eino-server ./eino-server
+COPY --from=builder /out/session-migrate ./session-migrate
+COPY --from=builder /out/user-admin ./user-admin
 COPY config.docker.yaml ./config.yaml
 COPY skills ./skills
 COPY docs/knowledge ./docs/knowledge
