@@ -79,6 +79,35 @@ agent:
   multi_agent: true
   checkpoint_dir: "data/checkpoints"
 
+# Phase 6 features remain disabled until a real source/provider is configured.
+intent_routing:
+  enabled: false
+  confidence_threshold: 0.7
+  classifier_timeout: 8s
+dataquery:
+  enabled: false
+attachments:
+  enabled: false
+  storage_dir: "data/attachments"
+  max_file_bytes: 10485760
+  max_files_per_request: 3
+  max_pages: 10
+  retention_days: 30
+  processing_timeout: 2m
+  virus_scanner: "clamscan"
+  virus_database_dir: "data/clamav"
+  max_media_duration_seconds: 600
+  max_video_frames: 12
+  pdf_renderer: "pdftoppm"
+  ffmpeg: "ffmpeg"
+  ffprobe: "ffprobe"
+  vision:
+    enabled: false
+    timeout: 60s
+  transcription:
+    enabled: false
+    timeout: 60s
+
 memory:
   enabled: true
   # 与 auth.enabled 配套：owner 改为来自登录态，下面这行 owner_id 不再作为身份

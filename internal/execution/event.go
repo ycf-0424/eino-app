@@ -27,6 +27,14 @@ const (
 	ModelWaiting Type = "model_waiting"
 	// ModelRouted 表示自动路由已经选定本轮最终回答模型。
 	ModelRouted Type = "model_routed"
+	// IntentClassified 表示服务端为本轮选择了固定意图类别；payload 不包含原始问题。
+	IntentClassified Type = "intent_classified"
+	// DataQueryStarted / Completed / Failed 是注册只读业务查询的审计事件。
+	DataQueryStarted   Type = "data_query_started"
+	DataQueryCompleted Type = "data_query_completed"
+	DataQueryFailed    Type = "data_query_failed"
+	// AttachmentProcessed 记录附件处理状态变化，不记录文件正文。
+	AttachmentProcessed Type = "attachment_processed"
 	// ToolStarted 在工具真正执行前发出。
 	ToolStarted Type = "tool_started"
 	// ToolCompleted 是普通工具的正常终态。
@@ -53,7 +61,9 @@ const (
 const Version = 1
 
 var knownTypes = map[Type]bool{
-	RunStarted: true, ModelWaiting: true, ModelRouted: true, ToolStarted: true, ToolCompleted: true,
+	RunStarted: true, ModelWaiting: true, ModelRouted: true, IntentClassified: true,
+	DataQueryStarted: true, DataQueryCompleted: true, DataQueryFailed: true, AttachmentProcessed: true,
+	ToolStarted: true, ToolCompleted: true,
 	ToolFailed: true, SkillPreloaded: true, SkillLoaded: true, FileReadDone: true,
 	ApprovalRequired: true, RunCompleted: true, RunFailed: true, RunCancelled: true,
 	Chunk: true,

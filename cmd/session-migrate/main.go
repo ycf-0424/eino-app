@@ -14,6 +14,7 @@ func main() {
 	source := flag.String("source", "", "历史 JSON 目录；留空只建表")
 	dry := flag.Bool("dry-run", false, "只解析并统计源文件，不写数据库")
 	indexes := flag.Bool("memory-indexes", false, "为已有记忆表补充清理索引（需要 ALTER 权限）")
+	attachments := flag.Bool("attachments", false, "创建附件元数据与解析产物表（需要 CREATE 权限）")
 	claimOwner := flag.String("claim-owner", "", "把 owner_id 为空的历史会话归属给该 owner（如 feishu:ou_xxx）；留空则不改动")
 	flag.Parse()
 	cfg, err := config.Load()
@@ -72,6 +73,7 @@ func main() {
 			IncludeMemoryIndexes: *indexes,
 			IncludeAuth:          true,
 			IncludeLocalUsers:    true,
+			IncludeAttachments:   *attachments,
 		}); err != nil {
 			fail(err)
 		}

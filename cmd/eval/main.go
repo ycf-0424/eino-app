@@ -31,6 +31,7 @@ import (
 
 func main() {
 	file := flag.String("file", "", "评测集 JSON，默认 internal/integration/eval_cases.json")
+	intentFile := flag.String("intent-file", "", "意图来源固定评测集，默认 internal/integration/intent_eval_cases.json")
 	threshold := flag.Float64("threshold", -1, "覆盖相似度阈值；-1 使用 config.yaml")
 	minCorrect := flag.Float64("min-correct", 0.8, "最低正确率，未达到时返回非零退出码")
 	minCitation := flag.Float64("min-citation", 1, "最低引用率，未达到时返回非零退出码")
@@ -41,6 +42,8 @@ func main() {
 	minToolAttempt := flag.Float64("min-tool-attempt", -1, "最低期望工具调用开始证据率；-1 表示不检查")
 	minToolSuccess := flag.Float64("min-tool-success", -1, "最低期望工具成功终态证据率；-1 表示不检查")
 	minToolSource := flag.Float64("min-tool-source", -1, "最低期望工具来源字段匹配率；-1 表示不检查")
+	minIntentAccuracy := flag.Float64("min-intent-accuracy", 0.95, "五类意图准确率最低门槛，至少 50 个固定样本")
+	minIntentSource := flag.Float64("min-intent-source-accuracy", 0.95, "意图证据来源准确率最低门槛，含普通问题不误触发检索的断言")
 	maxForbiddenToolViolations := flag.Int("max-forbidden-tool-violations", -1, "评测集明确禁止的工具调用允许的最多违规用例数；-1 表示不检查")
 	debugOverride := flag.String("debug", "", "覆盖 config.yaml 的 debug（true/false）；留空时使用配置文件")
 	modelOverride := flag.String("model", "", "评测使用的模型 profile ID；默认固定 config.yaml active_model，使用生产自动路由请显式传 auto")
@@ -61,6 +64,9 @@ func main() {
 	}
 	if *file == "" {
 		*file = filepath.Join(cfg.ProjectDir, "internal", "integration", "eval_cases.json")
+	}
+	if *intentFile == "" {
+		*intentFile = filepath.Join(cfg.ProjectDir, "internal", "integration", "intent_eval_cases.json")
 	}
 	if err := health.CheckOllama(ctx, cfg.OpenAI.BaseURL, cfg.OpenAI.Model, cfg.RAG.Embedding.Model, cfg.RAG.Dimension, time.Duration(cfg.Ollama.Timeout)); err != nil {
 		fail(err)
@@ -87,6 +93,11 @@ func main() {
 	report := evaluation.Run(ctx, runner, cases, func(query string) chain.Input {
 		return chain.Input{Query: query, TopK: cfg.RAG.TopK, ScoreThreshold: effectiveThreshold, MaxContextChars: cfg.RAG.MaxContextChars}
 	})
+	intentCases, err := evaluation.LoadIntentCases(*intentFile)
+	if err != nil {
+		fail(err)
+	}
+	report.Intent = evaluation.EvaluateIntentCases(intentCases)
 	// 两个视角读取同一次请求的事件缓存，不重复调用模型；技能与工具分别计数。
 	routes, _ := evaluation.RunRouting(ctx, runner, cases)
 	evaluation.SummarizeRouting(&report, cases, routes)
@@ -107,6 +118,7 @@ func main() {
 		maxNoSkillFalsePositive:    *maxNoSkillFalsePositive,
 		maxForbiddenToolViolations: *maxForbiddenToolViolations,
 		minToolAttempt:             *minToolAttempt, minToolSuccess: *minToolSuccess, minToolSource: *minToolSource,
+		minIntentAccuracy: *minIntentAccuracy, minIntentSourceAccuracy: *minIntentSource,
 	}); err != nil {
 		fail(err)
 	}
@@ -143,10 +155,17 @@ func probeVectorStore(ctx context.Context, cfg config.RAG) error {
 type evaluationThresholds struct {
 	minCorrect, minCitation, minRefusal, minRouting, minServerRoute        float64
 	maxNoSkillFalsePositive, minToolAttempt, minToolSuccess, minToolSource float64
+	minIntentAccuracy, minIntentSourceAccuracy                             float64
 	maxForbiddenToolViolations                                             int
 }
 
 func checkEvaluationThresholds(report evaluation.Report, limits evaluationThresholds) error {
+	if report.Intent.Total < 50 {
+		return fmt.Errorf("intent evaluation requires at least 50 fixed samples; got %d", report.Intent.Total)
+	}
+	if report.Intent.Accuracy < limits.minIntentAccuracy || report.Intent.SourceAccuracy < limits.minIntentSourceAccuracy {
+		return fmt.Errorf("intent evaluation threshold not met: accuracy %.2f/%0.2f, source accuracy %.2f/%0.2f (%d samples)", report.Intent.Accuracy, limits.minIntentAccuracy, report.Intent.SourceAccuracy, limits.minIntentSourceAccuracy, report.Intent.Total)
+	}
 	if report.CorrectRate < limits.minCorrect || report.CitationRate < limits.minCitation || report.RefusalRate < limits.minRefusal {
 		return fmt.Errorf("evaluation threshold not met: correct %.2f/%.2f, citation %.2f/%.2f, refusal %.2f/%.2f", report.CorrectRate, limits.minCorrect, report.CitationRate, limits.minCitation, report.RefusalRate, limits.minRefusal)
 	}

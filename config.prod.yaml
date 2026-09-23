@@ -64,6 +64,35 @@ agent:
   multi_agent: true
   checkpoint_dir: "data/checkpoints"
 
+# Keep phase 6 integrations closed until their target/provider passes validation.
+intent_routing:
+  enabled: false
+  confidence_threshold: 0.7
+  classifier_timeout: 8s
+dataquery:
+  enabled: false
+attachments:
+  enabled: false
+  storage_dir: "data/attachments"
+  max_file_bytes: 10485760
+  max_files_per_request: 3
+  max_pages: 10
+  retention_days: 30
+  processing_timeout: 2m
+  virus_scanner: "clamscan"
+  virus_database_dir: "data/clamav"
+  max_media_duration_seconds: 600
+  max_video_frames: 12
+  pdf_renderer: "pdftoppm"
+  ffmpeg: "ffmpeg"
+  ffprobe: "ffprobe"
+  vision:
+    enabled: false
+    timeout: 60s
+  transcription:
+    enabled: false
+    timeout: 60s
+
 memory:
   enabled: true
   identity_mode: "multi_user"

@@ -5,12 +5,15 @@ COMPOSE := docker compose -f docker-compose.milvus.yml
 .DEFAULT_GOAL := help
 
 # 先 make db-migrate，再 make sessions-import；使用项目 .env 中的连接信息。
-.PHONY: db-migrate db-memory-indexes sessions-import
+.PHONY: db-migrate db-memory-indexes db-attachments-migrate sessions-import
 db-migrate:
 	go run ./cmd/session-migrate
 
 db-memory-indexes:
 	go run ./cmd/session-migrate -memory-indexes
+
+db-attachments-migrate:
+	go run ./cmd/session-migrate -attachments
 
 sessions-import:
 	go run ./cmd/session-migrate -source data/sessions
@@ -22,6 +25,7 @@ sessions-import:
 help: ## 显示可用命令
 	@echo "make db-migrate  - 在现有 MySQL 项目库中初始化会话表"
 	@echo "make db-memory-indexes - 使用具备 ALTER 权限的账号补充记忆清理索引"
+	@echo "make db-attachments-migrate - 使用具备 CREATE 权限的账号初始化附件表"
 	@echo "make sessions-import - 将本地 JSON 会话导入 MySQL"
 	@echo "make check       - 格式化、边界校验、测试并执行静态检查"
 	@echo "make run         - 在宿主机启动 Go 服务（127.0.0.1:18181）"
@@ -87,7 +91,7 @@ retrieve: ## 使用示例问题查看原始检索分数
 	go run ./cmd/retrieve "星河系统使用什么技术栈？"
 
 eval: ## 执行生产态本地 Ollama + Milvus 评测并检查路由/工具门槛
-	go run ./cmd/eval -debug=false -min-correct=0.8 -min-citation=1 -min-refusal=1 -min-server-route=0.95 -max-no-skill-false-positive=0 -max-forbidden-tool-violations=0 -min-tool-attempt=1 -min-tool-success=1 -min-tool-source=1
+	go run ./cmd/eval -debug=false -min-correct=0.8 -min-citation=1 -min-refusal=1 -min-server-route=0.95 -max-no-skill-false-positive=0 -max-forbidden-tool-violations=0 -min-tool-attempt=1 -min-tool-success=1 -min-tool-source=1 -min-intent-accuracy=0.95 -min-intent-source-accuracy=0.95
 
 # 备份与恢复演练（步骤 5.3）。用 PowerShell 而非 make 内联命令：
 # dump 与卷打包都涉及字节流，make 走 cmd.exe 更容易被引号与编码坑到。

@@ -92,6 +92,25 @@ func TestValidateExpandsEnvironment(t *testing.T) {
 	}
 }
 
+func TestAttachmentsRequireMySQLAndMalwareScanner(t *testing.T) {
+	base := Config{OpenAI: OpenAI{APIKey: "local", Model: "qwen", BaseURL: "http://localhost:11434/v1"}, Attachments: AttachmentsConfig{Enabled: true}}
+	if err := base.Validate(); err == nil || !strings.Contains(err.Error(), "session.store=mysql") {
+		t.Fatalf("attachments should require MySQL metadata: %v", err)
+	}
+	base.Session.Store = "mysql"
+	base.MySQL.User = "app"
+	if err := base.Validate(); err == nil || !strings.Contains(err.Error(), "virus_scanner is required") {
+		t.Fatalf("attachments should fail closed without malware scanner: %v", err)
+	}
+	base.Attachments.VirusScanner = "clamscan"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid disabled-provider attachment configuration failed: %v", err)
+	}
+	if base.Attachments.MaxMediaDurationSeconds != 600 || base.Attachments.MaxVideoFrames != 12 || base.Attachments.MaxPages != 10 {
+		t.Fatalf("media processing defaults are not bounded: %+v", base.Attachments)
+	}
+}
+
 func TestContextWindowConfigurationAndProfileResolution(t *testing.T) {
 	t.Setenv("SESSION_STORE", "")
 	cfg := Config{

@@ -135,6 +135,36 @@ agent:
     confidence_threshold: 0.7
     classifier_timeout: 8s
 
+# Phase 6 switches are disabled until their source/provider is explicitly configured.
+intent_routing:
+  enabled: false
+  classifier_model: qwen-fast
+  confidence_threshold: 0.7
+  classifier_timeout: 8s
+dataquery:
+  enabled: false
+attachments:
+  enabled: false
+  storage_dir: "data/attachments"
+  max_file_bytes: 10485760
+  max_files_per_request: 3
+  max_pages: 10
+  retention_days: 30
+  processing_timeout: 2m
+  virus_scanner: "clamscan"
+  virus_database_dir: "data/clamav"
+  max_media_duration_seconds: 600
+  max_video_frames: 12
+  pdf_renderer: "pdftoppm"
+  ffmpeg: "ffmpeg"
+  ffprobe: "ffprobe"
+  vision:
+    enabled: false
+    timeout: 60s
+  transcription:
+    enabled: false
+    timeout: 60s
+
 # 自动记忆：需先执行 go run ./cmd/session-migrate。
 # 用户偏好保存在 MySQL；项目决策/里程碑才会进入独立 Milvus 集合。
 memory:

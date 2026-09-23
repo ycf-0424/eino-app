@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
@@ -19,6 +20,37 @@ import (
 type documentSection struct {
 	Content  string
 	MetaData map[string]any
+}
+
+// Section is one source-preserving part of a document. It is shared by the
+// knowledge indexer and explicit attachment parsing so page references use the
+// same text extraction behavior.
+type Section struct {
+	Content  string
+	Metadata map[string]any
+}
+
+// ParseFile extracts a supported document without chunking or indexing it.
+func ParseFile(path string) ([]Section, error) {
+	ext := strings.ToLower(filepath.Ext(path))
+	sections, err := parseDocument(path, ext)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Section, 0, len(sections))
+	for _, section := range sections {
+		result = append(result, Section{Content: section.Content, Metadata: section.MetaData})
+	}
+	return result, nil
+}
+
+// PDFPageCount returns the declared page count before rendering work begins.
+func PDFPageCount(path string) (int, error) {
+	doc, err := pdf.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	return doc.NumPage(), nil
 }
 
 func parseDocument(path, ext string) ([]documentSection, error) {

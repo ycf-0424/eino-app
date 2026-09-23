@@ -12,10 +12,27 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"my-eino-app/internal/attachments"
 	"my-eino-app/internal/config"
 	"my-eino-app/internal/session"
 	"my-eino-app/internal/skill"
 )
+
+func TestAttachmentRequestTimeoutUsesProcessingBudget(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			Runtime:     config.Runtime{RequestTimeout: config.Duration(20 * time.Second)},
+			Attachments: config.AttachmentsConfig{ProcessingTimeout: config.Duration(4 * time.Minute)},
+		},
+		attachments: &attachments.Manager{},
+	}
+	if got := service.requestTimeout("/attachments"); got != 4*time.Minute {
+		t.Fatalf("attachment timeout=%s, want 4m", got)
+	}
+	if got := service.requestTimeout("/sessions"); got != 20*time.Second {
+		t.Fatalf("general timeout=%s, want 20s", got)
+	}
+}
 
 func TestModelsEndpointOffersAutomaticRoutingFirst(t *testing.T) {
 	service := &Service{cfg: &config.Config{

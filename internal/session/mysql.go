@@ -103,6 +103,8 @@ type MigrationOptions struct {
 	// IncludeLocalUsers creates auth_local_users. 与 IncludeAuth 同样当作
 	// 「不是可选子系统」处理：表缺失时登录路径直接报错，而建号工具本来就要写它。
 	IncludeLocalUsers bool
+	// IncludeAttachments creates the optional owner-scoped upload/artifact schema.
+	IncludeAttachments bool
 }
 
 // Migrate is the backwards-compatible full migration entry point. Commands
@@ -136,6 +138,9 @@ func (s *Store) MigrateWithOptions(options MigrationOptions) error {
 	}
 	if options.IncludeLocalUsers {
 		migrations = append(migrations, localUsersMigrationSQL)
+	}
+	if options.IncludeAttachments {
+		migrations = append(migrations, attachmentsMigrationSQL)
 	}
 	for _, migration := range migrations {
 		for _, statement := range strings.Split(migration, ";") {
@@ -280,6 +285,11 @@ var authMigrationSQL string
 //
 //go:embed migrations/005_local_users.sql
 var localUsersMigrationSQL string
+
+// 006 附件元数据与解析产物；原始文件保存在受控 app-data 目录。
+//
+//go:embed migrations/006_attachments.sql
+var attachmentsMigrationSQL string
 
 func (s *mysqlStore) load(owner, id string) ([]*schema.Message, error) {
 	if err := validateID(id); err != nil {

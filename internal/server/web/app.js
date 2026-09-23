@@ -25,6 +25,10 @@ const state = {
   // 可用模型列表与当前选中模型。
   models: [],
   activeModel: "",
+  pendingAttachments: [],
+  attachmentEnabled: false,
+  attachmentMaxCount: 3,
+  uploadingAttachments: false,
 };
 
 const ui = Object.fromEntries([
@@ -34,6 +38,7 @@ const ui = Object.fromEntries([
   "approvalPanel", "approvalDescription", "approveAction", "rejectApproval", "toast",
   "deleteDialog", "confirmDelete", "userBox", "userName", "loginButton", "logoutButton",
   "modelSelector", "currentModel", "modelDialog", "modelList", "closeModelDialog",
+  "attachmentButton", "attachmentInput", "pendingAttachments",
 ].map((id) => [id, document.getElementById(id)]));
 
 // 工具与事件的中文标签；未知名称直接展示原名，不伪造语义。
@@ -124,13 +129,14 @@ function setGenerating(value) {
   ui.sendButton.classList.toggle("stop", value);
   ui.sendButton.querySelector("span").textContent = value ? "" : "↑";
   ui.sendButton.title = value ? "停止生成" : "发送消息";
+  ui.attachmentButton.disabled = value || state.uploadingAttachments;
   ui.requestStatus.textContent = value ? "正在生成" : "本地运行";
 }
 
 function resizeInput() {
   ui.promptInput.style.height = "auto";
   ui.promptInput.style.height = `${Math.min(ui.promptInput.scrollHeight, 180)}px`;
-  if (!state.generating) ui.sendButton.disabled = !ui.promptInput.value.trim();
+  if (!state.generating) ui.sendButton.disabled = !ui.promptInput.value.trim() && !state.pendingAttachments.some((item) => item.status === "ready");
 }
 
 function normalizeText(value) {
@@ -735,7 +741,14 @@ function canStartConversation() {
 }
 
 function sendMessage(query) {
-  if (!query || !canStartConversation()) return;
+  if (state.uploadingAttachments) {
+    showToast("附件仍在上传或解析，请稍候");
+    return;
+  }
+  const attachmentIDs = state.pendingAttachments.filter((item) => item.status === "ready").map((item) => item.id);
+  if (!query && !attachmentIDs.length) return;
+  if (!canStartConversation()) return;
+  query = query || "请分析我附上的文件，并说明主要内容。";
   state.pendingApproval = null;
   ui.approvalPanel.hidden = true;
   if (ui.messages.children.length === 0) ui.conversationState.textContent = query.replace(/\s+/g, " ").slice(0, 42);
@@ -747,6 +760,8 @@ function sendMessage(query) {
   state.activeRun = { runId: "", lastSeq: 0, seen: new Set(), panel: assistant.panel };
   setGenerating(true);
   ui.promptInput.value = "";
+  state.pendingAttachments = [];
+  renderPendingAttachments();
   resizeInput();
 
   // 每轮对话都是一条新的 WebSocket，旧连接必须先关掉：服务端为每条连接各留一个
@@ -769,6 +784,7 @@ function sendMessage(query) {
       socket.send(JSON.stringify({
         type: "chat",
         query,
+        attachment_ids: attachmentIDs,
         skill: state.debug ? ui.skillSelect.value : "",
         model: state.activeModel || ""
       }));
@@ -836,6 +852,74 @@ function sendMessage(query) {
   socket.onclose = () => {
     if (state.generating) finishGeneration();
   };
+}
+
+function renderPendingAttachments() {
+  ui.pendingAttachments.replaceChildren();
+  ui.pendingAttachments.hidden = state.pendingAttachments.length === 0;
+  for (const item of state.pendingAttachments) {
+    const chip = el("div", "attachment-chip");
+    const name = el("span", "attachment-chip-name", item.name);
+    const statusText = item.status === "ready" ? "已解析" : item.status === "failed" ? "解析失败" : item.status;
+    const status = el("span", "attachment-chip-status", statusText);
+    chip.append(name, status);
+    if (item.status === "failed") {
+      const retry = el("button", "", "重试");
+      retry.type = "button";
+      retry.onclick = async () => {
+        retry.disabled = true;
+        try {
+          const updated = await api(`/attachments/${encodeURIComponent(item.id)}/retry`, { method: "POST" });
+          item.status = updated.status;
+          item.error = updated.error || "";
+          renderPendingAttachments();
+          if (item.status === "ready") resizeInput();
+        } catch (error) { showToast(error.message); retry.disabled = false; }
+      };
+      chip.append(retry);
+    }
+    const remove = el("button", "", "×");
+    remove.type = "button";
+    remove.setAttribute("aria-label", `移除附件 ${item.name}`);
+    remove.onclick = async () => {
+      state.pendingAttachments = state.pendingAttachments.filter((candidate) => candidate.id !== item.id);
+      renderPendingAttachments();
+      resizeInput();
+      try { await api(`/attachments/${encodeURIComponent(item.id)}`, { method: "DELETE" }); } catch { /* 留给保留期限清理 */ }
+    };
+    chip.append(remove);
+    ui.pendingAttachments.append(chip);
+  }
+}
+
+async function uploadSelectedAttachments(files) {
+  if (!files.length || state.uploadingAttachments) return;
+  if (state.pendingAttachments.length + files.length > state.attachmentMaxCount) {
+    showToast(`最多选择 ${state.attachmentMaxCount} 个附件`);
+    return;
+  }
+  state.uploadingAttachments = true;
+  ui.attachmentButton.disabled = true;
+  ui.requestStatus.textContent = "正在上传附件";
+  for (const file of files) {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    try {
+      const response = await fetch("/attachments", { method: "POST", body: form });
+      if (response.status === 401) { redirectToLogin(); throw new Error("登录已过期，请重新登录"); }
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.error) throw new Error(payload.error || `上传失败 (${response.status})`);
+      const item = payload.data?.attachments?.[0];
+      if (!item) throw new Error("服务器未返回附件状态");
+      state.pendingAttachments.push({ id: item.id, name: item.name, status: item.status, error: item.error || "" });
+      renderPendingAttachments();
+      if (item.status === "failed") showToast(`${item.name} 已上传，但解析失败；可重试或检查能力配置`);
+    } catch (error) { showToast(error.message || "附件上传失败"); }
+  }
+  state.uploadingAttachments = false;
+  ui.attachmentButton.disabled = false;
+  ui.requestStatus.textContent = "本地运行";
+  resizeInput();
 }
 
 function stopGeneration() {
@@ -1149,6 +1233,12 @@ ui.composer.addEventListener("submit", (event) => {
   sendMessage(ui.promptInput.value.trim());
 });
 ui.promptInput.addEventListener("input", resizeInput);
+ui.attachmentButton.onclick = () => ui.attachmentInput.click();
+ui.attachmentInput.addEventListener("change", () => {
+  const files = Array.from(ui.attachmentInput.files || []);
+  ui.attachmentInput.value = "";
+  uploadSelectedAttachments(files);
+});
 ui.promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
@@ -1187,6 +1277,9 @@ async function bootstrap() {
   try {
     const health = await api("/health");
     setHealth(true);
+    state.attachmentEnabled = health?.attachments_enabled === true;
+    state.attachmentMaxCount = Math.max(1, Number(health?.attachments_max_files_per_request) || 3);
+    ui.attachmentButton.hidden = !state.attachmentEnabled;
     state.authEnabled = health?.auth_enabled === true || health?.login?.feishu === true || health?.login?.local === true;
     // 技能入口的显隐完全由后端 debug 状态决定，前端不做任何默认开启。
     applyDebugMode(health?.debug === true);

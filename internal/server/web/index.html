@@ -91,11 +91,14 @@
         </div>
 
         <form class="composer" id="composer">
+          <button class="attachment-button" id="attachmentButton" type="button" title="添加附件" aria-label="添加附件" hidden>&#43;</button>
+          <input id="attachmentInput" type="file" multiple hidden accept=".pdf,.png,.jpg,.jpeg,.txt,.csv,.docx,.xlsx,.mp3,.wav,.m4a,.mp4">
           <textarea id="promptInput" rows="1" maxlength="8000" placeholder="给星河系统助手发消息" aria-label="消息内容"></textarea>
           <button class="send-button" id="sendButton" type="submit" title="发送消息" aria-label="发送消息">
             <span aria-hidden="true">&#8593;</span>
           </button>
         </form>
+        <div class="pending-attachments" id="pendingAttachments" hidden></div>
         <div class="composer-meta">
           <span id="requestStatus">本地运行</span>
           <button class="model-selector" id="modelSelector" type="button" title="选择模型">

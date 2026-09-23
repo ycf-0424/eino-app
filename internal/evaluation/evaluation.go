@@ -113,6 +113,7 @@ type Report struct {
 	ModelID                  string        `json:"model_id,omitempty"`
 	Debug                    *bool         `json:"debug,omitempty"`
 	ScoreThreshold           float64       `json:"score_threshold,omitempty"`
+	Intent                   IntentReport  `json:"intent_routing"`
 }
 
 // LoadCases 函数。

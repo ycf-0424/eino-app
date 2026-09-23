@@ -60,6 +60,10 @@ type Config struct {
 	Session Session `yaml:"session"`
 	Skills  Skills  `yaml:"skills"`
 	Runtime Runtime `yaml:"runtime"`
+	// IntentRouting enables phase-6 typed routing; its feature flag is off by default.
+	IntentRouting IntentRoutingConfig `yaml:"intent_routing"`
+	DataQuery     DataQueryConfig     `yaml:"dataquery"`
+	Attachments   AttachmentsConfig   `yaml:"attachments"`
 	// LocalFiles 控制 Agent 能读取哪些本地目录；未列出的路径一律拒绝。
 	LocalFiles LocalFiles `yaml:"local_files"`
 	// ExecutionEvents 控制实时执行进度与执行记录；默认关闭，关闭时行为与 P7 一致。
@@ -191,6 +195,48 @@ type Agent struct {
 	AutoRouting   AutoModelRouting `yaml:"auto_routing"`
 }
 
+type IntentRoutingConfig struct {
+	Enabled             bool     `yaml:"enabled"`
+	ClassifierModel     string   `yaml:"classifier_model"`
+	ConfidenceThreshold float64  `yaml:"confidence_threshold"`
+	ClassifierTimeout   Duration `yaml:"classifier_timeout"`
+}
+
+// DataQueryConfig controls the optional read-only business-query registry.
+// The registry remains disabled until a real source and allowlisted operations
+// are registered by the application.
+type DataQueryConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+type AttachmentsConfig struct {
+	Enabled                 bool               `yaml:"enabled"`
+	StorageDir              string             `yaml:"storage_dir"`
+	MaxFileBytes            int64              `yaml:"max_file_bytes"`
+	MaxFilesPerRequest      int                `yaml:"max_files_per_request"`
+	MaxPages                int                `yaml:"max_pages"`
+	RetentionDays           int                `yaml:"retention_days"`
+	ProcessingTimeout       Duration           `yaml:"processing_timeout"`
+	MaxMediaDurationSeconds int                `yaml:"max_media_duration_seconds"`
+	MaxVideoFrames          int                `yaml:"max_video_frames"`
+	AllowedMIMEs            []string           `yaml:"allowed_mimes"`
+	VirusScanner            string             `yaml:"virus_scanner"`
+	VirusDatabaseDir        string             `yaml:"virus_database_dir"`
+	PDFRenderer             string             `yaml:"pdf_renderer"`
+	FFmpeg                  string             `yaml:"ffmpeg"`
+	FFprobe                 string             `yaml:"ffprobe"`
+	Vision                  MultimodalProvider `yaml:"vision"`
+	Transcription           MultimodalProvider `yaml:"transcription"`
+}
+
+type MultimodalProvider struct {
+	Enabled bool     `yaml:"enabled"`
+	BaseURL string   `yaml:"base_url"`
+	APIKey  string   `yaml:"api_key"`
+	Model   string   `yaml:"model"`
+	Timeout Duration `yaml:"timeout"`
+}
+
 // AutoModelRouting controls the two-stage automatic model choice. The fast
 // model classifies the question and handles confident simple requests; the
 // strong model receives complex, uncertain, or failed classifications.
@@ -298,6 +344,18 @@ func (c *Config) Validate() error {
 			*dest = value
 		}
 	}
+	for key, dest := range map[string]*string{
+		"ATTACHMENT_VISION_API_KEY":         &c.Attachments.Vision.APIKey,
+		"ATTACHMENT_VISION_BASE_URL":        &c.Attachments.Vision.BaseURL,
+		"ATTACHMENT_VISION_MODEL":           &c.Attachments.Vision.Model,
+		"ATTACHMENT_TRANSCRIPTION_API_KEY":  &c.Attachments.Transcription.APIKey,
+		"ATTACHMENT_TRANSCRIPTION_BASE_URL": &c.Attachments.Transcription.BaseURL,
+		"ATTACHMENT_TRANSCRIPTION_MODEL":    &c.Attachments.Transcription.Model,
+	} {
+		if value, ok := os.LookupEnv(key); ok {
+			*dest = value
+		}
+	}
 	if c.MySQL.Host == "" {
 		c.MySQL.Host = "localhost"
 	}
@@ -312,7 +370,13 @@ func (c *Config) Validate() error {
 	}
 	// 配置值支持 ${ENV_NAME}，未设置的变量会立即报错而不是发送空密钥。
 	var err error
-	for name, value := range map[string]*string{"openai.api_key": &c.OpenAI.APIKey, "openai.model": &c.OpenAI.Model, "openai.base_url": &c.OpenAI.BaseURL, "rag.embedding.api_key": &c.RAG.Embedding.APIKey, "rag.embedding.model": &c.RAG.Embedding.Model, "rag.embedding.base_url": &c.RAG.Embedding.BaseURL, "rag.redis.password": &c.RAG.Redis.Password, "rag.milvus.password": &c.RAG.Milvus.Password} {
+	for name, value := range map[string]*string{
+		"openai.api_key": &c.OpenAI.APIKey, "openai.model": &c.OpenAI.Model, "openai.base_url": &c.OpenAI.BaseURL,
+		"rag.embedding.api_key": &c.RAG.Embedding.APIKey, "rag.embedding.model": &c.RAG.Embedding.Model, "rag.embedding.base_url": &c.RAG.Embedding.BaseURL,
+		"rag.redis.password": &c.RAG.Redis.Password, "rag.milvus.password": &c.RAG.Milvus.Password,
+		"attachments.vision.api_key": &c.Attachments.Vision.APIKey, "attachments.vision.base_url": &c.Attachments.Vision.BaseURL, "attachments.vision.model": &c.Attachments.Vision.Model,
+		"attachments.transcription.api_key": &c.Attachments.Transcription.APIKey, "attachments.transcription.base_url": &c.Attachments.Transcription.BaseURL, "attachments.transcription.model": &c.Attachments.Transcription.Model,
+	} {
 		*value, err = expandEnvironment(*value)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
@@ -401,6 +465,123 @@ func (c *Config) Validate() error {
 		}
 		if c.Agent.AutoRouting.ClassifierTimeout < 0 {
 			return fmt.Errorf("agent.auto_routing.classifier_timeout must not be negative")
+		}
+	}
+	if c.IntentRouting.Enabled {
+		if c.IntentRouting.ConfidenceThreshold == 0 {
+			c.IntentRouting.ConfidenceThreshold = 0.7
+		}
+		if c.IntentRouting.ConfidenceThreshold <= 0 || c.IntentRouting.ConfidenceThreshold > 1 {
+			return fmt.Errorf("intent_routing.confidence_threshold must be greater than 0 and no greater than 1")
+		}
+		if c.IntentRouting.ClassifierTimeout == 0 {
+			c.IntentRouting.ClassifierTimeout = Duration(8 * time.Second)
+		}
+		if c.IntentRouting.ClassifierTimeout < 0 || c.IntentRouting.ClassifierTimeout > Duration(30*time.Second) {
+			return fmt.Errorf("intent_routing.classifier_timeout must be between 0 and 30 seconds")
+		}
+		if c.IntentRouting.ClassifierModel != "" {
+			known := false
+			for _, profile := range c.Models {
+				known = known || profile.ID == c.IntentRouting.ClassifierModel
+			}
+			if !known {
+				return fmt.Errorf("intent_routing.classifier_model %q is not defined", c.IntentRouting.ClassifierModel)
+			}
+		}
+	}
+	if c.Attachments.Enabled {
+		if c.Session.Store != "mysql" {
+			return fmt.Errorf("attachments.enabled requires session.store=mysql")
+		}
+		if c.Attachments.StorageDir == "" {
+			c.Attachments.StorageDir = "data/attachments"
+		}
+		c.Attachments.VirusScanner = strings.TrimSpace(c.Attachments.VirusScanner)
+		if c.Attachments.VirusScanner == "" {
+			return fmt.Errorf("attachments.virus_scanner is required when attachments are enabled")
+		}
+		if c.Attachments.VirusDatabaseDir == "" {
+			c.Attachments.VirusDatabaseDir = "data/clamav"
+		}
+		if c.Attachments.MaxFileBytes == 0 {
+			c.Attachments.MaxFileBytes = 10 << 20
+		}
+		if c.Attachments.MaxFileBytes < 1 || c.Attachments.MaxFileBytes > 25<<20 {
+			return fmt.Errorf("attachments.max_file_bytes must be between 1 and 25 MiB")
+		}
+		if c.Attachments.MaxFilesPerRequest == 0 {
+			c.Attachments.MaxFilesPerRequest = 3
+		}
+		if c.Attachments.MaxFilesPerRequest < 1 || c.Attachments.MaxFilesPerRequest > 6 {
+			return fmt.Errorf("attachments.max_files_per_request must be between 1 and 6")
+		}
+		if c.Attachments.MaxPages == 0 {
+			c.Attachments.MaxPages = 10
+		}
+		if c.Attachments.MaxPages < 1 || c.Attachments.MaxPages > 20 {
+			return fmt.Errorf("attachments.max_pages must be between 1 and 20")
+		}
+		if c.Attachments.RetentionDays == 0 {
+			c.Attachments.RetentionDays = 30
+		}
+		if c.Attachments.RetentionDays < 1 || c.Attachments.RetentionDays > 365 {
+			return fmt.Errorf("attachments.retention_days must be between 1 and 365")
+		}
+		if c.Attachments.ProcessingTimeout == 0 {
+			c.Attachments.ProcessingTimeout = Duration(2 * time.Minute)
+		}
+		if c.Attachments.ProcessingTimeout < 0 || c.Attachments.ProcessingTimeout > Duration(10*time.Minute) {
+			return fmt.Errorf("attachments.processing_timeout must be between 0 and 10 minutes")
+		}
+		if c.Attachments.MaxMediaDurationSeconds == 0 {
+			c.Attachments.MaxMediaDurationSeconds = 600
+		}
+		if c.Attachments.MaxMediaDurationSeconds < 1 || c.Attachments.MaxMediaDurationSeconds > 3600 {
+			return fmt.Errorf("attachments.max_media_duration_seconds must be between 1 and 3600")
+		}
+		if c.Attachments.MaxVideoFrames == 0 {
+			c.Attachments.MaxVideoFrames = 12
+		}
+		if c.Attachments.MaxVideoFrames < 1 || c.Attachments.MaxVideoFrames > 24 {
+			return fmt.Errorf("attachments.max_video_frames must be between 1 and 24")
+		}
+		if len(c.Attachments.AllowedMIMEs) == 0 {
+			c.Attachments.AllowedMIMEs = []string{
+				"application/pdf", "image/jpeg", "image/png", "text/plain", "text/csv",
+				"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+				"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+				"audio/mpeg", "audio/wav", "audio/mp4", "video/mp4",
+			}
+		}
+		c.Attachments.PDFRenderer = strings.TrimSpace(c.Attachments.PDFRenderer)
+		if c.Attachments.PDFRenderer == "" {
+			c.Attachments.PDFRenderer = "pdftoppm"
+		}
+		c.Attachments.FFmpeg = strings.TrimSpace(c.Attachments.FFmpeg)
+		if c.Attachments.FFmpeg == "" {
+			c.Attachments.FFmpeg = "ffmpeg"
+		}
+		c.Attachments.FFprobe = strings.TrimSpace(c.Attachments.FFprobe)
+		if c.Attachments.FFprobe == "" {
+			c.Attachments.FFprobe = "ffprobe"
+		}
+	}
+	for name, provider := range map[string]*MultimodalProvider{"attachments.vision": &c.Attachments.Vision, "attachments.transcription": &c.Attachments.Transcription} {
+		if !provider.Enabled {
+			continue
+		}
+		if strings.TrimSpace(provider.BaseURL) == "" || strings.TrimSpace(provider.Model) == "" {
+			return fmt.Errorf("%s requires base_url and model", name)
+		}
+		if !strings.Contains(strings.ToLower(provider.BaseURL), "localhost") && !strings.Contains(strings.ToLower(provider.BaseURL), "127.0.0.1") && strings.TrimSpace(provider.APIKey) == "" {
+			return fmt.Errorf("%s.api_key is required for remote provider", name)
+		}
+		if provider.Timeout == 0 {
+			provider.Timeout = Duration(60 * time.Second)
+		}
+		if provider.Timeout < 0 || provider.Timeout > Duration(5*time.Minute) {
+			return fmt.Errorf("%s.timeout must be between 0 and 5 minutes", name)
 		}
 	}
 	// Normalize the selected profile into the legacy OpenAI view so the rest of
@@ -584,6 +765,12 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Attachments.StorageDir != "" {
+		c.Attachments.StorageDir = resolveProjectPath(c.ProjectDir, c.Attachments.StorageDir)
+	}
+	if c.Attachments.VirusDatabaseDir != "" {
+		c.Attachments.VirusDatabaseDir = resolveProjectPath(c.ProjectDir, c.Attachments.VirusDatabaseDir)
+	}
 	if err := c.ValidateAuth(); err != nil {
 		return err
 	}

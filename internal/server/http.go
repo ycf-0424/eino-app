@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"my-eino-app/internal/attachments"
 	"my-eino-app/internal/auth"
 	"my-eino-app/internal/checkpoint"
 	"my-eino-app/internal/execution"
@@ -21,10 +22,11 @@ import (
 )
 
 type chatRequest struct {
-	SessionID string `json:"session_id"`
-	Query     string `json:"query"`
-	Skill     string `json:"skill"`
-	Model     string `json:"model"`
+	SessionID     string   `json:"session_id"`
+	Query         string   `json:"query"`
+	Skill         string   `json:"skill"`
+	Model         string   `json:"model"`
+	AttachmentIDs []string `json:"attachment_ids,omitempty"`
 }
 type approvalRequest struct {
 	Approved bool `json:"approved"`
@@ -161,10 +163,16 @@ func (s *Service) Handler() http.Handler {
 	// 两项都必须是「当前真的可用」：feishu 还要求 auth.enabled，
 	// 否则会出现「页面显示飞书入口、点进去 404」。
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		maxAttachmentFiles := 0
+		if s.cfg != nil {
+			maxAttachmentFiles = s.cfg.Attachments.MaxFilesPerRequest
+		}
 		writeJSON(w, 200, response{Data: map[string]any{
-			"status":       "ok",
-			"debug":        s.debugEnabled(),
-			"auth_enabled": s.authEnabled(),
+			"status":                            "ok",
+			"debug":                             s.debugEnabled(),
+			"auth_enabled":                      s.authEnabled(),
+			"attachments_enabled":               s.attachments != nil,
+			"attachments_max_files_per_request": maxAttachmentFiles,
 			"login": map[string]bool{
 				"feishu": s.authEnabled() && s.feishuReady(),
 				"local":  s.localLoginEnabled(),
@@ -200,6 +208,14 @@ func (s *Service) Handler() http.Handler {
 	// 只有这两条路由会真正调用模型（也就是真正花钱、真正占并发），
 	// 其余路由是只读或轻量，不挂限流。throttle 在 protected 内部。
 	mux.Handle("POST /chat", s.protected(s.throttle(http.HandlerFunc(s.handleChat))))
+	if s.attachments != nil {
+		mux.Handle("GET /attachments", s.protected(http.HandlerFunc(s.handleAttachmentList)))
+		mux.Handle("POST /attachments", s.protected(http.HandlerFunc(s.handleAttachmentUpload)))
+		mux.Handle("GET /attachments/{id}", s.protected(http.HandlerFunc(s.handleAttachmentGet)))
+		mux.Handle("GET /attachments/{id}/artifacts", s.protected(http.HandlerFunc(s.handleAttachmentArtifacts)))
+		mux.Handle("POST /attachments/{id}/retry", s.protected(http.HandlerFunc(s.handleAttachmentRetry)))
+		mux.Handle("DELETE /attachments/{id}", s.protected(http.HandlerFunc(s.handleAttachmentDelete)))
+	}
 	mux.Handle("GET /sessions", s.protected(http.HandlerFunc(s.handleSessions)))
 	// 会话 id 由服务端签发：前端不再自己造 id（app.js 的 makeSessionId 已移除）。
 	mux.Handle("POST /sessions", s.protected(http.HandlerFunc(s.handleCreateSession)))
@@ -217,14 +233,25 @@ func (s *Service) Handler() http.Handler {
 			mux.ServeHTTP(w, r)
 			return
 		}
-		timeout := 2 * time.Minute
-		if s.cfg != nil && s.cfg.Runtime.RequestTimeout > 0 {
-			timeout = time.Duration(s.cfg.Runtime.RequestTimeout)
-		}
+		timeout := s.requestTimeout(r.URL.Path)
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 		mux.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (s *Service) requestTimeout(path string) time.Duration {
+	timeout := 2 * time.Minute
+	if s.cfg != nil && s.cfg.Runtime.RequestTimeout > 0 {
+		timeout = time.Duration(s.cfg.Runtime.RequestTimeout)
+	}
+	// Attachment parsing can legitimately take longer than the general request
+	// budget. Its dedicated limit must win for attachment routes, otherwise the
+	// outer HTTP context cancels processing before the processor's own timeout.
+	if s.cfg != nil && s.attachments != nil && strings.HasPrefix(path, "/attachments") && s.cfg.Attachments.ProcessingTimeout > 0 {
+		timeout = time.Duration(s.cfg.Attachments.ProcessingTimeout)
+	}
+	return timeout
 }
 
 func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +273,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	var output bytes.Buffer
 	// 同步接口把事件收进内存后一次性返回：实时推送只由 WebSocket 提供。
 	recorder := execution.NewRecorder(s.execCfg.MaxEventsPerRun)
-	result, err := s.ChatWithSink(r.Context(), req.SessionID, req.Query, s.requestedSkill(req.Skill), req.Model, &output, recorder)
+	result, err := s.ChatWithSink(r.Context(), req.SessionID, req.Query, s.requestedSkill(req.Skill), req.Model, &output, recorder, req.AttachmentIDs)
 	if err != nil {
 		if errors.Is(err, session.ErrForeignSession) {
 			writeSessionError(w, err)
@@ -276,6 +303,135 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 		result.Events = nil
 	}
 	writeJSON(w, 200, response{Data: result})
+}
+
+func (s *Service) handleAttachmentList(w http.ResponseWriter, r *http.Request) {
+	items, err := s.attachments.List(r.Context(), ownerOf(r), 100)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{Error: "could not list attachments"})
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Data: map[string]any{"attachments": items}})
+}
+
+func (s *Service) handleAttachmentUpload(w http.ResponseWriter, r *http.Request) {
+	maxBody := s.cfg.Attachments.MaxFileBytes*int64(s.cfg.Attachments.MaxFilesPerRequest) + 1<<20
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	if err := r.ParseMultipartForm(2 << 20); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, response{Error: "attachment request exceeds the total size limit"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, response{Error: "expected multipart/form-data with file fields"})
+		return
+	}
+	if r.MultipartForm == nil {
+		writeJSON(w, http.StatusBadRequest, response{Error: "multipart form is missing"})
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 {
+		files = r.MultipartForm.File["file"]
+	}
+	if len(files) == 0 {
+		writeJSON(w, http.StatusBadRequest, response{Error: "at least one file field named file or files is required"})
+		return
+	}
+	if len(files) > s.cfg.Attachments.MaxFilesPerRequest {
+		writeJSON(w, http.StatusRequestEntityTooLarge, response{Error: "too many files in one request"})
+		return
+	}
+	items := make([]any, 0, len(files))
+	for _, header := range files {
+		file, err := header.Open()
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, response{Data: map[string]any{"attachments": items}, Error: "could not open uploaded file"})
+			return
+		}
+		item, uploadErr := s.attachments.Upload(r.Context(), ownerOf(r), header.Filename, header.Header.Get("Content-Type"), file)
+		_ = file.Close()
+		if uploadErr != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(uploadErr.Error(), "limit") {
+				status = http.StatusRequestEntityTooLarge
+			}
+			writeJSON(w, status, response{Data: map[string]any{"attachments": items}, Error: uploadErr.Error()})
+			return
+		}
+		s.attachmentUploads.Add(1)
+		if item.Status == attachments.StatusFailed {
+			s.attachmentParseFailures.Add(1)
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusCreated, response{Data: map[string]any{"attachments": items}})
+}
+
+func (s *Service) handleAttachmentGet(w http.ResponseWriter, r *http.Request) {
+	item, err := s.attachments.Get(r.Context(), ownerOf(r), r.PathValue("id"))
+	if errors.Is(err, attachments.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, response{Error: "attachment not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{Error: "could not load attachment"})
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Data: item})
+}
+
+func (s *Service) handleAttachmentArtifacts(w http.ResponseWriter, r *http.Request) {
+	artifacts, err := s.attachments.Artifacts(r.Context(), ownerOf(r), r.PathValue("id"))
+	if errors.Is(err, attachments.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, response{Error: "attachment not found"})
+		return
+	}
+	if errors.Is(err, attachments.ErrNotReady) {
+		writeJSON(w, http.StatusConflict, response{Error: "attachment is not ready"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{Error: "could not load attachment artifacts"})
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Data: map[string]any{"artifacts": artifacts}})
+}
+
+func (s *Service) handleAttachmentRetry(w http.ResponseWriter, r *http.Request) {
+	item, err := s.attachments.Retry(r.Context(), ownerOf(r), r.PathValue("id"))
+	if errors.Is(err, attachments.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, response{Error: "attachment not found"})
+		return
+	}
+	if errors.Is(err, attachments.ErrInvalidState) {
+		writeJSON(w, http.StatusConflict, response{Error: "only failed attachments can be retried"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{Error: "could not retry attachment parsing"})
+		return
+	}
+	if item.Status == attachments.StatusFailed {
+		s.attachmentParseFailures.Add(1)
+	}
+	writeJSON(w, http.StatusOK, response{Data: item})
+}
+
+func (s *Service) handleAttachmentDelete(w http.ResponseWriter, r *http.Request) {
+	err := s.attachments.Delete(r.Context(), ownerOf(r), r.PathValue("id"))
+	if errors.Is(err, attachments.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, response{Error: "attachment not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, response{Error: "could not delete attachment"})
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Data: map[string]string{"status": "deleted"}})
 }
 
 func (s *Service) handleApproval(w http.ResponseWriter, r *http.Request) {

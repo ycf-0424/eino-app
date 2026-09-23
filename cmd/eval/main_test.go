@@ -67,7 +67,7 @@ func TestApplyDebugOverride(t *testing.T) {
 }
 
 func TestThresholdsFailWhenExpectedToolEvidenceIsMissing(t *testing.T) {
-	report := evaluation.Report{ToolSuccessTotal: 1, ToolSuccessRate: 0, ForbiddenToolCaseTotal: 1}
+	report := evaluation.Report{ToolSuccessTotal: 1, ToolSuccessRate: 0, ForbiddenToolCaseTotal: 1, Intent: evaluation.IntentReport{Total: 50, Accuracy: 1, SourceAccuracy: 1}}
 	err := checkEvaluationThresholds(report, evaluationThresholds{
 		minCorrect: 0, minCitation: 0, minRefusal: 0, minRouting: -1, minServerRoute: -1,
 		maxNoSkillFalsePositive: -1, minToolAttempt: -1, minToolSuccess: 1, minToolSource: -1,
@@ -78,7 +78,7 @@ func TestThresholdsFailWhenExpectedToolEvidenceIsMissing(t *testing.T) {
 }
 
 func TestThresholdsFailWhenForbiddenToolWasCalled(t *testing.T) {
-	report := evaluation.Report{ForbiddenToolCaseTotal: 3, ForbiddenToolViolations: 1}
+	report := evaluation.Report{ForbiddenToolCaseTotal: 3, ForbiddenToolViolations: 1, Intent: evaluation.IntentReport{Total: 50, Accuracy: 1, SourceAccuracy: 1}}
 	err := checkEvaluationThresholds(report, evaluationThresholds{
 		minCorrect: 0, minCitation: 0, minRefusal: 0, minRouting: -1, minServerRoute: -1,
 		maxNoSkillFalsePositive: -1, maxForbiddenToolViolations: 0,

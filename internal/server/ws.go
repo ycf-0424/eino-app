@@ -54,10 +54,11 @@ type wsRequest struct {
 	Type string `json:"type"`
 	// SessionID 仅为兼容旧客户端的报文结构而保留，取值一律忽略：
 	// 会话由连接建立时的 handshake（或服务端生成）确定，见 handleWebSocket。
-	SessionID string `json:"session_id"`
-	Query     string `json:"query"`
-	Skill     string `json:"skill"`
-	Model     string `json:"model"`
+	SessionID     string   `json:"session_id"`
+	Query         string   `json:"query"`
+	Skill         string   `json:"skill"`
+	Model         string   `json:"model"`
+	AttachmentIDs []string `json:"attachment_ids,omitempty"`
 }
 
 // directChunkWriter 在未开启执行事件时沿用旧协议，直接把正文写成 chunk 帧。
@@ -213,7 +214,7 @@ func (s *Service) runTurn(ctx context.Context, c *wsConn, queue *execution.Queue
 		// 未开启执行事件：沿用旧的直接 chunk 写入，行为与 P7 完全一致。
 		writer = directChunkWriter{conn: c}
 	}
-	result, err := s.ChatWithSink(ctx, sessionID, req.Query, s.requestedSkill(req.Skill), req.Model, writer, queueSink{queue})
+	result, err := s.ChatWithSink(ctx, sessionID, req.Query, s.requestedSkill(req.Skill), req.Model, writer, queueSink{queue}, req.AttachmentIDs)
 	// 同步点保证本轮已发出的事件全部写连接，避免 done 抢在终态之前。
 	queue.Sync()
 	if err != nil {

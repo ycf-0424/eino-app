@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # 运行镜像不包含 Go 编译器，减少镜像体积和攻击面。
 FROM alpine:3.22
 
-RUN apk add --no-cache ca-certificates tzdata \
+RUN apk add --no-cache ca-certificates tzdata clamav poppler-utils ffmpeg \
     && addgroup -S eino \
     && adduser -S -G eino eino
 
