@@ -3,8 +3,11 @@ package evaluation
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	routingrules "my-eino-app/internal/routing"
 )
 
 // fakeRouter 按题目文本返回预置的路由结果，并记录被调用的题目。
@@ -16,10 +19,26 @@ type fakeRouter struct {
 
 func (f *fakeRouter) Route(_ context.Context, question string) (Routing, error) {
 	f.calls = append(f.calls, question)
+	result := f.results[question]
 	if err, ok := f.errs[question]; ok {
-		return Routing{}, err
+		return result, err
 	}
-	return f.results[question], nil
+	return result, nil
+}
+
+func TestIsRefusalRecognizesKnowledgeAbsence(t *testing.T) {
+	for _, answer := range []string{
+		"知识库没有记录星河系统在火星的办公室地址。",
+		"现有资料未提及这个地址。",
+		"无法确认该信息。",
+	} {
+		if !isRefusal(answer) {
+			t.Errorf("isRefusal(%q) = false, want true", answer)
+		}
+	}
+	if isRefusal("星河系统在上海部署，使用 Go、Eino 和 Milvus。") {
+		t.Fatal("ordinary factual answers must not count as refusals")
+	}
 }
 
 // 没有声明期望的题目既不执行也不计分：跑一次 Agent 很贵，且「零期望」是另一种断言。
@@ -113,11 +132,128 @@ func TestRunRoutingCountsFailuresInDenominator(t *testing.T) {
 	}
 }
 
+func TestRunRoutingPreservesEvidenceReturnedWithError(t *testing.T) {
+	router := &fakeRouter{
+		results: map[string]Routing{
+			"partial": {
+				Preloaded:      []string{"documents"},
+				DecisionSource: "server_rule",
+				ToolStarted:    []string{"local_file_read"},
+				ToolFailed:     []string{"local_file_read"},
+			},
+		},
+		errs: map[string]error{"partial": errors.New("model failed after tool call")},
+	}
+	cases := []Case{{
+		Question: "partial", ExpectSkills: []string{"documents"}, RouteMode: "server",
+		ExpectTools: []string{"local_file_read"}, ExpectToolSuccess: []string{"local_file_read"},
+	}}
+	results, accuracy := RunRouting(context.Background(), router, cases)
+	if results[0].Error == "" || !results[0].Matched || accuracy != 1 {
+		t.Fatalf("partial skill evidence should remain measurable after a later model error: %+v accuracy=%v", results[0], accuracy)
+	}
+	if !results[0].ToolAttemptMatched || results[0].ToolSuccessMatched || len(results[0].FailedTools) != 1 {
+		t.Fatalf("tool attempt/failure evidence should survive the model error: %+v", results[0])
+	}
+}
+
 // 没有可计分的题时准确率为 0，且不产生除零。
 func TestRunRoutingWithoutScorableCases(t *testing.T) {
 	results, accuracy := RunRouting(context.Background(), &fakeRouter{}, []Case{{Question: "q"}})
 	if len(results) != 0 || accuracy != 0 {
 		t.Fatalf("无可计分题时 results=%v accuracy=%v", results, accuracy)
+	}
+}
+
+func TestRunRoutingSeparatesSkillToolAndSourceEvidence(t *testing.T) {
+	cases := []Case{
+		{Question: "server skill", ExpectSkills: []string{"documents"}, RouteMode: "server"},
+		{Question: "failed tool", ExpectNoSkills: true, ExpectTools: []string{"local_file_read"}, ExpectToolSuccess: []string{"local_file_read"}},
+		{Question: "knowledge tool", ExpectNoSkills: true, ExpectTools: []string{"knowledge_search"}, ExpectToolSuccess: []string{"knowledge_search"}, ExpectToolSources: map[string]string{"knowledge_search": "server_preflight"}, RouteMode: "server"},
+		{Question: "false positive", ExpectNoSkills: true, ForbidTools: []string{"local_file_read"}},
+	}
+	router := &fakeRouter{results: map[string]Routing{
+		"server skill":   {Preloaded: []string{"documents"}, DecisionSource: "server_rule"},
+		"failed tool":    {ToolStarted: []string{"local_file_read"}, ToolFailed: []string{"local_file_read"}},
+		"knowledge tool": {ToolStarted: []string{"knowledge_search"}, ToolCompleted: []string{"knowledge_search"}, ToolSources: map[string][]string{"knowledge_search": {"server_preflight"}}, DecisionSource: "server_rule"},
+		"false positive": {Preloaded: []string{"pdf"}, ToolStarted: []string{"local_file_read"}},
+	}}
+	results, _ := RunRouting(context.Background(), router, cases)
+	var report Report
+	SummarizeRouting(&report, cases, results)
+
+	if report.RoutingTotal != 4 || report.RoutingAccuracy != 0.75 {
+		t.Fatalf("skill/no-skill denominator mismatch: %+v", report)
+	}
+	if report.SkillEvidenceTotal != 1 || report.SkillEvidenceMatched != 1 || report.SkillEvidenceRate != 1 {
+		t.Fatalf("skill evidence mismatch: %+v", report)
+	}
+	if report.NoSkillTotal != 3 || report.NoSkillFalsePositives != 1 || report.NoSkillFalsePositiveRate != 1.0/3.0 {
+		t.Fatalf("no-skill false positives mismatch: %+v", report)
+	}
+	if report.ServerRouteTotal != 1 || report.ServerRouteMatched != 1 || report.ServerRouteRecall != 1 {
+		t.Fatalf("server route recall mismatch: %+v", report)
+	}
+	if report.ToolAttemptTotal != 2 || report.ToolAttemptMatched != 2 || report.ToolAttemptRate != 1 {
+		t.Fatalf("tool attempt metric must use tool_started: %+v", report)
+	}
+	if report.ToolSuccessTotal != 2 || report.ToolSuccessMatched != 1 || report.ToolSuccessRate != 0.5 {
+		t.Fatalf("failed tool must not count as success: %+v", report)
+	}
+	if report.ToolSourceTotal != 1 || report.ToolSourceMatched != 1 || report.ToolSourceRate != 1 {
+		t.Fatalf("tool source mismatch: %+v", report)
+	}
+	if report.ForbiddenToolCaseTotal != 1 || report.ForbiddenToolViolations != 1 {
+		t.Fatalf("forbidden tool call mismatch: %+v", report)
+	}
+	if results[0].ToolAttemptMatched != true || results[0].ToolAttemptAsserted {
+		t.Fatalf("preloaded skill must not be treated as a tool attempt: %+v", results[0])
+	}
+	if results[1].ToolSuccessMatched || len(results[1].MissingToolSuccess) != 1 {
+		t.Fatalf("tool_failed must not count as successful completion: %+v", results[1])
+	}
+	if !results[2].ToolSourceMatched || len(results[2].MissingToolSources) != 0 {
+		t.Fatalf("server preflight source should be verified: %+v", results[2])
+	}
+}
+
+func TestRunRoutingChecksRouteModeSeparately(t *testing.T) {
+	cases := []Case{
+		{Question: "server", ExpectSkills: []string{"documents"}, RouteMode: "server"},
+		{Question: "model", ExpectSkills: []string{"pdf"}, RouteMode: "model"},
+	}
+	router := &fakeRouter{results: map[string]Routing{
+		"server": {Preloaded: []string{"documents"}, DecisionSource: "server_rule"},
+		"model":  {Loaded: []string{"pdf"}, DecisionSource: "model_autonomous"},
+	}}
+	results, accuracy := RunRouting(context.Background(), router, cases)
+	var report Report
+	SummarizeRouting(&report, cases, results)
+	if accuracy != 1 || report.RouteModeAccuracy != 1 || report.AutonomousRouteAccuracy != 1 || report.AutonomousRouteTotal != 1 {
+		t.Fatalf("expected routes and source modes should match: results=%+v report=%+v", results, report)
+	}
+}
+
+func TestEvalCasesRouteModesAgreeWithSharedDeterministicRouter(t *testing.T) {
+	cases, err := LoadCases(filepath.Join("..", "integration", "eval_cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultsByQuestion := make(map[string]Routing, len(cases))
+	for _, item := range cases {
+		decision := routingrules.Decide(item.Question)
+		resultsByQuestion[item.Question] = Routing{DecisionSource: decision.Source, Preloaded: decision.PreloadSkills}
+	}
+	routes, _ := RunRouting(context.Background(), &fakeRouter{results: resultsByQuestion}, cases)
+	for _, route := range routes {
+		if route.RouteModeAsserted && !route.RouteModeMatched {
+			t.Errorf("case %d declares route_mode=%q but shared routing chose %q (%s): %s", route.CaseIndex, route.RouteMode, route.DecisionSource, route.DecisionReason, route.Question)
+		}
+	}
+	var report Report
+	SummarizeRouting(&report, cases, routes)
+	if report.RouteModeTotal == 0 || report.RouteModeAccuracy != 1 {
+		t.Fatalf("all route mode cases should agree with the shared router: %+v", report)
 	}
 }
 

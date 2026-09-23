@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"my-eino-app/internal/execution"
 	"my-eino-app/internal/health"
 	"my-eino-app/internal/output"
+	routingrules "my-eino-app/internal/routing"
 	appserver "my-eino-app/internal/server"
 )
 
@@ -34,11 +36,21 @@ func main() {
 	minCitation := flag.Float64("min-citation", 1, "最低引用率，未达到时返回非零退出码")
 	minRefusal := flag.Float64("min-refusal", 0, "最低拒答率；只有评测集声明 should_refuse 时才建议设置为正数")
 	minRouting := flag.Float64("min-routing", -1, "最低路由准确率，未达到时返回非零退出码；-1 表示不检查")
-	minEvidence := flag.Float64("min-tool-evidence", -1, "最低工具/预加载证据率；-1 表示不检查")
+	minServerRoute := flag.Float64("min-server-route", -1, "最低关键服务端技能路由召回率；-1 表示不检查")
+	maxNoSkillFalsePositive := flag.Float64("max-no-skill-false-positive", -1, "无技能反例允许的最高误预加载率；-1 表示不检查")
+	minToolAttempt := flag.Float64("min-tool-attempt", -1, "最低期望工具调用开始证据率；-1 表示不检查")
+	minToolSuccess := flag.Float64("min-tool-success", -1, "最低期望工具成功终态证据率；-1 表示不检查")
+	minToolSource := flag.Float64("min-tool-source", -1, "最低期望工具来源字段匹配率；-1 表示不检查")
+	maxForbiddenToolViolations := flag.Int("max-forbidden-tool-violations", -1, "评测集明确禁止的工具调用允许的最多违规用例数；-1 表示不检查")
+	debugOverride := flag.String("debug", "", "覆盖 config.yaml 的 debug（true/false）；留空时使用配置文件")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	cfg, err := config.Load()
+	if err != nil {
+		fail(err)
+	}
+	cfg.Debug, err = applyDebugOverride(cfg.Debug, *debugOverride)
 	if err != nil {
 		fail(err)
 	}
@@ -70,39 +82,27 @@ func main() {
 	report := evaluation.Run(ctx, runner, cases, func(query string) chain.Input {
 		return chain.Input{Query: query, TopK: cfg.RAG.TopK, ScoreThreshold: effectiveThreshold, MaxContextChars: cfg.RAG.MaxContextChars}
 	})
-	// 路由维度只在评测集声明了 expect_skills 时执行：它要额外装配一次 Agent，
-	// 结果从同一个 production runner 的事件缓存读取，避免答案指标和路由指标
-	// 走两套装配逻辑或对同一题重复调用模型。
-	if hasRoutingCases(cases) {
-		routing, accuracy := evaluation.RunRouting(ctx, runner, cases)
-		report.Routing = routing
-		report.RoutingTotal = len(routing)
-		report.RoutingAccuracy = accuracy
-		for _, item := range routing {
-			if item.ToolEvidence {
-				report.ToolEvidenceTotal++
-			}
-		}
-		if len(routing) > 0 {
-			report.ToolEvidenceRate = float64(report.ToolEvidenceTotal) / float64(len(routing))
-		}
-	}
+	// 两个视角读取同一次请求的事件缓存，不重复调用模型；技能与工具分别计数。
+	routes, _ := evaluation.RunRouting(ctx, runner, cases)
+	evaluation.SummarizeRouting(&report, cases, routes)
+	debugSetting := cfg.Debug
+	report.Model = cfg.OpenAI.Model
+	report.Debug = &debugSetting
+	report.ScoreThreshold = effectiveThreshold
 	data, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		fail(err)
 	}
 	fmt.Println(string(data))
 	// 评测命令既输出明细，也可直接作为本地或 CI 回归门禁。
-	if report.CorrectRate < *minCorrect || report.CitationRate < *minCitation || report.RefusalRate < *minRefusal {
-		fail(fmt.Errorf("evaluation threshold not met: correct %.2f/%.2f, citation %.2f/%.2f, refusal %.2f/%.2f", report.CorrectRate, *minCorrect, report.CitationRate, *minCitation, report.RefusalRate, *minRefusal))
-	}
-	// 路由准确率默认只输出不门禁：它取决于模型当轮的判断，波动比答案指标大，
-	// 需要卡门禁时用 -min-routing 显式开启。
-	if *minRouting >= 0 && report.RoutingAccuracy < *minRouting {
-		fail(fmt.Errorf("routing accuracy %.2f below %.2f (scored %d cases)", report.RoutingAccuracy, *minRouting, report.RoutingTotal))
-	}
-	if *minEvidence >= 0 && report.ToolEvidenceRate < *minEvidence {
-		fail(fmt.Errorf("tool evidence rate %.2f below %.2f (scored %d cases)", report.ToolEvidenceRate, *minEvidence, report.RoutingTotal))
+	if err := checkEvaluationThresholds(report, evaluationThresholds{
+		minCorrect: *minCorrect, minCitation: *minCitation, minRefusal: *minRefusal,
+		minRouting: *minRouting, minServerRoute: *minServerRoute,
+		maxNoSkillFalsePositive:    *maxNoSkillFalsePositive,
+		maxForbiddenToolViolations: *maxForbiddenToolViolations,
+		minToolAttempt:             *minToolAttempt, minToolSuccess: *minToolSuccess, minToolSource: *minToolSource,
+	}); err != nil {
+		fail(err)
 	}
 }
 
@@ -134,14 +134,49 @@ func probeVectorStore(ctx context.Context, cfg config.RAG) error {
 	return nil
 }
 
-// hasRoutingCases 报告评测集里是否有声明了 expect_skills 的题目。
-func hasRoutingCases(cases []evaluation.Case) bool {
-	for _, item := range cases {
-		if len(item.ExpectSkills) > 0 {
-			return true
-		}
+type evaluationThresholds struct {
+	minCorrect, minCitation, minRefusal, minRouting, minServerRoute        float64
+	maxNoSkillFalsePositive, minToolAttempt, minToolSuccess, minToolSource float64
+	maxForbiddenToolViolations                                             int
+}
+
+func checkEvaluationThresholds(report evaluation.Report, limits evaluationThresholds) error {
+	if report.CorrectRate < limits.minCorrect || report.CitationRate < limits.minCitation || report.RefusalRate < limits.minRefusal {
+		return fmt.Errorf("evaluation threshold not met: correct %.2f/%.2f, citation %.2f/%.2f, refusal %.2f/%.2f", report.CorrectRate, limits.minCorrect, report.CitationRate, limits.minCitation, report.RefusalRate, limits.minRefusal)
 	}
-	return false
+	if limits.minRouting >= 0 && report.RoutingAccuracy < limits.minRouting {
+		return fmt.Errorf("routing accuracy %.2f below %.2f (scored %d cases)", report.RoutingAccuracy, limits.minRouting, report.RoutingTotal)
+	}
+	if limits.minServerRoute >= 0 && report.ServerRouteRecall < limits.minServerRoute {
+		return fmt.Errorf("server route recall %.2f below %.2f (scored %d cases)", report.ServerRouteRecall, limits.minServerRoute, report.ServerRouteTotal)
+	}
+	if limits.maxNoSkillFalsePositive >= 0 && (report.NoSkillTotal == 0 || report.NoSkillFalsePositiveRate > limits.maxNoSkillFalsePositive) {
+		return fmt.Errorf("no-skill false-positive rate %.2f above %.2f (scored %d cases)", report.NoSkillFalsePositiveRate, limits.maxNoSkillFalsePositive, report.NoSkillTotal)
+	}
+	if limits.maxForbiddenToolViolations >= 0 && (report.ForbiddenToolCaseTotal == 0 || report.ForbiddenToolViolations > limits.maxForbiddenToolViolations) {
+		return fmt.Errorf("forbidden-tool violations %d exceed %d (scored %d cases)", report.ForbiddenToolViolations, limits.maxForbiddenToolViolations, report.ForbiddenToolCaseTotal)
+	}
+	if limits.minToolAttempt >= 0 && (report.ToolAttemptTotal == 0 || report.ToolAttemptRate < limits.minToolAttempt) {
+		return fmt.Errorf("tool attempt rate %.2f below %.2f (scored %d cases)", report.ToolAttemptRate, limits.minToolAttempt, report.ToolAttemptTotal)
+	}
+	if limits.minToolSuccess >= 0 && (report.ToolSuccessTotal == 0 || report.ToolSuccessRate < limits.minToolSuccess) {
+		return fmt.Errorf("tool success rate %.2f below %.2f (scored %d cases)", report.ToolSuccessRate, limits.minToolSuccess, report.ToolSuccessTotal)
+	}
+	if limits.minToolSource >= 0 && (report.ToolSourceTotal == 0 || report.ToolSourceRate < limits.minToolSource) {
+		return fmt.Errorf("tool source rate %.2f below %.2f (scored %d sources)", report.ToolSourceRate, limits.minToolSource, report.ToolSourceTotal)
+	}
+	return nil
+}
+
+func applyDebugOverride(configDebug bool, override string) (bool, error) {
+	if strings.TrimSpace(override) == "" {
+		return configDebug, nil
+	}
+	value, err := strconv.ParseBool(strings.TrimSpace(override))
+	if err != nil {
+		return configDebug, fmt.Errorf("invalid -debug value %q: expected true or false", override)
+	}
+	return value, nil
 }
 
 // productionRouter drives the same Service.ChatWithSink path used by HTTP.
@@ -220,8 +255,12 @@ func (r *productionRouter) run(ctx context.Context, question string) (output.Ans
 	var answerText bytes.Buffer
 	requestCtx := auth.WithOwner(ctx, r.owner)
 	_, err := r.service.ChatWithSink(requestCtx, uuid.NewString(), question, "", &answerText, recorder)
-	answer := output.Answer{Answer: strings.TrimSpace(answerText.String()), Sources: sourcesFromEvents(recorder.Events())}
-	routing := routingFromEvents(recorder.Events())
+	events := recorder.Events()
+	answer := output.Answer{Answer: strings.TrimSpace(answerText.String()), Sources: sourcesFromEvents(events)}
+	routing := routingFromEvents(events)
+	decision := routingrules.Decide(question)
+	routing.DecisionSource = decision.Source
+	routing.DecisionReason = decision.Reason
 	routing.Answer = clip(answer.Answer, 500)
 	r.mu.Lock()
 	r.answers[question] = answer
@@ -250,6 +289,7 @@ func stringsOfMany(events []execution.Event, key string) []string {
 // 断言只认 Payload：Summary 是给人看的，可能被裁剪。
 func routingFromEvents(events []execution.Event) evaluation.Routing {
 	var routing evaluation.Routing
+	routing.ToolSources = map[string][]string{}
 	for _, ev := range events {
 		switch ev.Type {
 		case execution.SkillLoaded:
@@ -257,15 +297,45 @@ func routingFromEvents(events []execution.Event) evaluation.Routing {
 			routing.Requested = append(routing.Requested, stringsOf(ev.Payload["requested_names"])...)
 		case execution.SkillPreloaded:
 			routing.Preloaded = append(routing.Preloaded, stringsOf(ev.Payload["skill_names"])...)
-		}
-		if ev.Type == execution.ToolStarted || ev.Type == execution.ToolCompleted || ev.Type == execution.ToolFailed || ev.Type == execution.SkillPreloaded {
-			routing.ToolEvidence = true
+		case execution.ToolStarted:
+			appendToolEvent(&routing, ev, "started")
+		case execution.ToolCompleted, execution.FileReadDone:
+			appendToolEvent(&routing, ev, "completed")
+		case execution.ToolFailed:
+			appendToolEvent(&routing, ev, "failed")
 		}
 	}
 	routing.Loaded = uniqueSorted(routing.Loaded)
 	routing.Requested = uniqueSorted(routing.Requested)
 	routing.Preloaded = uniqueSorted(routing.Preloaded)
+	routing.ToolStarted = uniqueSorted(routing.ToolStarted)
+	routing.ToolCompleted = uniqueSorted(routing.ToolCompleted)
+	routing.ToolFailed = uniqueSorted(routing.ToolFailed)
+	for name, sources := range routing.ToolSources {
+		routing.ToolSources[name] = uniqueSorted(sources)
+	}
 	return routing
+}
+
+func appendToolEvent(routing *evaluation.Routing, event execution.Event, outcome string) {
+	name, _ := event.Payload["tool_name"].(string)
+	name = strings.TrimSpace(name)
+	// load_skills is represented by the dedicated skill_loaded event. It must
+	// never inflate real tool-execution metrics.
+	if name == "" || name == "load_skills" {
+		return
+	}
+	switch outcome {
+	case "started":
+		routing.ToolStarted = append(routing.ToolStarted, name)
+	case "completed":
+		routing.ToolCompleted = append(routing.ToolCompleted, name)
+	case "failed":
+		routing.ToolFailed = append(routing.ToolFailed, name)
+	}
+	if source, ok := event.Payload["source"].(string); ok && strings.TrimSpace(source) != "" {
+		routing.ToolSources[name] = append(routing.ToolSources[name], strings.TrimSpace(source))
+	}
 }
 
 // stringsOf 兼容两种 payload 形态：进程内事件里是 []string，JSON 往返后是 []any。

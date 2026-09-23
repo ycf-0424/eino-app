@@ -71,8 +71,8 @@ index: ## 索引 docs/knowledge 文档，需要 Ollama 和 Milvus 已运行
 retrieve: ## 使用示例问题查看原始检索分数
 	go run ./cmd/retrieve "星河系统使用什么技术栈？"
 
-eval: ## 执行真实 Ollama + Milvus 固定评测
-	go run ./cmd/eval
+eval: ## 执行生产态本地 Ollama + Milvus 评测并检查路由/工具门槛
+	go run ./cmd/eval -debug=false -min-correct=0.8 -min-citation=1 -min-refusal=1 -min-server-route=0.95 -max-no-skill-false-positive=0 -max-forbidden-tool-violations=0 -min-tool-attempt=1 -min-tool-success=1 -min-tool-source=1
 
 # 备份与恢复演练（步骤 5.3）。用 PowerShell 而非 make 内联命令：
 # dump 与卷打包都涉及字节流，make 走 cmd.exe 更容易被引号与编码坑到。

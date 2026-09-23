@@ -18,6 +18,21 @@ func TestFormatRAG(t *testing.T) {
 	}
 }
 
+func TestSystemInstructionsRequireRealFileReadEvidence(t *testing.T) {
+	for _, rule := range []string{
+		"必须实际调用 local_file_read",
+		"工具会自行强制执行管理员配置的授权目录和文件类型限制",
+		"本轮 local_file_read 成功返回的正文",
+		"不得仅凭技能说明、目录摘要或模型常识声称已读取",
+		"不等于要保存文件或笔记",
+		"闲聊、一般解释、讨论技能适用场景或列举助手能做什么时，不得试探性调用工具",
+	} {
+		if !contains(SystemInstruction+WriterAgentInstruction, rule) {
+			t.Errorf("system and writer instructions should include evidence rule %q", rule)
+		}
+	}
+}
+
 func contains(text, part string) bool {
 	for i := 0; i+len(part) <= len(text); i++ {
 		if text[i:i+len(part)] == part {
