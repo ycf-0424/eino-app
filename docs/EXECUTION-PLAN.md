@@ -40,7 +40,7 @@
 | **5** | 上线收口、生产部署与内部灰度 | 10（5.1–5.10） | 代码 + 运维 + 业务验收 | **是** |
 | **6** | 可选业务数据连接、多模态预处理与五类意图路由 | 10（6.1–6.10） | 上线后的产品能力增量 | **否；按实际需求选择实施** |
 
-**上线主线合计 38 个基础步骤**。其中 5.5a、5.6–5.10 拆为 15 个可执行子步骤；阶段 6 另有 10 个产品化步骤，不改变阶段 5 的上线判定。提交数量以各阶段子步骤表和实际历史为准。步骤编号连续、无跳号，从头执行到尾即可。
+**上线主线合计 38 个基础步骤**。其中 5.5a、5.6–5.10 拆为 18 个可执行子步骤；阶段 6 另有 10 个产品化步骤，不改变阶段 5 的上线判定。提交数量以各阶段子步骤表和实际历史为准。步骤编号连续、无跳号，从头执行到尾即可。
 
 **顺序的三条依据**
 
@@ -101,7 +101,7 @@
 | D14 | 本地账号与飞书账号是否绑定合并 | **不绑定，两套身份完全独立** | 用户选定。`owner` 加命名空间前缀后天然隔离，零额外代码；绑定需要邮箱 / 手机比对与验证流程，复杂度与当前需求不匹配，另立项 |
 | D15 | 管理员如何创建本地账号 | **命令行工具 `cmd/user-admin`**，不做管理端 API | ① 项目已有 8 个 `cmd/*` 工具，风格一致；② **零 HTTP 暴露面**——建号能力只属于「能登上服务器的人」；③ 天然解决「第一个管理员从哪来」的引导问题（管理端 API 方案反而需要额外的 bootstrap 机制） |
 | D16 | 第一阶段承诺哪些文件能力 | **报告生成 + 文本/DOCX 读取 + 知识库检索 + 审批后写笔记** | `pdf`、`spreadsheets`、`presentations` 当前没有真实文件工具，不能把技能说明当成已完成能力 |
-| D17 | 技能路由策略 | **混合路由；知识库请求由服务端先强制 `knowledge_search`，报告/文档走已接入技能** | 当前模型自主 `load_skills` 路由准确率约 0.125，关键场景不能完全交给模型 |
+| D17 | 技能路由策略 | **混合路由；知识库请求由服务端先强制 `knowledge_search`，报告/文档走已接入技能，其他任务保留模型按需选技能** | 模型自主路由只作补充，关键场景由服务端确定；保留渐进加载，不增加全局启用/禁用开关。技能加载与工具执行分开验收；实际工具注册和权限才是执行能力的依据 |
 | D18 | 第一阶段上线形态 | **内部 3–10 人灰度，单副本；通过 HTTPS 反向代理从内网或 VPN 访问** | 先验证真实需求、路由、备份和运维；多副本另立项 |
 | D19 | 生产网络暴露面 | **只暴露反向代理入口；MySQL、Milvus、Ollama、Attu 走内部网络** | 当前 Compose 发布了多个管理和数据库端口，开发配置不能直接用于生产 |
 | D20 | 数据保护目标 | **RPO ≤ 6 小时，RTO ≤ 2 小时；备份包含 MySQL、Milvus 和 `app-data`，并放在不同存储位置** | 只备 MySQL 或只看脚本退出码不足以证明可恢复 |
@@ -1299,7 +1299,7 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 **验收**：完成 5.5a 后关闭临时 loopback MySQL 映射；从用户网络无法连接 MySQL、Milvus、Attu；只有 HTTPS 反向代理入口可访问应用；WebSocket 可建立；代理层登录限流按真实客户端 IP 生效；应用用户名桶仍生效；代理读超时不短于应用超时。
 
-### 步骤 5.7　生产能力边界与确定性路由　✅ 已实现并通过真实评测
+### 步骤 5.7　生产能力边界与确定性路由　✅ 当前基线已实现；调度改进与复评见 5.7d–f
 
 第一阶段只承诺以下已接入能力：报告文本生成、授权路径下的文本/DOCX 读取、知识库检索和审批后的笔记写入。当前真正注册的工具只有 `current_time`、`write_note`、`load_skills`、`local_file_read`、`knowledge_search`。
 
@@ -1326,6 +1326,81 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 **验收**：`report_writer` 和 `documents` 的 4 类正例均产生预加载事件；空壳技能不产生预加载事件；非 debug 响应和 `/skills` 不暴露技能名；`go test -p 1 ./internal/server/...` 全绿。
 
+### 步骤 5.7d　收紧技能路由规则并补齐反例
+
+**为什么做**：当前 `internal/routing/routing.go` 用关键词判断是否预检索、预加载或返回能力限制。它已覆盖关键正例，但宽泛关键词容易把“提到某个文件类型”误判成实际文件操作；其余任务仍依赖模型主动调用 `load_skills`。技能目录中的 `scenarios` / `not_for` 是给模型看的自然语言，不应被当成另一套机器路由规则。
+
+**动作**
+
+1. 保留 `internal/routing` 为服务端与评测共用的确定性路由入口；不新增分类模型调用，也不复制一份关键词规则到 `service.go` 或评测程序。
+2. 给路由结果补充稳定的来源/原因标识，供单测和评测报告诊断；例如 `knowledge_preflight`、`connected_skill`、`unsupported_capability`、`no_match`。标识是内部诊断信息，不展示给普通用户。
+3. 固定优先级：私有项目事实走服务端知识预检索；已接入且动作/对象明确的报告与文档任务预加载对应技能；真正要求读写未接入文件能力时返回限制说明且不预加载空壳技能；未命中或只是讨论、推荐、拟方案时不强行加载技能，继续交给模型正常回答或澄清。
+4. 路由要同时检查“动作 + 对象”，覆盖否定、能力询问、文本大纲与文件产出区别，以及复合任务。复合任务中的已支持部分仍可使用对应技能；不得因用户只提到 PDF/Excel/PPT 就宣称正在读写文件。
+5. 保留两阶段加载：目录摘要可用于模型选择，完整正文只在服务端确定性预加载或模型调用 `load_skills` 时加载。`required_tools` 缺失只代表不能执行对应工具能力，不代表该技能无用或应删除；用户要求设计方案时仍可提供指导。
+
+**受影响文件**：`internal/routing/routing.go`、`internal/routing/routing_test.go`、`internal/server/service.go` 及路由相关服务端测试。除非测试证明现有事件无法表达，不新增执行事件类型。
+
+**提交边界**：`fix(routing): tighten deterministic skill dispatch`。
+
+**验收**
+
+- [x] 每类关键正例、普通问答、易混淆反例、否定/能力询问、复合请求和未接入能力都有路由单测；同一输入重复运行结果一致。
+- [x] 私有知识请求仍由服务端预检索；支持的报告/文档动作命中正确技能；普通闲聊不触发技能预加载；未接入文件操作不预加载空壳技能。
+- [x] 技能目录正文仍按需加载；`debug=false` 不泄露技能名；缺少工具时回答不承诺已执行。
+- [x] `go test -p 1 ./internal/routing ./internal/server/... ./internal/skill/...` 通过。
+
+**回滚**：提交后使用 `git revert <本步骤提交>`；不使用 `reset`、`checkout` 或清理命令覆盖共享工作区。
+
+### 步骤 5.7e　把技能证据和工具执行证据拆开
+
+**为什么做**：当前 `cmd/eval/main.go` 的 `routingFromEvents` 把 `skill_preloaded` 也算作 `ToolEvidence`。因此一轮只把技能正文放进提示词、实际没有调用任何工具，也可能被计为“有工具执行证据”；现有 `tool_evidence_rate=1` 不能单独证明工具真的执行过。技能使用和工具执行是两个不同判据，必须分开报告。
+
+**动作**
+
+1. 在评测结果中分别统计：`skill_preloaded` / `skill_loaded`（技能正文证据）、`tool_started`（工具尝试）、`tool_completed`（工具成功）、`tool_failed`（工具失败）。**技能事件不得再增加工具执行率的分子**；回答里自称“调用过工具”也不算证据。
+2. 扩展评测用例断言，使其可声明 `expect_skills`、`expect_no_skills`、`expect_tools`（必须出现 `tool_started`）和 `expect_tool_success`（必须出现 `tool_completed`）；需要时声明禁止调用的工具。没有任何这些断言的题目不进入路由/工具指标分母。
+3. `routing_accuracy` 只描述期望技能是否加载，额外加载单独列出；另报关键服务端路由召回率、普通/反例误预加载率、工具尝试率和工具成功率。工具指标只以明确要求工具的用例为分母，不拿纯文本报告等不需要工具的任务稀释或虚增结果。
+4. 对知识检索用例，必须核对 `tool_name=knowledge_search` 的 `tool_started` 及成功时的 `tool_completed`，并校验来源字段；无命中是成功完成检索，不等于工具失败。对失败用例，必须能区分已尝试但失败与成功执行。
+5. 将“没发生工具成功事件却声称已完成”的情形判失败；技能加载成功不能替代文件读取、写入或知识检索的工具证据。
+
+**受影响文件**：`internal/evaluation/evaluation.go`、`internal/evaluation/routing_test.go`、`cmd/eval/main.go`、`cmd/eval` 相关测试以及 `internal/integration/eval_cases.json`。
+
+**提交边界**：`fix(eval): separate skill and tool execution evidence`。
+
+**验收**
+
+- [x] 单测证明只有 `skill_preloaded` / `skill_loaded` 时工具尝试率和成功率都是 0。
+- [x] 单测证明 `tool_started` 只算尝试，只有 `tool_completed` 才算成功；`tool_failed` 不会误算成功。
+- [x] 缺少工具、普通问答、应预加载但不需工具的技能任务，都使用各自正确的分母。
+- [x] `make eval` 输出技能路由、工具尝试、工具成功和答案质量指标；工具证据或禁止工具断言失败时命令返回非零。
+- [x] `go test -p 1 ./internal/evaluation/... ./cmd/eval/...` 通过。
+
+**回滚**：提交后使用 `git revert <本步骤提交>`。
+
+### 步骤 5.7f　扩充路由评测并完成前后对照
+
+**评测集**：把 `internal/integration/eval_cases.json` 扩到至少 30 道技能/工具路由用例，至少包括：12 道关键正例（知识、报告、文档）、8 道普通问答或易混反例、5 道组合技能任务、5 道未接入能力边界题。题目可兼属多个分组，但每题必须明确技能/工具断言；计入答案正确率的题必须有非空 `expected` 或 `should_refuse`，不可再用空字符串制造恒真结果。模型自主选择非关键技能的用例单独标注，作为诊断指标，不与服务端关键路由准确率混成一个分数。
+
+**实操顺序**
+
+1. 开始实现前，在干净提交或独立工作区保存当前评测基线；共享工作区有未提交改动时不得把它们覆盖、清理或混入基线。记录代码版本、模型 ID、`debug` 状态、RAG 阈值/知识库快照、评测集版本和完整命令。当前 `cmd/eval` 通过 `config.Load()` 读取 cwd/上级的 `config.yaml`，没有 `-config` 参数；需要 `debug=false` 时在独立工作区准备对应配置，不要覆盖共享工作区中的配置，也不要传入未实现的参数。
+2. 修改后用同一模型、同一配置、同一知识库和同一题集复跑；至少执行一次 `debug=false` 的生产态评测。若模型输出有随机波动，再重复一轮并同时保存两次原始 JSON。
+3. 保留历史 `RUNBOOK.md` 记录不改写；将这次结果追加为新的运行期实测，附上逐题失败项和失败归因，而不只记录一个汇总分数。
+
+**最终门槛**
+
+- [x] 服务端关键路由召回率 ≥95%；普通/反例不应预加载技能的用例中误预加载为 0；未接入能力题 100% 不进入伪执行流程。
+- [x] 声明需要调用工具的成功用例 100% 有对应 `tool_started` 与 `tool_completed` 证据；失败用例明确显示失败，不能报告完成。无需工具的用例不纳入工具成功率分母。
+- [x] 必须引用的私有知识题引用率 100%；明确应拒答/说明无依据的题目拒答率 100%；答案断言正确率达到现有门槛 ≥80%。
+- [x] 自主模型路由准确率单独展示。它不替代关键路由门槛；本轮为 1/3，说明非关键技能不能依赖模型自主加载。
+- [x] 最后执行 `go test -p 1 ./...`、`go build -p 1 ./...`、`go vet -p 1 ./...` 和真实 `make eval`；评测依赖的 Ollama/Milvus 不可用时明确标为“未评测”，不得以单测通过代替真实评测。
+
+**可比性说明**：本轮修改前没有保存与当前相同 40 题、`qwen-fast`、`debug=false`、阈值 0.5 和同一知识库快照的完整基线；此前 20 题历史结果设置不一致，因此不能声称严格的前后对照。当前实现和门槛已完成实测，但 5.7f 的严格前后比较仍待补齐。
+
+**提交边界**：`test(eval): add skill dispatch regression set`；实测结果追加到 `docs/RUNBOOK.md` 的下一条运行记录（当前最后一条为 14.26），不另建方案或评测清单。
+
+**回滚**：提交后使用 `git revert <本步骤提交>`；评测结果保留为历史证据，并标注对应代码版本。
+
 ### 步骤 5.8　发布、回滚和并发保护　✅ 已实现并完成标签切换演练
 
 应用发布使用不可变版本标签，并至少保留上一版本镜像或二进制；不能依赖固定的 `my-eino-app:local` 配合 `up -d --build` 回滚。路由规则使用功能开关，允许关闭单个问题能力。
@@ -1344,9 +1419,9 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 
 **验收**：定时备份成功；恢复检查通过；备份失败、健康检查失败、模型不可用、技能工具连续失败和磁盘不足都有可见告警；日志不会无限增长。
 
-### 步骤 5.10　内部灰度和上线门槛　✅ 门槛出口完成；3–7 天目标环境灰度待执行
+### 步骤 5.10　内部灰度和上线门槛　🟡 门槛出口与本机实测已通过；目标环境灰度仍待执行
 
-先开放给 3–10 名内部用户，灰度 3–7 天，再决定是否扩大范围。扩大范围前满足：认证和跨用户隔离 100% 通过，关键技能必需场景召回率不低于 95%，工具调用有执行证据的比例不低于 95%，关键流程无凭空声称已完成，非超时 5xx 小于 1%，备份成功率 100%，最近一次恢复检查不超过 7 天，严重安全问题为 0。
+先开放给 3–10 名内部用户，灰度 3–7 天，再决定是否扩大范围。扩大范围前满足：认证和跨用户隔离 100% 通过，关键技能必需场景召回率不低于 95%，需要工具的请求有真实 `tool_started` / `tool_completed` 证据（不能把技能预加载算成工具执行），关键流程无凭空声称已完成，非超时 5xx 小于 1%，备份成功率 100%，最近一次恢复检查不超过 7 天，严重安全问题为 0。
 
 启用多用户前必须运行 `go run ./cmd/session-migrate -claim-owner=<owner>` 处理 `local-owner` 下的历史会话和记忆。生产运行环境必须明确为 Windows/Docker Desktop 或 Linux/Docker，并按同一环境验证备份、定时任务和卷路径。`cmd/user-admin` 当前没有删除账号操作，离职账号按禁用处理；管理员口令必须在上线前改掉。
 
@@ -1364,18 +1439,21 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 | 5.7a 确定性预检索 | 在 `internal/server/service.go` 的请求装配路径增加服务端知识意图判定和 `knowledge_search` 预检索；文档命中时只注入文档资料；文档无命中时改查项目范围长期记忆；两者都无命中时放行模型并注入通用回答边界；复用标准 `tool_started`/`tool_completed` 事件，不通过 debug 技能目录，不向用户暴露技能名 | `feat(routing): enforce knowledge preflight` | 路由单测覆盖命中、文档无命中+记忆命中、双无命中和普通问答；集成测试检查检索顺序、模型确实被调用、来源和通用回答标记；非 debug 响应不含技能名 |
 | 5.7b 评测重写 | 重写 `internal/integration/eval_cases.json`：执行类题增加可判定答案断言；空壳文件技能改为能力限制断言；增加知识库无命中用例 | `test(eval): assert production routing and answer boundaries` | `go test -p 1 ./internal/evaluation/...`；`make eval` 输出路由、断言、拒答和工具证据指标 |
 | 5.7c 已接入技能预加载 | `SkillPreloaded` 已在 `internal/execution/event.go` 定义并列入 `knownTypes`；本步骤在 `internal/skill/runtime.go` 支持多技能预加载，在 `internal/server/service.go` 增加报告/文档动作+对象判定，服务端预加载 `report_writer`/`documents`；`requestedSkill()` 继续保护客户端技能指定 | `feat(routing): preload connected skills server side` | `go test -p 1 ./internal/server/... ./internal/skill/...`；报告、文档和组合请求产生预加载事件，空壳技能不预加载，debug=false 不暴露技能名，知识来源可见 |
+| 5.7d 路由规则收紧 | 完善 `internal/routing/routing.go` 的动作+对象规则、来源/原因标识和正反例；保持它为服务端与评测共用实现 | `fix(routing): tighten deterministic skill dispatch` | `go test -p 1 ./internal/routing ./internal/server/... ./internal/skill/...`；正例命中、反例不误加载、组合/未接入能力边界通过 |
+| 5.7e 技能/工具证据分离 | 修正 `internal/evaluation/evaluation.go` / `cmd/eval/main.go`：技能加载、工具尝试、工具成功/失败分别统计；评测用例支持期望无技能、期望工具调用和禁止工具调用 | `fix(eval): separate skill and tool execution evidence` | 单测确保 `skill_preloaded` 不增加工具率；`tool_started`/`tool_completed`/`tool_failed` 口径正确；`make eval` 输出分列指标 |
+| 5.7f 回归集与前后评测 | `internal/integration/eval_cases.json` ≥30 路由用例；相同模型、配置、知识库完成基线和修改后对照；追加运行结果到 `docs/RUNBOOK.md` | `test(eval): add skill dispatch regression set` | 关键路由召回 ≥95%、无技能反例零误预加载、未接入能力 100% 明确边界、工具成功证据符合预期；`make check` 与真实 `make eval` 通过 |
 | 5.8a 并发保护 | 在 `internal/server/service.go:enter` 增加 `runtime.queue_limit` 和 `runtime.queue_timeout`；满队列立即返回可识别错误 | `feat(runtime): bound concurrency queue` | 单测：并发槽满时等待不超过 5 秒，返回 503；配置校验拒绝非正数 |
 | 5.8b 超时和状态指标 | `internal/server/http.go` 将 `context.DeadlineExceeded` 映射为 `504`；扩展 `Stats` 按状态码和错误原因计数，区分超时与其他 5xx | `fix(http): report model timeout as 504` | HTTP 单测断言超时为 504；`/metrics` 输出 `status_5xx`、`timeouts`；非超时 5xx 可单独计算 |
 | 5.8c 发布回滚 | 生产 Compose 文件不含 `build:`，只保留 `image: ${APP_IMAGE}`；`make image VERSION=x` 构建不可变标签，`make prod-up VERSION=x` 启动，`make prod-rollback VERSION=x` 切换上一版本 | `chore(release): make image versions rollbackable` | 连续构建两个版本；切换标签后 `docker compose ... up -d --no-build`；上一版本健康检查通过 |
 | 5.9a 执行记录清理 | 在 `internal/server/service.go` 增加可取消的定时清理 goroutine，复用 `RetentionDays`，停机时等待退出 | `feat(execution): schedule retention cleanup` | fake store 单测确认周期调用；关闭服务后 goroutine 退出；长期运行不会只在启动时清理 |
 | 5.9b 全量备份 | Windows 脚本和新增 Linux 脚本覆盖 MySQL dump、3 个 Milvus 依赖卷及 `app-data`；manifest 包含 SHA256、非空业务数据判据和恢复演练入口；备份复制到不同存储位置 | `feat(ops): back up app data and verify contents` | Windows 执行 `make backup`/`make restore-check`；Linux 执行 `make backup-linux`/`make restore-check-linux`；故意空 dump 时命令失败 |
 | 5.9c 日志与通知 | Compose 增加日志大小/轮转配置；`/metrics` 支持受保护 bearer token；新增 `scripts/health-alert.sh`，探测 readiness/metrics 并通过可选 webhook 通知 | `chore(ops): add log rotation and alerts` | `docker compose -f docker-compose.prod.yml --env-file .env.prod config` 检查 logging；无 bearer 不能抓指标；探测失败返回非零并在配置 webhook 时发送通知 |
-| 5.10a 门槛出口 | `internal/evaluation/evaluation.go` / `cmd/eval/main.go` 输出路由、工具/预加载证据率；`internal/server/http.go`/`service.go` 的受保护 `/metrics` 输出 `status_5xx`、`timeouts`、`non_timeout_5xx_rate` | `feat(eval): export launch gate metrics` | `make eval` JSON 含工具证据字段；带 bearer 抓取指标；固定失败样本验证分母和分子可失败 |
+| 5.10a 门槛出口 | `internal/evaluation/evaluation.go` / `cmd/eval/main.go` 输出关键路由召回、技能加载证据、工具尝试/成功率；`internal/server/http.go`/`service.go` 的受保护 `/metrics` 输出 `status_5xx`、`timeouts`、`non_timeout_5xx_rate` | `feat(eval): export launch gate metrics` | `make eval` JSON 分列技能与工具指标；带 bearer 抓取指标；固定失败样本验证分母和分子可失败。旧 `tool_evidence_rate` 若把 `skill_preloaded` 算作工具证据，必须按 5.7e 修正后重新评测 |
 | 5.10b 灰度验收 | 使用已存在的 `docs/RUNBOOK.md` 14.23 灰度章节，填写 3–10 名用户、3–7 天窗口、每日检查和停止条件；不新增第二份方案或独立检查清单 | `docs(launch): record internal canary result`（仅在记录尚未填写时提交） | 连续 3 天指标达到门槛；负责人签字记录；完成 5.5b 前置检查 |
 
-**门槛计算口径**：关键技能召回率只统计确定性路由用例；工具执行证据率由 `make eval` 统计执行类请求中至少存在一组 `tool_started`/`tool_completed`/`tool_failed` 或 `skill_preloaded` 事件的比例。知识预检索不是独立事件类型，而是标准工具事件的 `tool_name=knowledge_search` 且 `source=server_preflight` 标记；检查清单第 11 项使用同一组标准事件名。非超时 5xx 由受保护 `/metrics` 统计 HTTP 500–599 中排除 `context deadline exceeded` 的部分。两套出口都必须直接产出指标，不能依靠人工从日志估算。
+**门槛计算口径**：关键技能召回率只统计确定性路由用例；模型自主技能选择另报诊断值。技能正文证据（`skill_preloaded` / `skill_loaded`）与工具证据必须分开。工具尝试只认 `tool_started`，成功只认 `tool_completed`，失败只认 `tool_failed`；技能预加载不计入工具率，模型自述不计入任何工具证据。工具成功率分母只包括用例明确声明需要成功调用工具的题。知识预检索不是独立事件类型，而是标准工具事件的 `tool_name=knowledge_search` 且 `source=server_preflight` 标记；检查清单第 11 项使用同一组标准事件名。非超时 5xx 由受保护 `/metrics` 统计 HTTP 500–599 中排除 `context deadline exceeded` 的部分。各出口都必须直接产出指标，不能依靠人工从日志估算。
 
-**最终上线顺序**：5.5a 一次性 bootstrap → 5.6a–c → 5.7a–c → 5.8a–c → 5.9a–c → 5.10a–b → 总验收清单 → 5.5b 配置切换 → 停止开发 Compose → 用 `docker-compose.prod.yml` 从零启动生产栈 → 3–7 天内部灰度。任一子步骤失败都不得进入下一组。
+**最终上线顺序**：5.5a 一次性 bootstrap → 5.6a–c → 5.7a–f → 5.8a–c → 5.9a–c → 5.10a–b → 总验收清单 → 5.5b 配置切换 → 停止开发 Compose → 用 `docker-compose.prod.yml` 从零启动生产栈 → 3–7 天内部灰度。任一子步骤失败都不得进入下一组。
 
 ### 当前执行状态（2026-09-19）
 
@@ -1385,10 +1463,12 @@ go run ./cmd/session-migrate -claim-owner=<owner>
 | 5.1–5.4 | ✅ | SIGTERM、限流、备份/恢复、liveness/readiness 已实现并通过本机验证 |
 | 5.5a | ✅ | 独立生产卷完成迁移和管理员建号；维护 CLI 已包含在生产镜像内 |
 | 5.6a–c | ✅/⏳ | 独立生产 Compose、OpenResty 模板和回调限流已完成；真实 1Panel 证书、域名和 `nginx -t` 需在目标服务器执行 |
-| 5.7a–c | ✅ | 知识服务端预检索、报告/文档确定性预加载、能力边界和评测断言已通过 |
+| 5.7a–c | ✅ | 知识服务端预检索、报告/文档确定性预加载、能力边界和现有评测已落地 |
+| 5.7d–e | ✅ | 路由反例已收紧；技能、工具尝试/成功、来源和禁止工具调用分开统计并进入门禁 |
+| 5.7f | 🟡 | 40 题本机真实评测通过；严格的同题集、同配置修改前基线缺失，不能与 20 题旧结果作差值比较 |
 | 5.8a–c | ✅ | 队列上限、504、指标拆分和不可变标签 A/B 切换回滚演练通过 |
 | 5.9a–c | ✅/⏳ | Windows 备份恢复、日志轮转、受保护指标和告警脚本已验证；Linux 目标机异地复制需执行 |
-| 5.10a | ✅ | 20 题评测：`asserted_total=14`、`correct_rate=1`、`citation_rate=1`、`refusal_rate=1`、`routing_accuracy=1`、`tool_evidence_rate=1` |
+| 5.10a | ✅ | 新门禁区分技能/工具证据并检查禁止工具调用；40 题 `make eval` 达标，详细结果见 `RUNBOOK.md` 14.27 |
 | 5.10b、5.5b | ⏳ | 需在真实 1Panel/HTTPS/飞书回调环境完成 3–7 天内部灰度；完成前不宣称正式上线 |
 | 6.1–6.10 | ⏳ | 阶段 5 灰度完成后按需实施；先完成五类意图契约和文件理解基础，只有存在真实内部数据源时才实施 6.3–6.5，只有存在内部写操作时才实施 6.9 |
 
@@ -1817,7 +1897,7 @@ type QueryResult struct {
 
 - `internal/evaluation/evaluation.go`、`cmd/eval/main.go`、`internal/integration/eval_cases.json`
 
-### 阶段 5（10 个基础步骤 + 15 个可执行子步骤）
+### 阶段 5（10 个基础步骤 + 18 个可执行子步骤）
 
 - `docker-compose.milvus.yml`（步骤 5.5a 的 loopback 运维绑定）
 - `Dockerfile`、`cmd/user-admin`、`cmd/session-migrate`（步骤 5.5a 的生产镜像维护 CLI）
@@ -1830,8 +1910,8 @@ type QueryResult struct {
 - `internal/server/auth.go`、对应测试（步骤 5.6c）
 - `internal/execution/event.go`、对应测试（`SkillPreloaded` 已存在；知识预检索复用标准工具事件）
 - `internal/server/web/app.js`（步骤 5.7c 非 debug 事件过滤和预检索来源渲染）
-- `internal/server/service.go`、路由测试和 agent 装配代码（步骤 5.7a、5.8a、5.9a）
-- `internal/integration/eval_cases.json`、`internal/evaluation/evaluation.go`、`cmd/eval/main.go`（步骤 5.7b、5.10a；与阶段 4 的评测改动合并提交）
+- `internal/server/service.go`、`internal/routing/routing.go`、路由测试和 agent 装配代码（步骤 5.7a、5.7d、5.8a、5.9a）
+- `internal/integration/eval_cases.json`、`internal/evaluation/evaluation.go`、`cmd/eval/main.go` 及评测测试（步骤 5.7b、5.7e–f、5.10a；阶段 4 历史改动已落地，新增路由评测按子步骤单独提交）
 - `internal/server/http.go`、`internal/server/service.go`、配置校验和测试（步骤 5.8a–b）
 - `Dockerfile`、`docker-compose.prod.yml`、`Makefile`（步骤 5.8c）
 - `scripts/backup.ps1`、`scripts/restore-check.ps1`、`scripts/backup.sh`、`scripts/restore-check.sh`、`scripts/health-alert.sh`、Compose 日志配置（步骤 5.9b–c）
@@ -1862,7 +1942,8 @@ type QueryResult struct {
 | `internal/server/auth.go` | 2（登录/回调）+ 5.6c（回调限流） | 5.6c 只扩展现有登录限流，不重写认证流程 |
 | `internal/integration/eval_cases.json` | 4（路由评测）+ 5.7b（答案边界） | 统一重写断言，避免旧模型自主路由期望残留 |
 | `scripts/backup.ps1` / `scripts/restore-check.ps1` | 5.3（初版）+ 5.9b（app-data 扩展） | 5.9b 只扩展备份范围和判据，保留已验证的 SHA256/恢复流程 |
-| `internal/evaluation/evaluation.go` / `cmd/eval/main.go` | 阶段 4 + 5.7b/5.10a | 合并为一次评测指标提交，只计算工具证据和拒答边界，不计算 HTTP 5xx；避免门槛分母不一致 |
+| `internal/evaluation/evaluation.go` / `cmd/eval/main.go` | 阶段 4 + 5.7b/5.7e–f/5.10a | 阶段 4 已完成；后续仅按独立子步骤拆分技能/工具证据并扩充路由评测，不能把 `skill_preloaded` 算作工具执行，也不计算 HTTP 5xx |
+| `internal/routing/routing.go` | 5.7d + 6.1 | 阶段 5 先补确定性技能规则及反例；阶段 6.1 的 `IntentPlan` 必须在此基础上扩展，不得复制或覆盖成第二套餐路由规则 |
 | `internal/server/service.go` | 阶段 5.7a/5.7c + 6.2/6.5/6.9 | 先保留已验证的文档→记忆链路，再按 IntentPlan 分支接入实时数据、附件和执行操作；新增能力必须有 feature flag |
 | `internal/server/http.go` / `ws.go` | 阶段 2/5 + 6.2/6.6/6.9 | 认证、附件 owner 校验、查询超时和审批路径不能分散实现；HTTP/WS 使用同一服务编排器 |
 | `internal/config/config.go` | 阶段 2/5 + 6.3/6.6/6.7 | 数据源、附件、provider 和 feature flag 一次完成配置校验，禁止从用户输入读取连接信息 |
@@ -1873,7 +1954,7 @@ type QueryResult struct {
 | 本方案步骤 | 具体来源/交付物 |
 |---|---|
 | 5.6a–c | 本仓库生产 Compose、Nginx 配置、`auth.go` 回调限流及测试 |
-| 5.7a–c | 服务端预检索、已接入技能预加载、能力边界回复、评测用例和答案断言 |
+| 5.7a–f | 服务端预检索、已接入技能预加载、能力边界、反例路由规则、技能/工具证据拆分和最终评测 |
 | 5.8a–c | 并发队列、HTTP 状态码/指标、不可变镜像和回滚命令 |
 | 5.9a–c | 执行记录定时清理、全量备份恢复、日志轮转和通知规则 |
 | 5.10a–b | `make eval`/`/metrics` 门槛指标、内部灰度记录和停止条件 |
@@ -1921,6 +2002,7 @@ type QueryResult struct {
 | 步骤 5.5a–b | `AUTH-PLAN.md` A 节的配置常量 + 本方案新增的 bootstrap、历史归属和最后的生产配置切换 |
 | 步骤 5.6a–c | **本方案新增**：生产 Compose、HTTPS 反向代理、回调限流和网络隔离 |
 | 步骤 5.7a–c | **本方案新增**：服务端知识预检索、已接入技能预加载、能力边界回复、评测断言 |
+| 步骤 5.7d–f | **本次补充**：收紧服务端技能路由、分开统计技能加载与真实工具执行、扩充回归集并复评 |
 | 步骤 5.8a–c | **本方案新增**：有界并发、504 与指标拆分、不可变镜像回滚 |
 | 步骤 5.9a–c | **本方案新增**：执行记录周期清理、完整备份、日志轮转与告警 |
 | 步骤 5.10a–b | **本方案新增**：上线门槛度量与内部灰度流程 |
