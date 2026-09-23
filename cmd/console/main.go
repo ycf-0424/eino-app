@@ -135,6 +135,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "new agent:", err)
 		os.Exit(1)
 	}
+	profile, err := cfg.ResolveModelProfile("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "model profile:", err)
+		os.Exit(1)
+	}
+	chat.SetContextBudget(session.ContextBudget{
+		WindowTokens: profile.ContextWindowTokens,
+		OutputTokens: profile.MaxCompletionTokens,
+		SafetyTokens: cfg.Session.ContextSafetyTokens,
+	}, cfg.Session.MaxSummaryChars)
+	chat.SetDynamicHistoryCaps(cfg.Session.HardMaxMessages, cfg.Session.HardMaxChars)
 	store, err := session.Open(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "session:", err)

@@ -24,6 +24,7 @@ type chatRequest struct {
 	SessionID string `json:"session_id"`
 	Query     string `json:"query"`
 	Skill     string `json:"skill"`
+	Model     string `json:"model"`
 }
 type approvalRequest struct {
 	Approved bool `json:"approved"`
@@ -151,16 +152,19 @@ func (s *Service) Handler() http.Handler {
 	// /auth/logout 免认证；/auth/me 需要登录。
 	s.registerAuthRoutes(mux)
 	// 前端与 API 同源提供，浏览器无需额外配置 CORS 或单独启动前端服务。
-	// 需要登录：未登录的浏览器导航会被 302 到 /auth/login。
-	mux.Handle("GET /", s.protected(webHandler()))
+	// 首页本身允许访客打开；真正需要用户数据或模型调用的 API 仍由
+	// protected 包装。这样用户可以先看到助手界面，再从个人信息区登录，
+	// 而不是一打开地址就被强制跳转到登录页。
+	mux.Handle("GET /", webHandler())
 	// /health 回传 debug 状态，前端据此决定是否显示技能入口；同时回传可用的
 	// 登录方式，登录页据此只渲染已启用的入口。免认证白名单。
 	// 两项都必须是「当前真的可用」：feishu 还要求 auth.enabled，
 	// 否则会出现「页面显示飞书入口、点进去 404」。
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, response{Data: map[string]any{
-			"status": "ok",
-			"debug":  s.debugEnabled(),
+			"status":       "ok",
+			"debug":        s.debugEnabled(),
+			"auth_enabled": s.authEnabled(),
 			"login": map[string]bool{
 				"feishu": s.authEnabled() && s.feishuReady(),
 				"local":  s.localLoginEnabled(),
@@ -171,6 +175,8 @@ func (s *Service) Handler() http.Handler {
 	// 供 compose 的 app 服务健康检查使用（Dockerfile 的 HEALTHCHECK 仍打 /health）。
 	// 与 /health 一样免认证。
 	mux.HandleFunc("GET /health/ready", s.handleReady)
+	// /models 返回可用模型列表与当前激活模型，供前端选择器使用。免认证。
+	mux.HandleFunc("GET /models", s.handleModels)
 	metrics := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.metricsToken != "" {
 			const prefix = "Bearer "
@@ -240,7 +246,7 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 	var output bytes.Buffer
 	// 同步接口把事件收进内存后一次性返回：实时推送只由 WebSocket 提供。
 	recorder := execution.NewRecorder(s.execCfg.MaxEventsPerRun)
-	result, err := s.ChatWithSink(r.Context(), req.SessionID, req.Query, s.requestedSkill(req.Skill), &output, recorder)
+	result, err := s.ChatWithSink(r.Context(), req.SessionID, req.Query, s.requestedSkill(req.Skill), req.Model, &output, recorder)
 	if err != nil {
 		if errors.Is(err, session.ErrForeignSession) {
 			writeSessionError(w, err)
@@ -251,6 +257,8 @@ func (s *Service) handleChat(w http.ResponseWriter, r *http.Request) {
 			s.nonTimeout5xx.Add(1)
 			s.status5xx.Add(1)
 			writeJSON(w, http.StatusServiceUnavailable, response{Error: "服务繁忙，请稍后重试"})
+		case errors.Is(err, session.ErrContextBudgetExceeded):
+			writeJSON(w, http.StatusRequestEntityTooLarge, response{Error: err.Error()})
 		case errors.Is(err, context.DeadlineExceeded) || errors.Is(r.Context().Err(), context.DeadlineExceeded):
 			s.timeouts.Add(1)
 			s.status5xx.Add(1)
@@ -379,6 +387,51 @@ func (s *Service) handleSkills(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, 200, response{Data: names})
+}
+
+func (s *Service) handleModels(w http.ResponseWriter, _ *http.Request) {
+	type modelInfo struct {
+		ID       string `json:"id"`
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	result := map[string]any{
+		"models": []modelInfo{},
+		"active": s.cfg.ActiveModel,
+	}
+	// 如果配置了多模型目录，返回完整列表
+	if len(s.cfg.Models) > 0 {
+		capacity := len(s.cfg.Models)
+		if s.cfg.Agent.AutoRouting.Enabled {
+			capacity++
+			result["active"] = "auto"
+		}
+		models := make([]modelInfo, 0, capacity)
+		if s.cfg.Agent.AutoRouting.Enabled {
+			models = append(models, modelInfo{
+				ID:       "auto",
+				Provider: "智能路由",
+				Model:    "自动混合",
+			})
+		}
+		for _, m := range s.cfg.Models {
+			models = append(models, modelInfo{
+				ID:       m.ID,
+				Provider: m.Provider,
+				Model:    m.Model,
+			})
+		}
+		result["models"] = models
+	} else {
+		// 向后兼容：如果只配置了 OpenAI 单一模型，返回它作为唯一选项
+		result["models"] = []modelInfo{{
+			ID:       "default",
+			Provider: "openai",
+			Model:    s.cfg.OpenAI.Model,
+		}}
+		result["active"] = "default"
+	}
+	writeJSON(w, 200, response{Data: result})
 }
 
 func decodeJSON(r *http.Request, target any) error {

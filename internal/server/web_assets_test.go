@@ -41,7 +41,7 @@ func TestWebAssetsElementIDsMatch(t *testing.T) {
 	}
 
 	// 登录态区域的 id 是步骤 2.9/2.14 的接口点，单独钉住。
-	for _, id := range []string{"userBox", "userName", "logoutButton"} {
+	for _, id := range []string{"userBox", "userName", "loginButton", "logoutButton"} {
 		if _, ok := declared[id]; !ok {
 			t.Errorf("index.html 缺少登录态元素 id=%q", id)
 		}

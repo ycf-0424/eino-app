@@ -422,13 +422,13 @@ func (s *Service) acquireSession(ctx context.Context, id string) (func(), error)
 
 // newAgent 创建本轮 Agent，并返回本轮直接预加载的技能名。
 func (s *Service) newAgent(ctx context.Context, id, skillName string, preloadSkills ...string) (*agent.ChatAgent, []string, error) {
-	return s.newAgentWithMemory(ctx, id, skillName, true, preloadSkills...)
+	return s.newAgentWithMemory(ctx, id, skillName, true, nil, preloadSkills...)
 }
 
 // newAgentWithMemory controls whether the normal user/project memory context
 // is attached. Private knowledge requests first use the document preflight;
 // only a document miss may replace it with project-memory fallback.
-func (s *Service) newAgentWithMemory(ctx context.Context, id, skillName string, includeMemory bool, preloadSkills ...string) (*agent.ChatAgent, []string, error) {
+func (s *Service) newAgentWithMemory(ctx context.Context, id, skillName string, includeMemory bool, roleModels *agent.RoleModels, preloadSkills ...string) (*agent.ChatAgent, []string, error) {
 	// owner 在这里取出并捕获进闭包：SetPersistence 的回调可能在请求 context
 	// 已取消之后才被调用，那时再读 context 已经取不到值。
 	owner := auth.OwnerFromContext(ctx)
@@ -461,11 +461,33 @@ func (s *Service) newAgentWithMemory(ctx context.Context, id, skillName string, 
 	}
 	tools := append([]eino.BaseTool{}, s.tools...)
 	tools = append(tools, skillTool)
-	chat, err := agent.NewWithInstruction(ctx, s.model, s.cfg.Debug, s.cfg.Agent.MultiAgent, s.checkpointStoreFor(ctx), instruction, tools...)
+	models := agent.RoleModels{Supervisor: s.model, Knowledge: s.model, Writer: s.model}
+	if roleModels != nil {
+		models = *roleModels
+	}
+	multiAgent := s.cfg.Agent.MultiAgent
+	if models.SingleModel {
+		multiAgent = false
+	}
+	chat, err := agent.NewWithRoleModels(ctx, models, s.cfg.Debug, multiAgent, s.checkpointStoreFor(ctx), instruction, tools...)
 	if err != nil {
 		return nil, nil, err
 	}
 	chat.SetSessionID(id)
+	contextWindowTokens, maxCompletionTokens := models.ContextWindowTokens, models.MaxCompletionTokens
+	if roleModels == nil {
+		profile, profileErr := s.cfg.ResolveModelProfile("")
+		if profileErr != nil {
+			return nil, nil, profileErr
+		}
+		contextWindowTokens, maxCompletionTokens = profile.ContextWindowTokens, profile.MaxCompletionTokens
+	}
+	chat.SetContextBudget(session.ContextBudget{
+		WindowTokens: contextWindowTokens,
+		OutputTokens: maxCompletionTokens,
+		SafetyTokens: s.cfg.Session.ContextSafetyTokens,
+	}, s.cfg.Session.MaxSummaryChars)
+	chat.SetDynamicHistoryCaps(s.cfg.Session.HardMaxMessages, s.cfg.Session.HardMaxChars)
 	history, err := s.sessions.Load(owner, id)
 	if err != nil {
 		return nil, nil, err
@@ -601,11 +623,81 @@ func statusFor(err error, approval *agent.ApprovalRequest) (status, code string)
 
 // Chat 执行一轮请求；发生 StatefulInterrupt 时保存审批元数据并返回 Approval。
 func (s *Service) Chat(ctx context.Context, id, query, skillName string, writer io.Writer) (ChatResult, error) {
-	return s.ChatWithSink(ctx, id, query, skillName, writer, nil)
+	return s.ChatWithSink(ctx, id, query, skillName, "", writer, nil)
+}
+
+// modelsForRequest resolves the UI's automatic and manual modes. Automatic
+// mode first asks the configured fast model to classify query, then binds the
+// selected endpoint to every Agent role for this turn. A concrete profile
+// bypasses classification and pins every role to that model.
+func (s *Service) modelsForRequest(ctx context.Context, modelID, query string) (*agent.RoleModels, error) {
+	auto := s.cfg.Agent.AutoRouting
+	if modelID == "" && auto.Enabled {
+		modelID = "auto"
+	}
+	if modelID == "auto" {
+		if !auto.Enabled {
+			return nil, fmt.Errorf("automatic model routing is not enabled")
+		}
+		decision, err := s.selectAutoModel(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		selected, err := modelset.NewChatModelByID(ctx, s.cfg, decision.ModelID)
+		if err != nil {
+			return nil, fmt.Errorf("initialize routed model %q: %w", decision.ModelID, err)
+		}
+		primaryProfile, profileErr := s.cfg.ResolveModelProfile(decision.ModelID)
+		if profileErr != nil {
+			return nil, profileErr
+		}
+		var fallbackProfile *config.ModelProfile
+		if decision.ModelID == auto.FastModel && auto.StrongModel != auto.FastModel {
+			fallback, fallbackErr := modelset.NewChatModelByID(ctx, s.cfg, auto.StrongModel)
+			if fallbackErr != nil {
+				return nil, fmt.Errorf("initialize automatic fallback model %q: %w", auto.StrongModel, fallbackErr)
+			}
+			selected = modelset.NewFallbackChatModel(selected, fallback)
+			resolvedFallback, profileErr := s.cfg.ResolveModelProfile(auto.StrongModel)
+			if profileErr != nil {
+				return nil, profileErr
+			}
+			fallbackProfile = &resolvedFallback
+		}
+		// The same input must fit either endpoint in the fallback chain.
+		contextWindowTokens, maxCompletionTokens := contextLimitsForRoute(primaryProfile, fallbackProfile)
+		return &agent.RoleModels{
+			Supervisor: selected, Knowledge: selected, Writer: selected,
+			ContextWindowTokens: contextWindowTokens, MaxCompletionTokens: maxCompletionTokens,
+			Automatic: true, SingleModel: decision.ModelID == auto.FastModel,
+		}, nil
+	}
+	if modelID == "" {
+		profile, err := s.cfg.ResolveModelProfile("")
+		if err != nil {
+			return nil, err
+		}
+		return &agent.RoleModels{
+			Supervisor: s.model, Knowledge: s.model, Writer: s.model,
+			ContextWindowTokens: profile.ContextWindowTokens, MaxCompletionTokens: profile.MaxCompletionTokens,
+		}, nil
+	}
+	selected, err := modelset.NewChatModelByID(ctx, s.cfg, modelID)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := s.cfg.ResolveModelProfile(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return &agent.RoleModels{
+		Supervisor: selected, Knowledge: selected, Writer: selected,
+		ContextWindowTokens: profile.ContextWindowTokens, MaxCompletionTokens: profile.MaxCompletionTokens,
+	}, nil
 }
 
 // ChatWithSink 与 Chat 相同，但把执行事件实时投递到 sink（WebSocket 队列或内存记录器）。
-func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string, writer io.Writer, sink execution.Sink) (result ChatResult, err error) {
+func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName, modelID string, writer io.Writer, sink execution.Sink) (result ChatResult, err error) {
 	leave, enterErr := s.enter(ctx)
 	if enterErr != nil {
 		return ChatResult{}, enterErr
@@ -646,7 +738,12 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName string,
 			return ChatResult{}, err
 		}
 	}
-	chat, preloaded, err := s.newAgentWithMemory(ctx, id, skillName, !route.preloadKnowledge, route.preloadSkills...)
+	roleModels, modelErr := s.modelsForRequest(ctx, modelID, query)
+	if modelErr != nil {
+		finishRun(em, execution.StatusFailed, "model_init_failed")
+		return ChatResult{}, modelErr
+	}
+	chat, preloaded, err := s.newAgentWithMemory(ctx, id, skillName, !route.preloadKnowledge, roleModels, route.preloadSkills...)
 	if err != nil {
 		finishRun(em, execution.StatusFailed, "agent_init_failed")
 		return ChatResult{}, err
@@ -791,6 +888,26 @@ func runIDOf(em *execution.Session) string {
 		return ""
 	}
 	return em.RunID()
+}
+
+// contextLimitsForRoute keeps automatic fallback requests within both model
+// windows. If either endpoint has an unknown window, token-aware limiting is
+// disabled for the route instead of assuming an unsafe capacity.
+func contextLimitsForRoute(primary config.ModelProfile, fallback *config.ModelProfile) (windowTokens, completionTokens int) {
+	windowTokens = primary.ContextWindowTokens
+	completionTokens = primary.MaxCompletionTokens
+	if fallback == nil {
+		return windowTokens, completionTokens
+	}
+	if windowTokens <= 0 || fallback.ContextWindowTokens <= 0 {
+		windowTokens = 0
+	} else if fallback.ContextWindowTokens < windowTokens {
+		windowTokens = fallback.ContextWindowTokens
+	}
+	if fallback.MaxCompletionTokens > completionTokens {
+		completionTokens = fallback.MaxCompletionTokens
+	}
+	return windowTokens, completionTokens
 }
 
 func finishRun(em *execution.Session, status, code string) {

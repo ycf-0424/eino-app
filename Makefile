@@ -15,7 +15,7 @@ db-memory-indexes:
 sessions-import:
 	go run ./cmd/session-migrate -source data/sessions
 
-.PHONY: help fmt boundary test vet check run build index retrieve eval \
+.PHONY: help fmt boundary test vet check start run stop restart restart-container build index retrieve eval \
 	backup restore-check backup-linux restore-check-linux health-alert-linux \
 	image prod-up prod-rollback infra-up up attu down restart ps logs app-logs
 
@@ -25,6 +25,9 @@ help: ## 显示可用命令
 	@echo "make sessions-import - 将本地 JSON 会话导入 MySQL"
 	@echo "make check       - 格式化、边界校验、测试并执行静态检查"
 	@echo "make run         - 在宿主机启动 Go 服务（127.0.0.1:18181）"
+	@echo "make start       - 启动依赖、迁移数据库并启动应用（推荐）"
+	@echo "make stop        - 停止占用 18181 的本地 Go 服务"
+	@echo "make restart     - 停止旧服务并重新启动本地 Go 服务"
 	@echo "make infra-up    - 启动 MySQL/Milvus/etcd/MinIO"
 	@echo "make attu         - 启动 Milvus 和 Attu 管理界面"
 	@echo "make up          - 构建并启动完整 Docker 服务"
@@ -61,6 +64,18 @@ check: fmt boundary test vet ## 提交前完整检查
 # 绑定 127.0.0.1 而非全部网卡，避免本地服务被同局域网机器直连。
 run: ## 本地启动后端和内置前端（127.0.0.1:18181）
 	go run ./cmd/server -addr 127.0.0.1:18181
+
+stop: ## 停止占用 18181 的本地 Go 服务（Windows）
+	powershell -NoProfile -ExecutionPolicy Bypass -Command "$$c=Get-NetTCPConnection -LocalPort 18181 -State Listen -ErrorAction SilentlyContinue; if ($$c) { $$c | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $${_}.ToString() -Force -ErrorAction SilentlyContinue } }; exit 0"
+
+restart: ## 停止旧服务并重新启动本地 Go 服务
+	$(MAKE) stop
+	$(MAKE) run
+
+start: ## 启动本地依赖、执行数据库迁移并启动应用
+	$(MAKE) infra-up
+	$(MAKE) db-migrate
+	$(MAKE) run
 
 build: ## 构建当前操作系统可执行文件
 	go build -trimpath -o $(SERVER) ./cmd/server
@@ -114,7 +129,7 @@ up: ## 构建并启动应用、MySQL、Milvus 和 Attu
 down: ## 停止完整服务但保留知识库和 Session 数据
 	$(COMPOSE) down
 
-restart: ## 重启应用容器
+restart-container: ## 重启应用容器
 	$(COMPOSE) restart app
 
 ps: ## 查看服务状态

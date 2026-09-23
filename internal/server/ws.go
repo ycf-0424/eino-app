@@ -57,6 +57,7 @@ type wsRequest struct {
 	SessionID string `json:"session_id"`
 	Query     string `json:"query"`
 	Skill     string `json:"skill"`
+	Model     string `json:"model"`
 }
 
 // directChunkWriter 在未开启执行事件时沿用旧协议，直接把正文写成 chunk 帧。
@@ -212,7 +213,7 @@ func (s *Service) runTurn(ctx context.Context, c *wsConn, queue *execution.Queue
 		// 未开启执行事件：沿用旧的直接 chunk 写入，行为与 P7 完全一致。
 		writer = directChunkWriter{conn: c}
 	}
-	result, err := s.ChatWithSink(ctx, sessionID, req.Query, s.requestedSkill(req.Skill), writer, queueSink{queue})
+	result, err := s.ChatWithSink(ctx, sessionID, req.Query, s.requestedSkill(req.Skill), req.Model, writer, queueSink{queue})
 	// 同步点保证本轮已发出的事件全部写连接，避免 done 抢在终态之前。
 	queue.Sync()
 	if err != nil {

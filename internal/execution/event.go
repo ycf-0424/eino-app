@@ -25,6 +25,8 @@ const (
 	RunStarted Type = "run_started"
 	// ModelWaiting 在真正调用模型之前发出，用于区分「等待模型」和「等待工具」。
 	ModelWaiting Type = "model_waiting"
+	// ModelRouted 表示自动路由已经选定本轮最终回答模型。
+	ModelRouted Type = "model_routed"
 	// ToolStarted 在工具真正执行前发出。
 	ToolStarted Type = "tool_started"
 	// ToolCompleted 是普通工具的正常终态。
@@ -51,7 +53,7 @@ const (
 const Version = 1
 
 var knownTypes = map[Type]bool{
-	RunStarted: true, ModelWaiting: true, ToolStarted: true, ToolCompleted: true,
+	RunStarted: true, ModelWaiting: true, ModelRouted: true, ToolStarted: true, ToolCompleted: true,
 	ToolFailed: true, SkillPreloaded: true, SkillLoaded: true, FileReadDone: true,
 	ApprovalRequired: true, RunCompleted: true, RunFailed: true, RunCancelled: true,
 	Chunk: true,

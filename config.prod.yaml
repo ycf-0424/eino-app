@@ -6,12 +6,20 @@ openai:
   base_url: "${OPENAI_BASE_URL}"
   reasoning_effort: "none"
   max_completion_tokens: 2048
+  # Fill with the deployed provider model's total context window to enable dynamic history budgeting; 0 uses legacy caps.
+  context_window_tokens: 0
 
 session_dir: "data/sessions"
 session:
   store: "mysql"
+  # Legacy fallback when openai.context_window_tokens is 0.
   max_messages: 20
   max_chars: 12000
+  # Absolute guardrails once model-aware token budgeting is enabled.
+  hard_max_messages: 200
+  hard_max_chars: 300000
+  max_summary_chars: 4000
+  context_safety_tokens: 8192
   expire_days: 30
 
 skills:

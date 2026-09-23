@@ -91,3 +91,60 @@ func TestValidateExpandsEnvironment(t *testing.T) {
 		t.Fatal("expected missing environment variable error")
 	}
 }
+
+func TestContextWindowConfigurationAndProfileResolution(t *testing.T) {
+	t.Setenv("SESSION_STORE", "")
+	cfg := Config{
+		Models: []ModelProfile{
+			{ID: "small", Model: "small-model", BaseURL: "http://localhost:11434/v1", MaxCompletionTokens: 512, ContextWindowTokens: 16384},
+			{ID: "large", Model: "large-model", BaseURL: "http://localhost:11434/v1", MaxCompletionTokens: 2048, ContextWindowTokens: 65536},
+		},
+		ActiveModel: "small",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Session.MaxSummaryChars != 4000 || cfg.Session.ContextSafetyTokens != 8192 || cfg.Session.HardMaxMessages != 200 || cfg.Session.HardMaxChars != 300000 {
+		t.Fatalf("session context defaults = %+v", cfg.Session)
+	}
+	profile, err := cfg.ResolveModelProfile("large")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.ContextWindowTokens != 65536 || profile.MaxCompletionTokens != 2048 {
+		t.Fatalf("resolved context profile = %+v", profile)
+	}
+	active, err := cfg.ResolveModelProfile("")
+	if err != nil || active.ID != "small" {
+		t.Fatalf("active profile = %+v, %v", active, err)
+	}
+}
+
+func TestValidateContextWindowRequiresOutputAndSafetyRoom(t *testing.T) {
+	t.Setenv("SESSION_STORE", "")
+	tests := []struct {
+		name    string
+		profile ModelProfile
+		wantErr string
+	}{
+		{
+			name:    "missing output reserve",
+			profile: ModelProfile{ID: "small", Model: "qwen", BaseURL: "http://localhost/v1", ContextWindowTokens: 8192},
+			wantErr: "max_completion_tokens must be positive",
+		},
+		{
+			name:    "window too small",
+			profile: ModelProfile{ID: "small", Model: "qwen", BaseURL: "http://localhost/v1", MaxCompletionTokens: 4096, ContextWindowTokens: 6000},
+			wantErr: "must exceed max_completion_tokens plus session.context_safety_tokens",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Config{Models: []ModelProfile{test.profile}}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Validate() error = %v, want substring %q", err, test.wantErr)
+			}
+		})
+	}
+}

@@ -54,10 +54,10 @@
               <option value="">自动</option>
             </select>
           </label>
-          <!-- 登录态：认证开启时才显示（/auth/me 未启用时为 404，元素保持 hidden）。
-               显示格式为「名字（来源）」，登出走 GET /auth/logout。 -->
+          <!-- 登录态：认证开启时显示。访客可以先浏览页面，但发送消息前必须登录。 -->
           <div class="user-box" id="userBox" hidden>
             <span class="user-name" id="userName"></span>
+            <a class="button user-login" id="loginButton" href="/auth/login">登录</a>
             <button class="icon-button user-logout" id="logoutButton" type="button" title="退出登录" aria-label="退出登录">退出</button>
           </div>
           <button class="icon-button" id="clearChat" type="button" title="删除当前会话" aria-label="删除当前会话">&#128465;</button>
@@ -98,6 +98,9 @@
         </form>
         <div class="composer-meta">
           <span id="requestStatus">本地运行</span>
+          <button class="model-selector" id="modelSelector" type="button" title="选择模型">
+            <span id="currentModel">Ollama</span>
+          </button>
           <span>回答可能有误，请核对重要信息</span>
         </div>
       </div>
@@ -114,6 +117,13 @@
         <button class="danger-button" id="confirmDelete" value="confirm">删除</button>
       </div>
     </form>
+  </dialog>
+  <dialog class="model-dialog" id="modelDialog">
+    <div class="model-dialog-header">
+      <h2>选择模型</h2>
+      <button class="icon-button" id="closeModelDialog" type="button" title="关闭">&times;</button>
+    </div>
+    <div class="model-list" id="modelList"></div>
   </dialog>
   <script src="/app.js" defer></script>
 </body>

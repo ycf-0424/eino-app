@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -21,6 +22,10 @@ import (
 // 在 Delete 里视为成功（接口幂等）；而归属他人是越权访问，HTTP 层要映射成 403。
 // 只做查询过滤不够——知道 id 就能操作，所以每个按 id 的方法都要显式比对 owner。
 var ErrForeignSession = errors.New("session belongs to another user")
+
+// ErrContextBudgetExceeded indicates that required current-turn/prefix input
+// cannot fit in the configured model window even after older history is cut.
+var ErrContextBudgetExceeded = errors.New("context budget exceeded")
 
 // Store 为 HTTP、控制台和迁移工具提供统一入口；Open 根据配置选择后端。
 type Store struct {
@@ -36,6 +41,84 @@ type Info struct {
 }
 
 const summaryPrefix = "[较早对话摘要]\n"
+
+const defaultSummaryMaxChars = 4000
+
+// ContextBudget describes the part of a model's context window available to
+// user/session messages. WindowTokens is the provider's total context window;
+// output, known prompt/tool overhead, dynamic prefix messages, and a safety
+// reserve are subtracted before history is compacted.
+type ContextBudget struct {
+	WindowTokens int
+	OutputTokens int
+	PromptTokens int
+	SafetyTokens int
+}
+
+// HistoryTokens returns -1 when model-aware budgeting is not configured.
+func (b ContextBudget) HistoryTokens(prefix []*schema.Message) int {
+	if b.WindowTokens <= 0 {
+		return -1
+	}
+	remaining := b.WindowTokens - b.OutputTokens - b.PromptTokens - b.SafetyTokens - EstimateMessagesTokens(prefix)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// EstimateTextTokens provides a deliberately conservative estimate across
+// OpenAI-compatible tokenizers: ASCII words are charged at one token per
+// three characters, non-ASCII runes at one token each, and supplementary
+// Unicode symbols at two. It is a budget guard, not a provider tokenizer.
+func EstimateTextTokens(text string) int {
+	tokens, asciiRunes := 0, 0
+	flushASCII := func() {
+		if asciiRunes > 0 {
+			tokens += (asciiRunes + 2) / 3
+			asciiRunes = 0
+		}
+	}
+	for _, r := range text {
+		if r < unicode.MaxASCII {
+			if unicode.IsLetter(r) || unicode.IsNumber(r) {
+				asciiRunes++
+				continue
+			}
+			flushASCII()
+			if !unicode.IsSpace(r) {
+				tokens++
+			}
+			continue
+		}
+		flushASCII()
+		if r > 0xFFFF {
+			tokens += 2
+		} else {
+			tokens++
+		}
+	}
+	flushASCII()
+	return tokens
+}
+
+// EstimateMessagesTokens includes serialized message metadata and a small
+// per-message framing allowance, so tool-call arguments are not ignored.
+func EstimateMessagesTokens(messages []*schema.Message) int {
+	total := 0
+	for _, message := range messages {
+		if message == nil {
+			continue
+		}
+		encoded, err := json.Marshal(message)
+		if err != nil {
+			total += EstimateTextTokens(message.Content) + 8
+			continue
+		}
+		total += EstimateTextTokens(string(encoded)) + 4
+	}
+	return total
+}
 
 // TrimHistory 保留系统消息和最近若干条消息，防止上下文无限增长。
 func TrimHistory(messages []*schema.Message, maxMessages int, maxChars int) []*schema.Message {
@@ -73,41 +156,138 @@ func TrimHistory(messages []*schema.Message, maxMessages int, maxChars int) []*s
 // CompactHistory 将被裁掉的旧消息压缩为确定性摘要，并保留最近消息。
 // 这里不额外调用模型，避免每轮会话都增加 Ollama 推理开销。
 func CompactHistory(messages []*schema.Message, maxMessages, maxChars int) []*schema.Message {
+	return CompactHistoryWithBudget(messages, maxMessages, maxChars, -1, defaultSummaryMaxChars)
+}
+
+// CompactHistoryWithBudget keeps the newest messages under the configured
+// count, byte, and estimated-token limits, then adds a capped deterministic
+// summary of older text when budget remains. maxTokens < 0 disables only the
+// token limit; the message and byte guardrails still apply.
+func CompactHistoryWithBudget(messages []*schema.Message, maxMessages, maxChars, maxTokens, maxSummaryChars int) []*schema.Message {
 	// 先剔除模型不接受的消息，再做裁剪：摘要与保留集必须基于同一份列表，
 	// 否则被剔掉的消息会以「助手: （空）」的形式回到摘要里。
 	usable := withoutEmptyAssistant(messages)
-	trimmed := TrimHistory(usable, maxMessages, maxChars)
-	if len(trimmed) == len(usable) {
-		return trimmed
+	if maxSummaryChars <= 0 {
+		maxSummaryChars = defaultSummaryMaxChars
 	}
-	kept := make(map[*schema.Message]struct{}, len(trimmed))
-	for _, message := range trimmed {
-		kept[message] = struct{}{}
+
+	var system *schema.Message
+	first := 0
+	if len(usable) > 0 && usable[0].Role == schema.System {
+		system = usable[0]
+		first = 1
 	}
+
+	body := usable[first:]
+	keepStart := len(body)
+	keptCount, keptChars := 0, 0
+	keptTokens := 0
+	if system != nil {
+		keptTokens = EstimateMessagesTokens([]*schema.Message{system})
+	}
+	for i := len(body) - 1; i >= 0; i-- {
+		message := body[i]
+		if maxMessages > 0 && keptCount >= maxMessages {
+			break
+		}
+		messageChars := len(message.Content)
+		messageTokens := EstimateMessagesTokens([]*schema.Message{message})
+		// Always retain the newest message (normally this turn's user query),
+		// even if that one message alone exceeds a configured guardrail.
+		if keptCount > 0 {
+			if maxChars > 0 && keptChars+messageChars > maxChars {
+				break
+			}
+			if maxTokens >= 0 && keptTokens+messageTokens > maxTokens {
+				break
+			}
+		}
+		keepStart = i
+		keptCount++
+		keptChars += messageChars
+		keptTokens += messageTokens
+	}
+
+	kept := make([]*schema.Message, 0, keptCount+1)
+	if system != nil {
+		kept = append(kept, system)
+	}
+	kept = append(kept, body[keepStart:]...)
+
+	summaryTokenBudget := -1
+	if maxTokens >= 0 {
+		summaryTokenBudget = maxTokens - keptTokens
+		if summaryTokenBudget < 0 {
+			summaryTokenBudget = 0
+		}
+	}
+	if summary := summarizeHistory(body[:keepStart], maxSummaryChars, summaryTokenBudget); summary != nil {
+		kept = append([]*schema.Message{summary}, kept...)
+	}
+	return kept
+}
+
+func summarizeHistory(messages []*schema.Message, maxChars, maxTokens int) *schema.Message {
 	var lines []string
-	for _, message := range usable {
-		if message == nil {
+	for _, message := range messages {
+		if message == nil || strings.HasPrefix(message.Content, summaryPrefix) {
 			continue
 		}
-		if _, ok := kept[message]; ok || strings.HasPrefix(message.Content, summaryPrefix) {
+		text := strings.Join(strings.Fields(message.Content), " ")
+		if text == "" {
 			continue
+		}
+		if len([]rune(text)) > 160 {
+			text = string([]rune(text)[:160]) + "..."
 		}
 		role := "用户"
 		if message.Role == schema.Assistant {
 			role = "助手"
 		}
-		text := strings.Join(strings.Fields(message.Content), " ")
-		if len([]rune(text)) > 160 {
-			text = string([]rune(text)[:160]) + "..."
-		}
 		lines = append(lines, role+": "+text)
 	}
 	if len(lines) == 0 {
-		return trimmed
+		return nil
 	}
-	summary := schema.SystemMessage(summaryPrefix + strings.Join(lines, "\n"))
-	// 摘要作为系统上下文放在最近消息之前，不会被误认为新的用户问题。
-	return append([]*schema.Message{summary}, trimmed...)
+	content := truncateRunes(summaryPrefix+strings.Join(lines, "\n"), maxChars)
+	if maxTokens >= 0 {
+		// Include the serialized System message framing in the same estimate used
+		// for history; if even the summary header cannot fit, omit the summary.
+		runes := []rune(content)
+		minRunes := len([]rune(summaryPrefix))
+		if len(runes) < minRunes || EstimateMessagesTokens([]*schema.Message{schema.SystemMessage(string(runes[:minRunes]))}) > maxTokens {
+			return nil
+		}
+		low, high := minRunes, len(runes)
+		for low < high {
+			mid := (low + high + 1) / 2
+			candidate := schema.SystemMessage(string(runes[:mid]))
+			if EstimateMessagesTokens([]*schema.Message{candidate}) <= maxTokens {
+				low = mid
+			} else {
+				high = mid - 1
+			}
+		}
+		content = string(runes[:low])
+	}
+	if strings.TrimSpace(strings.TrimPrefix(content, summaryPrefix)) == "" {
+		return nil
+	}
+	return schema.SystemMessage(content)
+}
+
+func truncateRunes(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	if maxRunes <= 3 {
+		return string(runes[:maxRunes])
+	}
+	return string(runes[:maxRunes-3]) + "..."
 }
 
 // withoutEmptyAssistant 剔除「既没有内容、也没有工具调用」的助手消息。

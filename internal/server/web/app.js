@@ -17,8 +17,14 @@ const state = {
   newChatRequest: null,
   // 当前登录身份（/auth/me 的返回体）；认证关闭时为 null，顶栏不显示用户区。
   user: null,
+  // /health 完成后确定认证是否启用；访客页面仍可打开，但不能创建会话或聊天。
+  authEnabled: false,
+  authReady: false,
   // 防止并发请求同时收到 401 时重复导航。
   redirectingToLogin: false,
+  // 可用模型列表与当前选中模型。
+  models: [],
+  activeModel: "",
 };
 
 const ui = Object.fromEntries([
@@ -26,7 +32,8 @@ const ui = Object.fromEntries([
   "statusDot", "statusText", "conversationState", "skillControl", "skillSelect", "clearChat", "welcome",
   "messages", "conversation", "composer", "promptInput", "sendButton", "requestStatus",
   "approvalPanel", "approvalDescription", "approveAction", "rejectApproval", "toast",
-  "deleteDialog", "confirmDelete", "userBox", "userName", "logoutButton",
+  "deleteDialog", "confirmDelete", "userBox", "userName", "loginButton", "logoutButton",
+  "modelSelector", "currentModel", "modelDialog", "modelList", "closeModelDialog",
 ].map((id) => [id, document.getElementById(id)]));
 
 // 工具与事件的中文标签；未知名称直接展示原名，不伪造语义。
@@ -78,18 +85,23 @@ function redirectToLogin() {
 }
 
 async function api(path, options = {}) {
+  const { allowUnauthenticated = false, ...requestOptions } = options;
   const response = await fetch(path, {
-    ...options,
+    ...requestOptions,
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
   });
   // 401 只可能来自认证开启且登录态失效/缺失的场景，此时前端留在页面上
   // 只会反复报错，直接回登录入口。认证关闭时后端不会返回 401。
-  if (response.status === 401) {
+  if (response.status === 401 && !allowUnauthenticated) {
     redirectToLogin();
     throw new Error("登录已过期，请重新登录");
   }
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.error) throw new Error(payload.error || `请求失败 (${response.status})`);
+  if (!response.ok || payload.error) {
+    const error = new Error(payload.error || `请求失败 (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
   return payload.data;
 }
 
@@ -593,8 +605,19 @@ function renderEvent(panel, event, live = false) {
     case "model_waiting":
       item.dataset.state = "pending";
       icon.textContent = "…";
-      text.textContent = payload.phase === "resume" ? "等待模型继续生成" : "等待模型响应";
-      setStatus("正在思考…");
+      if (payload.phase === "routing") {
+        text.textContent = `正在用 ${payload.model_id || "快速模型"} 判断任务难度`;
+        setStatus("正在选择合适的模型…");
+      } else {
+        text.textContent = payload.phase === "resume" ? "等待模型继续生成" : "等待模型响应";
+        setStatus("正在思考…");
+      }
+      break;
+    case "model_routed":
+      item.dataset.state = "info";
+      icon.textContent = "⇢";
+      text.textContent = `已选择模型：${payload.model_id || "自动路由"}`;
+      setStatus("正在生成回答…");
       break;
     case "skill_preloaded": {
       const names = Array.isArray(payload.skill_names) ? payload.skill_names : [];
@@ -697,8 +720,22 @@ async function backfillRun(runId) {
   }
 }
 
+function canStartConversation() {
+  if (state.generating) return false;
+  if (!state.authReady) {
+    showToast("正在检查登录状态，请稍候再试");
+    return false;
+  }
+  if (state.authEnabled && !state.user) {
+    showToast("请先登录后再开始对话");
+    ui.loginButton.focus();
+    return false;
+  }
+  return true;
+}
+
 function sendMessage(query) {
-  if (!query || state.generating) return;
+  if (!query || !canStartConversation()) return;
   state.pendingApproval = null;
   ui.approvalPanel.hidden = true;
   if (ui.messages.children.length === 0) ui.conversationState.textContent = query.replace(/\s+/g, " ").slice(0, 42);
@@ -729,7 +766,12 @@ function sendMessage(query) {
       applyDebugMode(message.debug === true);
       // 帧内不再携带 session_id —— 会话由连接本身确定，服务端一律忽略该字段。
       // 非调试模式不带 skill：按名指定技能属于内部能力，交给模型自主路由。
-      socket.send(JSON.stringify({ type: "chat", query, skill: state.debug ? ui.skillSelect.value : "" }));
+      socket.send(JSON.stringify({
+        type: "chat",
+        query,
+        skill: state.debug ? ui.skillSelect.value : "",
+        model: state.activeModel || ""
+      }));
     } else if (message.type === "chunk") {
       const run = state.activeRun;
       if (run) {
@@ -1018,21 +1060,81 @@ function displayName(me) {
   return name ? `${name}（${label}）` : label;
 }
 
-// 认证开启时显示当前身份与登出入口。
-//
-// 三种情况都不报错：/auth/me 200 正常显示；认证关闭时该路由未注册（404），
-// 登录态失效时是 401（api 已跳转登录页）。前两种都只是保持隐藏。
+function renderAuthState() {
+  if (!state.authEnabled) {
+    ui.userBox.hidden = true;
+    ui.loginButton.hidden = true;
+    ui.logoutButton.hidden = true;
+    return;
+  }
+  ui.userBox.hidden = false;
+  if (state.user) {
+    ui.userName.textContent = displayName(state.user);
+    ui.userName.title = state.user.owner || "";
+    ui.loginButton.hidden = true;
+    ui.logoutButton.hidden = false;
+    return;
+  }
+  ui.userName.textContent = "未登录";
+  ui.userName.title = "发送消息前需要登录";
+  ui.loginButton.hidden = false;
+  ui.logoutButton.hidden = true;
+}
+
+// 认证开启时显示当前身份；未登录时保留页面并显示登录入口，不能创建会话或聊天。
 async function loadUser() {
   try {
-    const me = await api("/auth/me");
+    const me = await api("/auth/me", { allowUnauthenticated: true });
     state.user = me;
-    ui.userName.textContent = displayName(me);
-    ui.userName.title = me?.owner || "";
-    ui.userBox.hidden = false;
   } catch {
     state.user = null;
-    ui.userBox.hidden = true;
   }
+  renderAuthState();
+}
+
+// 加载可用模型列表与当前激活模型。
+async function loadModels() {
+  try {
+    const data = await api("/models", { allowUnauthenticated: true });
+    state.models = data.models || [];
+    state.activeModel = data.active || "";
+    renderCurrentModel();
+  } catch {
+    state.models = [];
+    state.activeModel = "";
+  }
+}
+
+// 渲染当前选中的模型名称。
+function renderCurrentModel() {
+  if (!state.activeModel || state.models.length === 0) {
+    ui.currentModel.textContent = "Ollama";
+    return;
+  }
+  const active = state.models.find((m) => m.id === state.activeModel);
+  ui.currentModel.textContent = active ? active.model : state.activeModel;
+}
+
+// 渲染模型选择列表。
+function renderModelList() {
+  ui.modelList.replaceChildren();
+  state.models.forEach((model) => {
+    const item = el("div", "model-item");
+    if (model.id === state.activeModel) item.classList.add("active");
+    const icon = el("div", "model-icon", model.provider.charAt(0).toUpperCase());
+    const info = el("div", "model-info");
+    const name = el("div", "model-name", model.model);
+    const provider = el("div", "model-provider", model.provider);
+    info.append(name, provider);
+    item.append(icon, info);
+    item.onclick = () => {
+      state.activeModel = model.id;
+      renderCurrentModel();
+      renderModelList();
+      ui.modelDialog.close();
+    };
+    ui.modelList.append(item);
+  });
 }
 
 function openSidebar() { document.body.classList.add("sidebar-open"); }
@@ -1053,9 +1155,12 @@ ui.promptInput.addEventListener("keydown", (event) => {
     ui.composer.requestSubmit();
   }
 });
-ui.newChat.onclick = startNewChat;
+ui.newChat.onclick = () => {
+  if (canStartConversation()) startNewChat();
+};
 ui.clearChat.onclick = () => requestDelete(state.sessionId);
-// 登出是 GET 且服务端 302 回登录入口，直接导航即可（无需前端清状态）。
+// 登录与登出都由服务端完成，页面本身不因未登录而强制跳转。
+ui.loginButton.onclick = () => { location.href = "/auth/login"; };
 ui.logoutButton.onclick = () => { location.href = "/auth/logout"; };
 ui.openSidebar.onclick = openSidebar;
 ui.closeSidebar.onclick = closeSidebar;
@@ -1066,21 +1171,43 @@ ui.deleteDialog.addEventListener("close", () => {
   if (ui.deleteDialog.returnValue === "confirm" && state.deleteTarget) deleteSession(state.deleteTarget);
   state.deleteTarget = "";
 });
+ui.modelSelector.onclick = () => {
+  renderModelList();
+  ui.modelDialog.showModal();
+};
+ui.closeModelDialog.onclick = () => ui.modelDialog.close();
+ui.modelDialog.addEventListener("click", (event) => {
+  if (event.target === ui.modelDialog) ui.modelDialog.close();
+});
 document.querySelectorAll("[data-prompt]").forEach((button) => button.onclick = () => sendMessage(button.dataset.prompt));
 
 async function bootstrap() {
-  startNewChat();
-  // 认证开启时才渲染用户区；与 /health 的调用相互独立，任一失败都不影响会话加载。
-  loadUser();
+  ui.promptInput.disabled = true;
+  ui.sendButton.disabled = true;
   try {
     const health = await api("/health");
     setHealth(true);
+    state.authEnabled = health?.auth_enabled === true || health?.login?.feishu === true || health?.login?.local === true;
     // 技能入口的显隐完全由后端 debug 状态决定，前端不做任何默认开启。
     applyDebugMode(health?.debug === true);
+    await loadUser();
+    await loadModels();
+    state.authReady = true;
+    // 未登录时保留欢迎页，但不向受保护的会话接口发请求。
+    if (state.authEnabled && !state.user) {
+      ui.conversationState.textContent = "登录后开始对话";
+      ui.requestStatus.textContent = "请先登录";
+      ui.promptInput.disabled = false;
+      return;
+    }
+    await startNewChat();
+    await loadSessions();
+    ui.promptInput.disabled = false;
   } catch {
     setHealth(false);
+    state.authReady = false;
+    ui.promptInput.disabled = false;
   }
-  await loadSessions();
 }
 
 // 流式输出期间允许用户自由滚动：只有距离底部较近时才继续自动跟随。

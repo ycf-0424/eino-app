@@ -6,13 +6,21 @@ openai:
   base_url: "http://host.docker.internal:11434/v1"
   reasoning_effort: "none"
   max_completion_tokens: 2048
+  # Set the local model server's effective context window; zero uses legacy session caps.
+  context_window_tokens: 0
 
 session_dir: "data/sessions"
 session:
   # 自动记忆启用时必须使用 MySQL；Compose 仍可通过 SESSION_STORE 显式覆盖。
   store: "mysql"
+  # context_window_tokens 为 0 时使用以下传统限制。
   max_messages: 20
   max_chars: 12000
+  # 配置模型窗口后使用的绝对保护上限。
+  hard_max_messages: 200
+  hard_max_chars: 300000
+  max_summary_chars: 4000
+  context_safety_tokens: 8192
   expire_days: 30
 
 skills:

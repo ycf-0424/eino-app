@@ -40,7 +40,7 @@ func TestAuthUnauthenticatedAccess(t *testing.T) {
 	client := server.Client()
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 
-	// 浏览器导航：302 到登录入口。
+	// 浏览器导航：认证开启时仍允许打开助手界面，登录由前端个人信息区提供。
 	req, _ := http.NewRequest(http.MethodGet, server.URL+"/", nil)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	resp, err := client.Do(req)
@@ -48,8 +48,8 @@ func TestAuthUnauthenticatedAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/auth/login" {
-		t.Fatalf("GET / status=%d location=%q", resp.StatusCode, resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / status=%d, want 200", resp.StatusCode)
 	}
 
 	// API 调用：401 JSON，不是重定向。
@@ -135,7 +135,14 @@ func TestAuthLoginRedirectsWithState(t *testing.T) {
 	client := server.Client()
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 
-	resp, err := client.Get(server.URL + "/auth/login")
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/auth/login", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 让测试请求使用配置中的规范主机；否则 canonical-host 保护会先把
+	// httptest 的随机主机重定向到 localhost:18180。
+	req.Host = "localhost:18180"
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,6 +165,26 @@ func TestAuthLoginRedirectsWithState(t *testing.T) {
 	}
 	if !hasStateCookie {
 		t.Fatal("state cookie should be set")
+	}
+}
+
+func TestAuthLoginCanonicalizesHostBeforeSettingState(t *testing.T) {
+	service := newAuthTestService(t)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18181/auth/login?provider=feishu", nil)
+	rec := httptest.NewRecorder()
+
+	service.handleAuthLogin(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status=%d, want 302", rec.Code)
+	}
+	if got, want := rec.Header().Get("Location"), "http://localhost:18180/auth/login?provider=feishu"; got != want {
+		t.Fatalf("Location=%q, want %q", got, want)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "eino_oauth_state" {
+			t.Fatal("canonical redirect must happen before state cookie is set")
+		}
 	}
 }
 

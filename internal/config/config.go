@@ -18,12 +18,35 @@ type OpenAI struct {
 	BaseURL             string `yaml:"base_url"`
 	ReasoningEffort     string `yaml:"reasoning_effort"`
 	MaxCompletionTokens int    `yaml:"max_completion_tokens"`
+	// ContextWindowTokens is the provider/model's total context window. Zero
+	// means unknown and keeps the legacy session limits in effect.
+	ContextWindowTokens int `yaml:"context_window_tokens"`
+}
+
+// ModelProfile describes one OpenAI-compatible chat model endpoint.  Most
+// providers (Ark, OpenAI, DeepSeek, SiliconFlow, WorkBuddy gateways, etc.)
+// can be configured without adding provider-specific code.
+type ModelProfile struct {
+	ID                  string `yaml:"id"`
+	Provider            string `yaml:"provider"`
+	APIKey              string `yaml:"api_key"`
+	Model               string `yaml:"model"`
+	BaseURL             string `yaml:"base_url"`
+	ReasoningEffort     string `yaml:"reasoning_effort"`
+	MaxCompletionTokens int    `yaml:"max_completion_tokens"`
+	// ContextWindowTokens is the provider/model's total context window. Zero
+	// means unknown and keeps the legacy session limits in effect.
+	ContextWindowTokens int `yaml:"context_window_tokens"`
 }
 
 // Config 顶层配置结构。
 type Config struct {
 	MySQL  MySQL  `yaml:"mysql"`
 	OpenAI OpenAI `yaml:"openai"`
+	// Models is the optional multi-provider model catalog. ActiveModel selects
+	// one profile; when empty, the legacy OpenAI block is used.
+	Models      []ModelProfile `yaml:"models"`
+	ActiveModel string         `yaml:"active_model"`
 	// SessionDir 是会话 JSON 文件的保存目录。
 	SessionDir string `yaml:"session_dir"`
 	// Debug 控制是否启用 Eino Callback 和工具审计日志。
@@ -45,6 +68,37 @@ type Config struct {
 	Auth Auth `yaml:"auth"`
 	// ProjectDir 是实际找到的 config.yaml 所在目录，不参与 YAML 序列化。
 	ProjectDir string `yaml:"-"`
+}
+
+// ResolveModelProfile returns the profile used by a chat request. An empty ID
+// resolves to active_model (or the first configured profile). Legacy single-
+// model configurations are represented as a profile with an empty ID.
+func (c *Config) ResolveModelProfile(id string) (ModelProfile, error) {
+	if c == nil {
+		return ModelProfile{}, fmt.Errorf("model configuration is nil")
+	}
+	if len(c.Models) == 0 {
+		return ModelProfile{
+			APIKey:              c.OpenAI.APIKey,
+			Model:               c.OpenAI.Model,
+			BaseURL:             c.OpenAI.BaseURL,
+			ReasoningEffort:     c.OpenAI.ReasoningEffort,
+			MaxCompletionTokens: c.OpenAI.MaxCompletionTokens,
+			ContextWindowTokens: c.OpenAI.ContextWindowTokens,
+		}, nil
+	}
+	if id == "" {
+		id = c.ActiveModel
+	}
+	if id == "" {
+		id = c.Models[0].ID
+	}
+	for _, profile := range c.Models {
+		if profile.ID == id {
+			return profile, nil
+		}
+	}
+	return ModelProfile{}, fmt.Errorf("model %q is not defined", id)
 }
 
 // ExecutionEvents 是 P8 实时执行进度的灰度开关与规模参数。
@@ -103,7 +157,16 @@ type Session struct {
 	Store       string `yaml:"store"` // file 或 mysql；默认 file 兼容已有部署。
 	MaxMessages int    `yaml:"max_messages"`
 	MaxChars    int    `yaml:"max_chars"`
-	ExpireDays  int    `yaml:"expire_days"`
+	// HardMaxMessages and HardMaxChars are absolute guardrails used when a
+	// model-specific token window is configured. MaxChars fields count bytes.
+	HardMaxMessages int `yaml:"hard_max_messages"`
+	HardMaxChars    int `yaml:"hard_max_chars"`
+	// MaxSummaryChars caps the deterministic summary injected before recent turns.
+	MaxSummaryChars int `yaml:"max_summary_chars"`
+	// ContextSafetyTokens reserves room for provider framing and tool results
+	// that cannot be known before the model starts running.
+	ContextSafetyTokens int `yaml:"context_safety_tokens"`
+	ExpireDays          int `yaml:"expire_days"`
 }
 
 // MySQL 连接现有实例；密码通过 MYSQL_PASSWORD 环境变量覆盖。
@@ -123,8 +186,20 @@ type Ollama struct {
 
 // Agent 类型。
 type Agent struct {
-	MultiAgent    bool   `yaml:"multi_agent"`
-	CheckpointDir string `yaml:"checkpoint_dir"`
+	MultiAgent    bool             `yaml:"multi_agent"`
+	CheckpointDir string           `yaml:"checkpoint_dir"`
+	AutoRouting   AutoModelRouting `yaml:"auto_routing"`
+}
+
+// AutoModelRouting controls the two-stage automatic model choice. The fast
+// model classifies the question and handles confident simple requests; the
+// strong model receives complex, uncertain, or failed classifications.
+type AutoModelRouting struct {
+	Enabled             bool     `yaml:"enabled"`
+	FastModel           string   `yaml:"fast_model"`
+	StrongModel         string   `yaml:"strong_model"`
+	ConfidenceThreshold float64  `yaml:"confidence_threshold"`
+	ClassifierTimeout   Duration `yaml:"classifier_timeout"`
 }
 
 // RAG 配置知识库的 Embedding、向量存储与检索参数。
@@ -185,6 +260,30 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 
 // Validate 检查配置中必须存在的字段。
 func (c *Config) Validate() error {
+	if c.Session.MaxSummaryChars == 0 {
+		c.Session.MaxSummaryChars = 4000
+	}
+	if c.Session.HardMaxMessages == 0 {
+		c.Session.HardMaxMessages = 200
+	}
+	if c.Session.HardMaxChars == 0 {
+		c.Session.HardMaxChars = 300000
+	}
+	if c.Session.ContextSafetyTokens == 0 {
+		c.Session.ContextSafetyTokens = 8192
+	}
+	if c.Session.MaxSummaryChars < 0 {
+		return fmt.Errorf("session.max_summary_chars must not be negative")
+	}
+	if c.Session.HardMaxMessages < 0 {
+		return fmt.Errorf("session.hard_max_messages must not be negative")
+	}
+	if c.Session.HardMaxChars < 0 {
+		return fmt.Errorf("session.hard_max_chars must not be negative")
+	}
+	if c.Session.ContextSafetyTokens < 0 {
+		return fmt.Errorf("session.context_safety_tokens must not be negative")
+	}
 	if value := os.Getenv("SESSION_STORE"); value != "" {
 		c.Session.Store = value
 	}
@@ -220,11 +319,104 @@ func (c *Config) Validate() error {
 		}
 	}
 	if strings.TrimSpace(c.OpenAI.Model) == "" {
-		return fmt.Errorf("model is required")
+		if len(c.Models) == 0 {
+			return fmt.Errorf("model is required")
+		}
 	}
 
 	if strings.TrimSpace(c.OpenAI.BaseURL) == "" {
-		return fmt.Errorf("base_url is required")
+		if len(c.Models) == 0 {
+			return fmt.Errorf("base_url is required")
+		}
+	}
+	for i := range c.Models {
+		p := &c.Models[i]
+		for name, value := range map[string]*string{"api_key": &p.APIKey, "model": &p.Model, "base_url": &p.BaseURL} {
+			*value, err = expandEnvironment(*value)
+			if err != nil {
+				return fmt.Errorf("models[%d].%s: %w", i, name, err)
+			}
+		}
+		if strings.TrimSpace(p.ID) == "" {
+			return fmt.Errorf("models[%d].id is required", i)
+		}
+		if strings.TrimSpace(p.Model) == "" || strings.TrimSpace(p.BaseURL) == "" {
+			return fmt.Errorf("models[%s] model and base_url are required", p.ID)
+		}
+		if p.MaxCompletionTokens < 0 {
+			return fmt.Errorf("models[%s].max_completion_tokens must not be negative", p.ID)
+		}
+		if p.ContextWindowTokens < 0 {
+			return fmt.Errorf("models[%s].context_window_tokens must not be negative", p.ID)
+		}
+		if p.ContextWindowTokens > 0 {
+			if p.MaxCompletionTokens <= 0 {
+				return fmt.Errorf("models[%s].max_completion_tokens must be positive when context_window_tokens is set", p.ID)
+			}
+			if p.ContextWindowTokens <= p.MaxCompletionTokens+c.Session.ContextSafetyTokens {
+				return fmt.Errorf("models[%s].context_window_tokens must exceed max_completion_tokens plus session.context_safety_tokens", p.ID)
+			}
+		}
+		if !strings.Contains(strings.ToLower(p.BaseURL), "localhost") && !strings.Contains(strings.ToLower(p.BaseURL), "127.0.0.1") && strings.TrimSpace(p.APIKey) == "" {
+			return fmt.Errorf("models[%s].api_key is required for remote provider", p.ID)
+		}
+	}
+	if c.ActiveModel != "" {
+		found := false
+		for _, p := range c.Models {
+			if p.ID == c.ActiveModel {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("active_model %q is not defined", c.ActiveModel)
+		}
+	}
+	if c.Agent.AutoRouting.Enabled {
+		if !c.Agent.MultiAgent {
+			return fmt.Errorf("agent.auto_routing requires agent.multi_agent=true")
+		}
+		if c.Agent.AutoRouting.FastModel == "" || c.Agent.AutoRouting.StrongModel == "" {
+			return fmt.Errorf("agent.auto_routing requires fast_model and strong_model")
+		}
+		known := make(map[string]bool, len(c.Models))
+		for _, p := range c.Models {
+			known[p.ID] = true
+		}
+		if !known[c.Agent.AutoRouting.FastModel] {
+			return fmt.Errorf("agent.auto_routing.fast_model %q is not defined", c.Agent.AutoRouting.FastModel)
+		}
+		if !known[c.Agent.AutoRouting.StrongModel] {
+			return fmt.Errorf("agent.auto_routing.strong_model %q is not defined", c.Agent.AutoRouting.StrongModel)
+		}
+		if c.Agent.AutoRouting.ConfidenceThreshold == 0 {
+			c.Agent.AutoRouting.ConfidenceThreshold = 0.7
+		}
+		if c.Agent.AutoRouting.ConfidenceThreshold <= 0 || c.Agent.AutoRouting.ConfidenceThreshold > 1 {
+			return fmt.Errorf("agent.auto_routing.confidence_threshold must be greater than 0 and no greater than 1")
+		}
+		if c.Agent.AutoRouting.ClassifierTimeout == 0 {
+			c.Agent.AutoRouting.ClassifierTimeout = Duration(8 * time.Second)
+		}
+		if c.Agent.AutoRouting.ClassifierTimeout < 0 {
+			return fmt.Errorf("agent.auto_routing.classifier_timeout must not be negative")
+		}
+	}
+	// Normalize the selected profile into the legacy OpenAI view so the rest of
+	// the application (including embeddings/memory overrides) remains unaware
+	// of the catalog representation.
+	if len(c.Models) > 0 {
+		id := c.ActiveModel
+		if id == "" {
+			id = c.Models[0].ID
+		}
+		for _, p := range c.Models {
+			if p.ID == id {
+				c.OpenAI = OpenAI{APIKey: p.APIKey, Model: p.Model, BaseURL: p.BaseURL, ReasoningEffort: p.ReasoningEffort, MaxCompletionTokens: p.MaxCompletionTokens, ContextWindowTokens: p.ContextWindowTokens}
+				break
+			}
+		}
 	}
 	// Ollama 的思考型模型可使用 none 关闭推理，以缩短简单任务的响应时间。
 	switch c.OpenAI.ReasoningEffort {
@@ -234,6 +426,17 @@ func (c *Config) Validate() error {
 	}
 	if c.OpenAI.MaxCompletionTokens < 0 {
 		return fmt.Errorf("openai.max_completion_tokens must not be negative")
+	}
+	if c.OpenAI.ContextWindowTokens < 0 {
+		return fmt.Errorf("openai.context_window_tokens must not be negative")
+	}
+	if c.OpenAI.ContextWindowTokens > 0 {
+		if c.OpenAI.MaxCompletionTokens <= 0 {
+			return fmt.Errorf("openai.max_completion_tokens must be positive when context_window_tokens is set")
+		}
+		if c.OpenAI.ContextWindowTokens <= c.OpenAI.MaxCompletionTokens+c.Session.ContextSafetyTokens {
+			return fmt.Errorf("openai.context_window_tokens must exceed max_completion_tokens plus session.context_safety_tokens")
+		}
 	}
 
 	// 本地 Ollama 通常不校验 API Key。

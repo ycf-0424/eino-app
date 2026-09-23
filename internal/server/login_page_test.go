@@ -39,7 +39,10 @@ func newLoginService(t *testing.T, localEnabled, feishuConfigured bool) *Service
 func getPath(t *testing.T, service *Service, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	service.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	// 登录测试使用配置中的规范主机，避免被 canonical-host 保护提前重定向。
+	req.Host = "localhost:18180"
+	service.Handler().ServeHTTP(rec, req)
 	return rec
 }
 

@@ -43,7 +43,7 @@ func TestSkillCatalogBypassesSelectedSkillAndModel(t *testing.T) {
 	s.skills.ExposeNames = true
 	// model/cfg 均为 nil；误入模型路径会使测试失败。
 	var out bytes.Buffer
-	result, err := s.ChatWithSink(context.Background(), "catalog-test", "目前都有什么技能", "visualize", &out, nil)
+	result, err := s.ChatWithSink(context.Background(), "catalog-test", "目前都有什么技能", "visualize", "", &out, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

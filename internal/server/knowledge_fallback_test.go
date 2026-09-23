@@ -34,6 +34,10 @@ func TestKnowledgeMissFallsBackToModel(t *testing.T) {
 	cfg.Skills.Dir = t.TempDir()
 	cfg.OpenAI.BaseURL = mock.URL + "/v1"
 	cfg.OpenAI.APIKey = "test"
+	// config.yaml normally contains the production model catalog; this test
+	// intentionally switches to the local mock OpenAI endpoint.
+	cfg.Models = nil
+	cfg.ActiveModel = ""
 	cfg.RAG.Enabled = false    // 文档知识库无命中
 	cfg.Memory.Enabled = false // 长期记忆无命中
 	cfg.LocalFiles.Enabled = false

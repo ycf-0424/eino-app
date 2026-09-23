@@ -43,6 +43,7 @@ func main() {
 	minToolSource := flag.Float64("min-tool-source", -1, "最低期望工具来源字段匹配率；-1 表示不检查")
 	maxForbiddenToolViolations := flag.Int("max-forbidden-tool-violations", -1, "评测集明确禁止的工具调用允许的最多违规用例数；-1 表示不检查")
 	debugOverride := flag.String("debug", "", "覆盖 config.yaml 的 debug（true/false）；留空时使用配置文件")
+	modelOverride := flag.String("model", "", "评测使用的模型 profile ID；默认固定 config.yaml active_model，使用生产自动路由请显式传 auto")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -53,6 +54,10 @@ func main() {
 	cfg.Debug, err = applyDebugOverride(cfg.Debug, *debugOverride)
 	if err != nil {
 		fail(err)
+	}
+	evaluationModelID := strings.TrimSpace(*modelOverride)
+	if evaluationModelID == "" {
+		evaluationModelID = cfg.ActiveModel
 	}
 	if *file == "" {
 		*file = filepath.Join(cfg.ProjectDir, "internal", "integration", "eval_cases.json")
@@ -70,7 +75,7 @@ func main() {
 	if *threshold >= 0 {
 		effectiveThreshold = *threshold
 	}
-	runner, err := newProductionRouter(ctx, cfg, effectiveThreshold)
+	runner, err := newProductionRouter(ctx, cfg, effectiveThreshold, evaluationModelID)
 	if err != nil {
 		fail(err)
 	}
@@ -86,7 +91,8 @@ func main() {
 	routes, _ := evaluation.RunRouting(ctx, runner, cases)
 	evaluation.SummarizeRouting(&report, cases, routes)
 	debugSetting := cfg.Debug
-	report.Model = cfg.OpenAI.Model
+	report.ModelID = evaluationModelID
+	report.Model = modelName(cfg, evaluationModelID)
 	report.Debug = &debugSetting
 	report.ScoreThreshold = effectiveThreshold
 	data, err := json.MarshalIndent(report, "", "  ")
@@ -185,13 +191,14 @@ type productionRouter struct {
 	service  *appserver.Service
 	tempDir  string
 	owner    string
+	modelID  string
 	mu       sync.Mutex
 	answers  map[string]output.Answer
 	routing  map[string]evaluation.Routing
 	errCache map[string]error
 }
 
-func newProductionRouter(ctx context.Context, source *config.Config, scoreThreshold float64) (*productionRouter, error) {
+func newProductionRouter(ctx context.Context, source *config.Config, scoreThreshold float64, modelID string) (*productionRouter, error) {
 	tempDir, err := os.MkdirTemp("", "my-eino-eval-")
 	if err != nil {
 		return nil, fmt.Errorf("create eval workspace: %w", err)
@@ -214,6 +221,7 @@ func newProductionRouter(ctx context.Context, source *config.Config, scoreThresh
 		service:  service,
 		tempDir:  tempDir,
 		owner:    "eval:local",
+		modelID:  modelID,
 		answers:  make(map[string]output.Answer),
 		routing:  make(map[string]evaluation.Routing),
 		errCache: make(map[string]error),
@@ -254,7 +262,7 @@ func (r *productionRouter) run(ctx context.Context, question string) (output.Ans
 	recorder := execution.NewRecorder(0)
 	var answerText bytes.Buffer
 	requestCtx := auth.WithOwner(ctx, r.owner)
-	_, err := r.service.ChatWithSink(requestCtx, uuid.NewString(), question, "", &answerText, recorder)
+	_, err := r.service.ChatWithSink(requestCtx, uuid.NewString(), question, "", r.modelID, &answerText, recorder)
 	events := recorder.Events()
 	answer := output.Answer{Answer: strings.TrimSpace(answerText.String()), Sources: sourcesFromEvents(events)}
 	routing := routingFromEvents(events)
@@ -268,6 +276,21 @@ func (r *productionRouter) run(ctx context.Context, question string) (output.Ans
 	r.errCache[question] = err
 	r.mu.Unlock()
 	return answer, routing, err
+}
+
+func modelName(cfg *config.Config, modelID string) string {
+	if modelID == "auto" {
+		return "automatic model routing"
+	}
+	for _, profile := range cfg.Models {
+		if profile.ID == modelID {
+			return profile.Model
+		}
+	}
+	if modelID == cfg.ActiveModel {
+		return cfg.OpenAI.Model
+	}
+	return modelID
 }
 
 func sourcesFromEvents(events []execution.Event) []string {

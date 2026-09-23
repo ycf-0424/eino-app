@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,12 +31,17 @@ import (
 // ChatAgent 持有 Runner 和当前会话历史。
 // 历史由该对象管理，控制台不再直接维护消息切片。
 type ChatAgent struct {
-	runner      *adk.Runner
-	history     []*schema.Message
-	sessionID   string
-	persist     func([]*schema.Message) error
-	maxMessages int
-	maxChars    int
+	runner              *adk.Runner
+	history             []*schema.Message
+	sessionID           string
+	persist             func([]*schema.Message) error
+	maxMessages         int
+	maxChars            int
+	dynamicMaxMessages  int
+	dynamicMaxChars     int
+	contextBudget       session.ContextBudget
+	maxSummaryChars     int
+	promptReserveTokens int
 	// em 是本轮执行事件发射器，由 AskTo/ResumeApprovalTo 从 context 读取。
 	em    execution.Emitter
 	runID string
@@ -81,14 +87,56 @@ func New(ctx context.Context, cm einomodel.ToolCallingChatModel, debug, multiAge
 
 // NewWithInstruction 在基础 Prompt 后追加所选 Skill 的业务规则。
 func NewWithInstruction(ctx context.Context, cm einomodel.ToolCallingChatModel, debug, multiAgent bool, checkPointStore adk.CheckPointStore, instruction string, extraTools ...einotool.BaseTool) (*ChatAgent, error) {
+	return NewWithRoleModels(ctx, RoleModels{Supervisor: cm, Knowledge: cm, Writer: cm}, debug, multiAgent, checkPointStore, instruction, extraTools...)
+}
+
+// RoleModels allows automatic routing to assign models by responsibility.
+// Concrete-model mode supplies the same model for all three fields.
+type RoleModels struct {
+	Supervisor einomodel.ToolCallingChatModel
+	Knowledge  einomodel.ToolCallingChatModel
+	Writer     einomodel.ToolCallingChatModel
+	// ContextWindowTokens and MaxCompletionTokens describe the selected model
+	// profile. Zero context means the provider limit is unknown and legacy
+	// message/byte compaction is used.
+	ContextWindowTokens int
+	MaxCompletionTokens int
+	// Automatic marks a model chosen by the server's classifier, so the
+	// supervisor follows the automatic-routing prompt rather than treating the
+	// model as a user-pinned profile.
+	Automatic bool
+	// SingleModel disables the supervisor/sub-agent graph for a confident fast
+	// route. This keeps simple questions to one Qwen call after classification.
+	SingleModel bool
+}
+
+// NewWithRoleModels builds the agent graph with explicit per-role models.
+func NewWithRoleModels(ctx context.Context, models RoleModels, debug, multiAgent bool, checkPointStore adk.CheckPointStore, instruction string, extraTools ...einotool.BaseTool) (*ChatAgent, error) {
 	tools := []einotool.BaseTool{toolset.NewTimeTool(), toolset.NewWriteNoteTool()}
 	tools = append(tools, extraTools...)
 	runtimeInstruction := wrapSkillInstruction(instruction)
+	supervisorInstruction := prompt.SystemInstruction + "\n" + runtimeInstruction
+	if models.Automatic {
+		supervisorInstruction += `
+
+<model_routing>
+服务端已经先用 Qwen 9B 完成本轮难度分类，并为本轮绑定了最终模型。不要再次选择模型，也不要为了形式而重复委派。
+简单问答直接回答；涉及私有资料先委派 knowledge-agent；复杂分析、长文组织、方案比较或取得检索结果后需要成稿时，才委派 writer-agent 输出最终答案。
+</model_routing>`
+	}
+	promptReserveTokens := estimatePromptTokens(ctx, supervisorInstruction, tools)
+	if multiAgent {
+		promptReserveTokens = max(
+			promptReserveTokens,
+			estimatePromptTokens(ctx, prompt.KnowledgeAgentInstruction+"\n"+runtimeInstruction, knowledgeTools(extraTools)),
+			estimatePromptTokens(ctx, prompt.WriterAgentInstruction+"\n"+runtimeInstruction, skillReadTools(extraTools)),
+		)
+	}
 	a, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "xinghe-system-assistant",
 		Description: "星河系统的中文智能助手。",
-		Instruction: prompt.SystemInstruction + "\n" + runtimeInstruction,
-		Model:       cm,
+		Instruction: supervisorInstruction,
+		Model:       models.Supervisor,
 		// ToolsConfig 把工具定义和统一工具中间件挂到 Agent 的执行循环中。
 		ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{
 			Tools:               tools,
@@ -105,7 +153,7 @@ func NewWithInstruction(ctx context.Context, cm einomodel.ToolCallingChatModel, 
 		knowledgeAgent, subErr := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 			Name: "knowledge-agent", Description: "Searches private knowledge and returns grounded facts.",
 			Instruction: prompt.KnowledgeAgentInstruction + "\n" + runtimeInstruction,
-			Model:       cm,
+			Model:       models.Knowledge,
 			// 子 Agent 也必须挂同一中间件，否则它会绕过执行事件采集。
 			ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools:               knowledgeTools(extraTools),
@@ -118,7 +166,7 @@ func NewWithInstruction(ctx context.Context, cm einomodel.ToolCallingChatModel, 
 		}
 		writerAgent, subErr := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 			Name: "writer-agent", Description: "Organizes facts into a clear final answer.",
-			Instruction: prompt.WriterAgentInstruction + "\n" + runtimeInstruction, Model: cm,
+			Instruction: prompt.WriterAgentInstruction + "\n" + runtimeInstruction, Model: models.Writer,
 			ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools:               skillReadTools(extraTools),
 				UnknownToolsHandler: unknownToolHint(skillReadTools(extraTools)),
@@ -142,10 +190,26 @@ func NewWithInstruction(ctx context.Context, cm einomodel.ToolCallingChatModel, 
 			EnableStreaming: true,
 			CheckPointStore: checkPointStore,
 		}),
-		history: make([]*schema.Message, 0, 16),
-		debug:   debug,
-		em:      execution.Nop(),
+		history:             make([]*schema.Message, 0, 16),
+		debug:               debug,
+		em:                  execution.Nop(),
+		promptReserveTokens: promptReserveTokens,
 	}, nil
+}
+
+func estimatePromptTokens(ctx context.Context, instruction string, tools []einotool.BaseTool) int {
+	total := session.EstimateTextTokens(instruction)
+	for _, tool := range tools {
+		info, err := tool.Info(ctx)
+		if err != nil || info == nil {
+			continue
+		}
+		encoded, err := json.Marshal(info)
+		if err == nil {
+			total += session.EstimateTextTokens(string(encoded)) + 4
+		}
+	}
+	return total
 }
 
 // wrapSkillInstruction 把每轮动态加载的 Skill 与固定系统规则隔离。
@@ -235,6 +299,21 @@ func (a *ChatAgent) SetPersistence(save func([]*schema.Message) error, maxMessag
 	a.persist, a.maxMessages, a.maxChars = save, maxMessages, maxChars
 }
 
+// SetContextBudget enables per-model token-aware history compaction. A zero
+// model window leaves token limiting disabled while preserving legacy caps.
+func (a *ChatAgent) SetContextBudget(budget session.ContextBudget, maxSummaryChars int) {
+	budget.PromptTokens += a.promptReserveTokens
+	a.contextBudget = budget
+	a.maxSummaryChars = maxSummaryChars
+}
+
+// SetDynamicHistoryCaps limits message count and serialized text size when a
+// model-specific token window is active. Legacy caps remain the fallback when
+// the selected model's context window is unknown.
+func (a *ChatAgent) SetDynamicHistoryCaps(maxMessages, maxChars int) {
+	a.dynamicMaxMessages, a.dynamicMaxChars = maxMessages, maxChars
+}
+
 func (a *ChatAgent) saveHistory() error {
 	if a.persist == nil {
 		return nil
@@ -314,19 +393,40 @@ func (a *ChatAgent) AskTo(ctx context.Context, query string, writer io.Writer) e
 	if a.sessionID != "" {
 		options = append(options, adk.WithCheckPointID(a.sessionID))
 	}
-	// 占位消息不能传给模型，先构建上下文再创建待生成记录。
-	input := session.CompactHistory(a.history, a.maxMessages, a.maxChars)
+	// Prefix data is loaded before compaction so retrieved memory/knowledge is
+	// charged against this selected model's input window.
+	var memoryMessage *schema.Message
 	if a.memoryContext != nil {
 		text, err := a.memoryContext(ctx, query)
 		if err != nil {
 			a.history = a.history[:previousLength]
 			return fmt.Errorf("load memory: %w", err)
 		}
-		input = append([]*schema.Message{schema.SystemMessage(text)}, input...)
+		memoryMessage = schema.SystemMessage(text)
 	}
+	var prefix []*schema.Message
 	if a.preflight != "" {
-		input = append([]*schema.Message{schema.SystemMessage(a.preflight)}, input...)
+		prefix = append(prefix, schema.SystemMessage(a.preflight))
 	}
+	if memoryMessage != nil {
+		prefix = append(prefix, memoryMessage)
+	}
+	historyTokenBudget := a.contextBudget.HistoryTokens(prefix)
+	maxMessages, maxChars := a.maxMessages, a.maxChars
+	if historyTokenBudget >= 0 {
+		if a.dynamicMaxMessages > 0 {
+			maxMessages = a.dynamicMaxMessages
+		}
+		if a.dynamicMaxChars > 0 {
+			maxChars = a.dynamicMaxChars
+		}
+	}
+	input := session.CompactHistoryWithBudget(a.history, maxMessages, maxChars, historyTokenBudget, a.maxSummaryChars)
+	if historyTokenBudget >= 0 && session.EstimateMessagesTokens(input) > historyTokenBudget {
+		a.history = a.history[:previousLength]
+		return fmt.Errorf("%w: 当前问题及检索上下文超过所选模型的估算输入预算，请缩短问题、减少检索资料或选择更大上下文模型", session.ErrContextBudgetExceeded)
+	}
+	input = append(prefix, input...)
 	if err := a.beginReply(); err != nil {
 		a.history = a.history[:previousLength]
 		return err

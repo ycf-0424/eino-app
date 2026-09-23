@@ -8,6 +8,7 @@ import (
 	"html"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -54,11 +55,86 @@ func (s *Service) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, response{Error: "feishu login is not configured"})
 			return
 		}
+		// state 存在 Cookie 里，而浏览器按主机名隔离 Cookie。若用户从
+		// 127.0.0.1 进入、配置却登记了 localhost（或反过来），飞书回调
+		// 会落到另一个主机，state 必然校验失败。先把登录入口规范化到
+		// FEISHU_REDIRECT_URL 的 scheme/host，再种 state，避免这类确定性的
+		// 400，而不要求用户理解 localhost 与 127.0.0.1 的 Cookie 规则。
+		if s.redirectLoginToConfiguredOrigin(w, r) {
+			return
+		}
 		state := auth.NewState(w)
 		http.Redirect(w, r, s.authFeishu.AuthorizeURL(state), http.StatusFound)
 		return
 	}
 	s.renderLoginPage(w)
+}
+
+// redirectLoginToConfiguredOrigin 将飞书登录入口规范化到回调 URL 的
+// scheme/host。飞书只会回调配置的地址，state 又依赖浏览器 Cookie，因此
+// 两者不一致时必须在写 state 之前完成跳转。
+//
+// 返回 true 表示已经写出跳转响应。配置无法解析时不拦截请求，让后续
+// 的授权 URL 逻辑继续负责报错；正式配置会在启动校验阶段保证非空。
+func (s *Service) redirectLoginToConfiguredOrigin(w http.ResponseWriter, r *http.Request) bool {
+	if s == nil || s.cfg == nil {
+		return false
+	}
+	configured, err := url.Parse(strings.TrimSpace(s.cfg.Auth.RedirectURL))
+	if err != nil || configured.Scheme == "" || configured.Host == "" {
+		return false
+	}
+
+	actualScheme := requestScheme(r)
+	if sameAuthority(r.Host, configured.Host, configured.Scheme) && strings.EqualFold(actualScheme, configured.Scheme) {
+		return false
+	}
+
+	target := *r.URL
+	target.Scheme = configured.Scheme
+	target.Host = configured.Host
+	target.Path = "/auth/login"
+	target.RawPath = ""
+	http.Redirect(w, r, target.String(), http.StatusFound)
+	return true
+}
+
+// sameAuthority treats an omitted default port and its explicit form as the
+// same authority. Browsers normally omit :80/:443 from Host, while operators
+// sometimes include it in FEISHU_REDIRECT_URL; considering those equivalent
+// avoids a redirect loop at the canonical login URL.
+func sameAuthority(actual, expected, scheme string) bool {
+	actualHost, actualPort := splitAuthority(actual, scheme)
+	expectedHost, expectedPort := splitAuthority(expected, scheme)
+	return strings.EqualFold(actualHost, expectedHost) && actualPort == expectedPort
+}
+
+func splitAuthority(raw, scheme string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	if host, port, err := net.SplitHostPort(raw); err == nil {
+		return strings.Trim(strings.ToLower(host), "[]"), port
+	}
+	defaultPort := ""
+	if strings.EqualFold(scheme, "https") {
+		defaultPort = "443"
+	} else if strings.EqualFold(scheme, "http") {
+		defaultPort = "80"
+	}
+	return strings.Trim(strings.ToLower(raw), "[]"), defaultPort
+}
+
+// requestScheme 取反向代理传来的原始协议；没有代理头时根据 TLS 判断。
+func requestScheme(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		if i := strings.IndexByte(forwarded, ','); i >= 0 {
+			forwarded = forwarded[:i]
+		}
+		return strings.TrimSpace(forwarded)
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 // renderLoginPage 输出登录页，并按其启用状态裁剪掉不可用的入口。

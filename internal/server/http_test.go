@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -11,9 +12,40 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"my-eino-app/internal/config"
 	"my-eino-app/internal/session"
 	"my-eino-app/internal/skill"
 )
+
+func TestModelsEndpointOffersAutomaticRoutingFirst(t *testing.T) {
+	service := &Service{cfg: &config.Config{
+		Models: []config.ModelProfile{
+			{ID: "qwen-fast", Provider: "ollama", Model: "qwen3.5:9b"},
+			{ID: "deepseek-ark", Provider: "volcengine-ark", Model: "deepseek-v4-1-flash-260910"},
+		},
+		ActiveModel: "qwen-fast",
+		Agent: config.Agent{MultiAgent: true, AutoRouting: config.AutoModelRouting{
+			Enabled: true, FastModel: "qwen-fast", StrongModel: "deepseek-ark",
+		}},
+	}}
+	rec := httptest.NewRecorder()
+	service.handleModels(rec, httptest.NewRequest(http.MethodGet, "/models", nil))
+
+	var body struct {
+		Data struct {
+			Active string `json:"active"`
+			Models []struct {
+				ID string `json:"id"`
+			} `json:"models"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Data.Active != "auto" || len(body.Data.Models) != 3 || body.Data.Models[0].ID != "auto" {
+		t.Fatalf("models response = %+v", body.Data)
+	}
+}
 
 func TestWebApplicationIsEmbedded(t *testing.T) {
 	service := &Service{}

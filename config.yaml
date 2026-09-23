@@ -1,19 +1,74 @@
-# my-eino-app 模型配置
-# 当前指向本地 Ollama；换火山方舟只需改下面三行
+# my-eino-app 的唯一通用配置入口
+# 本地 Qwen、火山方舟和自动路由统一配置在下面的 models / agent.auto_routing 中。
+# API Key 建议放在 .env，再通过 ${ENV_NAME} 引用。
 
-openai:
-  api_key: "ollama"                                 # Ollama 不校验 Key；方舟填 ark-xxx
-  model: "qwen3.5:9b"                               # 本地模型名；方舟填 doubao-seed-evolving
-  base_url: "http://localhost:11434/v1"             # 方舟填 https://ark.cn-beijing.volces.com/api/v3
-  reasoning_effort: "none"                          # 关闭本地思考模型的隐藏推理，降低简单问答延迟
-  max_completion_tokens: 1024                       # 限制单次输出，避免请求长期占用本机资源
+# 多模型配置（可选）：定义多个可切换的模型
+# 前端会在输入框右下角显示模型选择器，用户可以在对话中切换
+# context_window_tokens 填实际模型窗口；设为 0 时该模型沿用 max_messages/max_chars 固定上限。
+models:
+  - id: qwen-fast
+    provider: ollama
+    model: qwen3.5:9b
+    base_url: http://localhost:11434/v1
+    reasoning_effort: none
+    max_completion_tokens: 1024
+    context_window_tokens: 0 # 填该模型提供商声明的总上下文 Token 数；0 表示未知并沿用会话固定上限
+  - id: doubao-seed-evolving
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: doubao-seed-evolving
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+    reasoning_effort: none
+    max_completion_tokens: 4096
+    context_window_tokens: 0
+  - id: glm-ark
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: glm-5-3-flash-260828
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+    reasoning_effort: none
+    max_completion_tokens: 4096
+    context_window_tokens: 0
+  - id: deepseek-ark
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: deepseek-v4-1-flash-260910
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+    reasoning_effort: none
+    max_completion_tokens: 4096
+    context_window_tokens: 0
+  - id: doubao-seed-2-1-lite
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: doubao-seed-2-1-lite-260915
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+    reasoning_effort: none
+    max_completion_tokens: 4096
+    context_window_tokens: 0
+  - id: doubao-seed-2-1-turbo
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: doubao-seed-2-1-turbo-260628
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+    reasoning_effort: none
+    max_completion_tokens: 4096
+    context_window_tokens: 0
+
+# 默认激活的模型 ID（对应上面 models 列表中的 id）
+active_model: qwen-fast
 
 # 对话历史保存目录；程序重启后可通过 --session 恢复
 session_dir: "data/sessions"
 session:
   store: "file" # .env 的 SESSION_STORE=mysql 会覆盖此默认值
+  # 模型窗口未配置（context_window_tokens: 0）时使用下面这组传统限制。
   max_messages: 20
   max_chars: 12000
+  # 配置模型窗口时，按 Token 预算裁剪；下面两项仅作绝对保护上限。
+  hard_max_messages: 200
+  hard_max_chars: 300000
+  max_summary_chars: 4000
+  context_safety_tokens: 8192
   expire_days: 30
 
 skills:
@@ -51,10 +106,9 @@ execution_events:
   max_events_per_run: 5000 # 单个 run 落库的事件上限
   dir: "data/executions"   # 文件后端的执行日志目录
 
-# 登录认证与多用户隔离。enabled: false 时以单用户模式运行，行为与改造前一致；
-# 部署态在最后一步（5.5）置 true，并同步把 memory.identity_mode 改为 multi_user。
+# 登录认证与多用户隔离。访客可以先打开首页，但创建会话和发送消息前必须登录。
 auth:
-  enabled: false
+  enabled: true
   provider: feishu
   app_id: ""               # 建议用环境变量 FEISHU_APP_ID 注入，不写进仓库
   app_secret: ""           # 同上，FEISHU_APP_SECRET
@@ -71,13 +125,22 @@ auth:
 agent:
   multi_agent: true
   checkpoint_dir: "data/checkpoints"
+  # 自动模式：先用 Qwen 9B 判断任务难度，再选择一个最终模型。
+  # 简单问题走 qwen-fast；复杂问题、分类失败或低置信度走 strong_model。
+  # 用户手动选择具体模型时，所有 Agent 都统一使用该模型。
+  auto_routing:
+    enabled: true
+    fast_model: qwen-fast
+    strong_model: deepseek-ark
+    confidence_threshold: 0.7
+    classifier_timeout: 8s
 
 # 自动记忆：需先执行 go run ./cmd/session-migrate。
 # 用户偏好保存在 MySQL；项目决策/里程碑才会进入独立 Milvus 集合。
 memory:
   enabled: true
-  identity_mode: "local_single_user"
-  owner_id: "local-owner"
+  identity_mode: "multi_user"
+  owner_id: ""
   project_id: "my-eino-app"
   auto_extract: true
   extractor_model: "inherit_chat"

@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -122,6 +123,56 @@ func TestCompactHistorySummarySkipsPlaceholder(t *testing.T) {
 	}
 	if summary := got[0].Content; summary != summaryPrefix+"用户: 旧问题" {
 		t.Fatalf("摘要里混入了空占位: %q", summary)
+	}
+}
+
+func TestCompactHistoryWithTokenBudgetKeepsNewestAndFitsEstimate(t *testing.T) {
+	messages := []*schema.Message{
+		schema.UserMessage("旧问题，包含很多无关内容"),
+		schema.AssistantMessage("旧回答，包含很多无关内容", nil),
+		schema.UserMessage("近期问题"),
+		schema.AssistantMessage("近期回答", nil),
+		schema.UserMessage("当前问题必须保留"),
+	}
+	currentTokens := EstimateMessagesTokens(messages[len(messages)-1:])
+	budget := currentTokens + 36
+	got := CompactHistoryWithBudget(messages, 0, 0, budget, 100)
+	if len(got) == 0 || got[len(got)-1].Content != "当前问题必须保留" {
+		t.Fatalf("newest user query was not preserved: %+v", got)
+	}
+	if estimated := EstimateMessagesTokens(got); estimated > budget {
+		t.Fatalf("estimated history tokens = %d, budget = %d, history = %+v", estimated, budget, got)
+	}
+}
+
+func TestCompactHistoryCapsSummaryTotalLength(t *testing.T) {
+	messages := []*schema.Message{
+		schema.UserMessage(strings.Repeat("旧内容", 80)),
+		schema.AssistantMessage(strings.Repeat("旧回答", 80), nil),
+		schema.UserMessage("当前问题"),
+	}
+	const maxSummaryRunes = 48
+	got := CompactHistoryWithBudget(messages, 1, 0, -1, maxSummaryRunes)
+	if len(got) < 2 || got[0].Role != schema.System {
+		t.Fatalf("expected capped summary and recent query, got %+v", got)
+	}
+	if runes := len([]rune(got[0].Content)); runes > maxSummaryRunes {
+		t.Fatalf("summary runes = %d, limit = %d", runes, maxSummaryRunes)
+	}
+	if got[len(got)-1].Content != "当前问题" {
+		t.Fatalf("current user query was lost: %+v", got)
+	}
+}
+
+func TestContextBudgetSubtractsOutputPromptPrefixAndSafety(t *testing.T) {
+	prefix := []*schema.Message{schema.SystemMessage("检索到的项目资料")}
+	budget := ContextBudget{WindowTokens: 16000, OutputTokens: 2000, PromptTokens: 1000, SafetyTokens: 500}
+	want := 16000 - 2000 - 1000 - 500 - EstimateMessagesTokens(prefix)
+	if got := budget.HistoryTokens(prefix); got != want {
+		t.Fatalf("HistoryTokens() = %d, want %d", got, want)
+	}
+	if got := (ContextBudget{}).HistoryTokens(nil); got != -1 {
+		t.Fatalf("unknown model window should disable token cap, got %d", got)
 	}
 }
 

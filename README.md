@@ -35,24 +35,110 @@
 
 要求 Go、Docker Compose、Ollama（或 OpenAI 兼容模型服务）和 Milvus 依赖。
 
+### 启动依赖服务
+
+先启动 MySQL、Milvus、etcd 和 MinIO。首次使用或清理过数据卷时，等待容器全部变为 healthy：
+
 ```bash
-docker compose -f docker-compose.milvus.yml up -d
-make check
+docker compose -f docker-compose.milvus.yml up -d mysql etcd minio milvus
+docker compose -f docker-compose.milvus.yml ps
+```
+
+Windows PowerShell 也可以使用 Makefile：
+
+```powershell
+make infra-up
+```
+
+### 配置模型
+
+项目支持 Ollama 与远程 OpenAI 兼容接口同时存在。直接在 [`config.yaml`](config.yaml) 的 `models` 段配置多个模型：
+
+```yaml
+active_model: ollama-local
+models:
+  - id: ollama-local
+    provider: ollama
+    api_key: "ollama"
+    model: "qwen3.5:9b"
+    base_url: "http://localhost:11434/v1"
+    context_window_tokens: 0 # 填本地模型服务实际启用的上下文窗口
+  - id: ark-doubao
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: "doubao-seed-2-0-pro"
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+    max_completion_tokens: 4096
+    context_window_tokens: 0 # 填提供商公布的总上下文窗口；0 表示未知，使用固定历史上限
+```
+
+前端会从 `/models` 动态显示模型。选择“自动混合”时，服务先用 Qwen 9B 做一次难度分类：简单问题继续由 Qwen 9B 回答，复杂问题、低置信度或分类失败时切换到 `strong_model`（当前为火山方舟 DeepSeek）；手动选择具体模型则跳过分类并固定使用该模型。API Key 建议写入 `.env`，例如：
+
+设置 `context_window_tokens` 后，服务会为选中的模型按“总上下文窗口 − 回复额度 − 系统/工具提示估算 − 检索前缀 − 安全余量”动态裁剪历史；自动路由有回退模型时按两者中较小的窗口计算。Token 数通过保守估算而非供应商专用分词器计算。窗口值为 `0` 时使用旧的 `session.max_messages` / `session.max_chars` 固定上限；配置了窗口时则由 Token 预算控制历史，并受 `session.hard_max_messages` / `session.hard_max_chars` 兜底约束。旧对话摘要另受 `session.max_summary_chars` 限制。
+
+```powershell
+$env:ARK_API_KEY = "ark-xxx"
+```
+
+如果不配置 `models`，程序继续使用原来的 `openai.api_key`、`openai.model` 和 `openai.base_url` 配置。
+
+自动路由可在 `config.yaml` 中调整：
+
+```yaml
+agent:
+  auto_routing:
+    enabled: true
+    fast_model: qwen-fast
+    strong_model: deepseek-ark
+    confidence_threshold: 0.7
+    classifier_timeout: 8s
+```
+
+认证开启时，首页允许未登录用户先打开；右上角个人信息区域会显示“未登录”和登录入口。未登录状态不能新建会话或发送消息，登录成功后才可以开始对话。
+
+### 启动、索引和测试
+
+首次启动或日常启动都推荐使用：
+
+```bash
+make start
+```
+
+`make start` 会依次启动 MySQL/Milvus 等依赖、执行数据库迁移，并启动后端和内置前端。启动后浏览器访问 `http://127.0.0.1:18181`。在 GoLand 中打开项目后，打开底部 **Terminal**，进入项目根目录，输入这一条命令即可：
+
+```powershell
+make start
+```
+
+知识库首次初始化或文档发生变化时，再单独执行：
+
+```powershell
 make index
-make eval
 ```
 
-启动服务：
+`make check` 是代码检查，`make eval` 是评测命令，都不是日常启动必需步骤。
 
-```bash
-make run
-```
-
-浏览器访问 `http://127.0.0.1:18181`。普通单元测试使用串行编译，避免低内存环境并行编译失败：
+普通单元测试使用串行编译，避免低内存环境并行编译失败：
 
 ```bash
 go test -p 1 ./...
 go vet ./...
+```
+
+不使用 Makefile 时，可直接运行 Go 命令：
+
+```powershell
+go run ./cmd/server -addr 127.0.0.1:18181
+go run ./cmd/indexer
+go run ./cmd/retrieve "星河系统使用什么技术栈？"
+go run ./cmd/eval
+```
+
+如果只想启动 Docker 内的完整应用栈：
+
+```bash
+docker compose -f docker-compose.milvus.yml up -d --build
+docker compose -f docker-compose.milvus.yml logs -f --tail=200 app
 ```
 
 ## 生产部署
