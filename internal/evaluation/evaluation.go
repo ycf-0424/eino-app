@@ -201,8 +201,8 @@ func Run(ctx context.Context, runner Runner, cases []Case, input func(string) ch
 // them as one product behavior rather than under-counting valid refusals.
 func isRefusal(answer string) bool {
 	for _, marker := range []string{
-		"无法确认", "不知道", "未知", "无足够依据", "没有找到足够", "没有足够资料", "未找到足够",
-		"未记载", "没有记载", "未记录", "没有记录", "未提及", "没有提及", "无法读取", "不能承诺",
+		"无法确认", "无法回答", "不知道", "未知", "无足够依据", "没有找到足够", "没有足够资料", "未找到足够",
+		"未记载", "没有记载", "未记录", "没有记录", "未提到", "没有提到", "未提及", "没有提及", "无法读取", "不能承诺",
 	} {
 		if strings.Contains(answer, marker) {
 			return true

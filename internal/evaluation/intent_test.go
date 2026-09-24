@@ -22,4 +22,7 @@ func TestFixedIntentEvaluationMeetsPhase6Gates(t *testing.T) {
 		}
 		t.Fatalf("intent gates failed: %+v", report)
 	}
+	if report.OrdinaryTotal == 0 || report.OrdinaryFalsePositiveRate > 0.01 {
+		t.Fatalf("ordinary-request false-positive gate failed: %+v", report)
+	}
 }

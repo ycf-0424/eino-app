@@ -11,6 +11,7 @@ import (
 
 type IntentCase struct {
 	Question                   string             `json:"question"`
+	AttachmentIDs              []string           `json:"attachment_ids,omitempty"`
 	ExpectedKind               routing.IntentKind `json:"expected_kind"`
 	ExpectedSources            []string           `json:"expected_sources"`
 	ExpectedNeedsClarification bool               `json:"expected_needs_clarification"`
@@ -28,12 +29,15 @@ type IntentCaseResult struct {
 }
 
 type IntentReport struct {
-	Total          int                `json:"total"`
-	Matched        int                `json:"matched"`
-	Accuracy       float64            `json:"accuracy"`
-	SourceMatched  int                `json:"source_matched"`
-	SourceAccuracy float64            `json:"source_accuracy"`
-	Cases          []IntentCaseResult `json:"cases"`
+	Total                     int                `json:"total"`
+	Matched                   int                `json:"matched"`
+	Accuracy                  float64            `json:"accuracy"`
+	SourceMatched             int                `json:"source_matched"`
+	SourceAccuracy            float64            `json:"source_accuracy"`
+	OrdinaryTotal             int                `json:"ordinary_total"`
+	OrdinaryFalsePositives    int                `json:"ordinary_false_positives"`
+	OrdinaryFalsePositiveRate float64            `json:"ordinary_false_positive_rate"`
+	Cases                     []IntentCaseResult `json:"cases"`
 }
 
 func LoadIntentCases(path string) ([]IntentCase, error) {
@@ -51,7 +55,7 @@ func LoadIntentCases(path string) ([]IntentCase, error) {
 func EvaluateIntentCases(cases []IntentCase) IntentReport {
 	report := IntentReport{Total: len(cases), Cases: make([]IntentCaseResult, 0, len(cases))}
 	for _, item := range cases {
-		plan := routing.ClassifyIntent(item.Question, nil)
+		plan := routing.ClassifyIntent(item.Question, item.AttachmentIDs)
 		expectedSources := append([]string(nil), item.ExpectedSources...)
 		actualSources := append([]string(nil), plan.RequiredSources...)
 		sourcesMatch := equalStrings(expectedSources, actualSources)
@@ -61,6 +65,12 @@ func EvaluateIntentCases(cases []IntentCase) IntentReport {
 		}
 		if sourcesMatch {
 			report.SourceMatched++
+		}
+		if item.ExpectedKind == routing.IntentGeneral {
+			report.OrdinaryTotal++
+			if plan.Kind != routing.IntentGeneral || len(plan.RequiredSources) > 0 {
+				report.OrdinaryFalsePositives++
+			}
 		}
 		report.Cases = append(report.Cases, IntentCaseResult{
 			Question: item.Question, ExpectedKind: item.ExpectedKind, ActualKind: plan.Kind,
@@ -73,6 +83,9 @@ func EvaluateIntentCases(cases []IntentCase) IntentReport {
 	}
 	if report.Total > 0 {
 		report.SourceAccuracy = float64(report.SourceMatched) / float64(report.Total)
+	}
+	if report.OrdinaryTotal > 0 {
+		report.OrdinaryFalsePositiveRate = float64(report.OrdinaryFalsePositives) / float64(report.OrdinaryTotal)
 	}
 	return report
 }

@@ -3,12 +3,22 @@ package evaluation
 import (
 	"context"
 	"errors"
+	"my-eino-app/internal/eino/chain"
+	"my-eino-app/internal/output"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	routingrules "my-eino-app/internal/routing"
 )
+
+type fakeAnswerRunner struct {
+	answer string
+}
+
+func (f fakeAnswerRunner) Run(context.Context, chain.Input) (output.Answer, error) {
+	return output.Answer{Answer: f.answer}, nil
+}
 
 // fakeRouter 按题目文本返回预置的路由结果，并记录被调用的题目。
 type fakeRouter struct {
@@ -30,6 +40,7 @@ func TestIsRefusalRecognizesKnowledgeAbsence(t *testing.T) {
 	for _, answer := range []string{
 		"知识库没有记录星河系统在火星的办公室地址。",
 		"现有资料未提及这个地址。",
+		"知识库资料中没有提到该职位，无法回答这一职位是谁。",
 		"无法确认该信息。",
 	} {
 		if !isRefusal(answer) {
@@ -38,6 +49,15 @@ func TestIsRefusalRecognizesKnowledgeAbsence(t *testing.T) {
 	}
 	if isRefusal("星河系统在上海部署，使用 Go、Eino 和 Milvus。") {
 		t.Fatal("ordinary factual answers must not count as refusals")
+	}
+}
+
+func TestRunCountsRecognizedRefusalAgainstDeclaredGate(t *testing.T) {
+	report := Run(context.Background(), fakeAnswerRunner{answer: "知识库资料中没有提到该职位，无法回答这一职位是谁。"}, []Case{{
+		Question: "unknown", ShouldRefuse: true,
+	}}, func(string) chain.Input { return chain.Input{} })
+	if report.RefusalRate != 1 || report.Cases[0].Correct != true || !report.Cases[0].Refused {
+		t.Fatalf("recognized refusal should satisfy the declared refusal case: %+v", report)
 	}
 }
 

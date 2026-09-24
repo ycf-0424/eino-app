@@ -18,7 +18,7 @@ db-attachments-migrate:
 sessions-import:
 	go run ./cmd/session-migrate -source data/sessions
 
-.PHONY: help fmt boundary test vet check start run stop restart restart-container build index retrieve eval \
+.PHONY: help fmt boundary test vet check start run stop restart restart-container build index retrieve eval eval-intent \
 	backup restore-check backup-linux restore-check-linux health-alert-linux \
 	image prod-up prod-rollback infra-up up attu down restart ps logs app-logs
 
@@ -38,6 +38,7 @@ help: ## 显示可用命令
 	@echo "make down        - 停止容器，保留数据卷"
 	@echo "make index       - 使用宿主机 Go 将文档写入 Milvus"
 	@echo "make eval        - 执行固定 RAG 评测"
+	@echo "make eval-intent - 离线执行五类意图与普通问题误触发评测"
 	@echo "make backup      - 备份 MySQL 与 Milvus 数据卷（保留最近 14 份）"
 	@echo "make restore-check - 用最近一份备份做恢复演练并比对行数"
 	@echo "make backup-linux - Linux 生产备份（使用 .env.prod）"
@@ -91,7 +92,10 @@ retrieve: ## 使用示例问题查看原始检索分数
 	go run ./cmd/retrieve "星河系统使用什么技术栈？"
 
 eval: ## 执行生产态本地 Ollama + Milvus 评测并检查路由/工具门槛
-	go run ./cmd/eval -debug=false -min-correct=0.8 -min-citation=1 -min-refusal=1 -min-server-route=0.95 -max-no-skill-false-positive=0 -max-forbidden-tool-violations=0 -min-tool-attempt=1 -min-tool-success=1 -min-tool-source=1 -min-intent-accuracy=0.95 -min-intent-source-accuracy=0.95
+	go run ./cmd/eval -debug=false -min-correct=0.8 -min-citation=1 -min-refusal=1 -min-server-route=0.95 -max-no-skill-false-positive=0 -max-forbidden-tool-violations=0 -min-tool-attempt=1 -min-tool-success=1 -min-tool-source=1 -min-intent-accuracy=0.95 -min-intent-source-accuracy=0.95 -max-ordinary-false-positive=0.01
+
+eval-intent: ## 离线执行五类意图与普通问题误触发评测
+	go run ./cmd/eval -intent-only -min-intent-accuracy=0.95 -min-intent-source-accuracy=0.95 -max-ordinary-false-positive=0.01
 
 # 备份与恢复演练（步骤 5.3）。用 PowerShell 而非 make 内联命令：
 # dump 与卷打包都涉及字节流，make 走 cmd.exe 更容易被引号与编码坑到。

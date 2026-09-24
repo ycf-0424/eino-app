@@ -44,6 +44,8 @@ func main() {
 	minToolSource := flag.Float64("min-tool-source", -1, "最低期望工具来源字段匹配率；-1 表示不检查")
 	minIntentAccuracy := flag.Float64("min-intent-accuracy", 0.95, "五类意图准确率最低门槛，至少 50 个固定样本")
 	minIntentSource := flag.Float64("min-intent-source-accuracy", 0.95, "意图证据来源准确率最低门槛，含普通问题不误触发检索的断言")
+	maxOrdinaryFalsePositive := flag.Float64("max-ordinary-false-positive", 0.01, "普通问题误触发非通用证据来源的最高比例")
+	intentOnly := flag.Bool("intent-only", false, "只运行离线五类意图/普通问题误触发门禁，不启动模型或向量库")
 	maxForbiddenToolViolations := flag.Int("max-forbidden-tool-violations", -1, "评测集明确禁止的工具调用允许的最多违规用例数；-1 表示不检查")
 	debugOverride := flag.String("debug", "", "覆盖 config.yaml 的 debug（true/false）；留空时使用配置文件")
 	modelOverride := flag.String("model", "", "评测使用的模型 profile ID；默认固定 config.yaml active_model，使用生产自动路由请显式传 auto")
@@ -67,6 +69,26 @@ func main() {
 	}
 	if *intentFile == "" {
 		*intentFile = filepath.Join(cfg.ProjectDir, "internal", "integration", "intent_eval_cases.json")
+	}
+	if *intentOnly {
+		intentCases, err := evaluation.LoadIntentCases(*intentFile)
+		if err != nil {
+			fail(err)
+		}
+		intentReport := evaluation.EvaluateIntentCases(intentCases)
+		thresholdErr := checkIntentThresholds(intentReport, *minIntentAccuracy, *minIntentSource, *maxOrdinaryFalsePositive)
+		if thresholdErr == nil {
+			intentReport.Cases = nil
+		}
+		data, err := json.MarshalIndent(intentReport, "", "  ")
+		if err != nil {
+			fail(err)
+		}
+		fmt.Println(string(data))
+		if thresholdErr != nil {
+			fail(thresholdErr)
+		}
+		return
 	}
 	if err := health.CheckOllama(ctx, cfg.OpenAI.BaseURL, cfg.OpenAI.Model, cfg.RAG.Embedding.Model, cfg.RAG.Dimension, time.Duration(cfg.Ollama.Timeout)); err != nil {
 		fail(err)
@@ -119,6 +141,7 @@ func main() {
 		maxForbiddenToolViolations: *maxForbiddenToolViolations,
 		minToolAttempt:             *minToolAttempt, minToolSuccess: *minToolSuccess, minToolSource: *minToolSource,
 		minIntentAccuracy: *minIntentAccuracy, minIntentSourceAccuracy: *minIntentSource,
+		maxOrdinaryFalsePositive: *maxOrdinaryFalsePositive,
 	}); err != nil {
 		fail(err)
 	}
@@ -156,15 +179,13 @@ type evaluationThresholds struct {
 	minCorrect, minCitation, minRefusal, minRouting, minServerRoute        float64
 	maxNoSkillFalsePositive, minToolAttempt, minToolSuccess, minToolSource float64
 	minIntentAccuracy, minIntentSourceAccuracy                             float64
+	maxOrdinaryFalsePositive                                               float64
 	maxForbiddenToolViolations                                             int
 }
 
 func checkEvaluationThresholds(report evaluation.Report, limits evaluationThresholds) error {
-	if report.Intent.Total < 50 {
-		return fmt.Errorf("intent evaluation requires at least 50 fixed samples; got %d", report.Intent.Total)
-	}
-	if report.Intent.Accuracy < limits.minIntentAccuracy || report.Intent.SourceAccuracy < limits.minIntentSourceAccuracy {
-		return fmt.Errorf("intent evaluation threshold not met: accuracy %.2f/%0.2f, source accuracy %.2f/%0.2f (%d samples)", report.Intent.Accuracy, limits.minIntentAccuracy, report.Intent.SourceAccuracy, limits.minIntentSourceAccuracy, report.Intent.Total)
+	if err := checkIntentThresholds(report.Intent, limits.minIntentAccuracy, limits.minIntentSourceAccuracy, limits.maxOrdinaryFalsePositive); err != nil {
+		return err
 	}
 	if report.CorrectRate < limits.minCorrect || report.CitationRate < limits.minCitation || report.RefusalRate < limits.minRefusal {
 		return fmt.Errorf("evaluation threshold not met: correct %.2f/%.2f, citation %.2f/%.2f, refusal %.2f/%.2f", report.CorrectRate, limits.minCorrect, report.CitationRate, limits.minCitation, report.RefusalRate, limits.minRefusal)
@@ -189,6 +210,19 @@ func checkEvaluationThresholds(report evaluation.Report, limits evaluationThresh
 	}
 	if limits.minToolSource >= 0 && (report.ToolSourceTotal == 0 || report.ToolSourceRate < limits.minToolSource) {
 		return fmt.Errorf("tool source rate %.2f below %.2f (scored %d sources)", report.ToolSourceRate, limits.minToolSource, report.ToolSourceTotal)
+	}
+	return nil
+}
+
+func checkIntentThresholds(report evaluation.IntentReport, minAccuracy, minSourceAccuracy, maxOrdinaryFalsePositive float64) error {
+	if report.Total < 50 {
+		return fmt.Errorf("intent evaluation requires at least 50 fixed samples; got %d", report.Total)
+	}
+	if report.Accuracy < minAccuracy || report.SourceAccuracy < minSourceAccuracy {
+		return fmt.Errorf("intent evaluation threshold not met: accuracy %.2f/%0.2f, source accuracy %.2f/%0.2f (%d samples)", report.Accuracy, minAccuracy, report.SourceAccuracy, minSourceAccuracy, report.Total)
+	}
+	if maxOrdinaryFalsePositive >= 0 && (report.OrdinaryTotal == 0 || report.OrdinaryFalsePositiveRate > maxOrdinaryFalsePositive) {
+		return fmt.Errorf("ordinary-request false-positive rate %.2f above %.2f (%d ordinary samples)", report.OrdinaryFalsePositiveRate, maxOrdinaryFalsePositive, report.OrdinaryTotal)
 	}
 	return nil
 }

@@ -70,10 +70,28 @@ func TestThresholdsFailWhenExpectedToolEvidenceIsMissing(t *testing.T) {
 	report := evaluation.Report{ToolSuccessTotal: 1, ToolSuccessRate: 0, ForbiddenToolCaseTotal: 1, Intent: evaluation.IntentReport{Total: 50, Accuracy: 1, SourceAccuracy: 1}}
 	err := checkEvaluationThresholds(report, evaluationThresholds{
 		minCorrect: 0, minCitation: 0, minRefusal: 0, minRouting: -1, minServerRoute: -1,
-		maxNoSkillFalsePositive: -1, minToolAttempt: -1, minToolSuccess: 1, minToolSource: -1,
+		maxNoSkillFalsePositive: -1, maxOrdinaryFalsePositive: -1, minToolAttempt: -1, minToolSuccess: 1, minToolSource: -1,
 	})
 	if err == nil || !strings.Contains(err.Error(), "tool success rate") {
 		t.Fatalf("missing expected tool completion must fail the gate, got %v", err)
+	}
+}
+
+func TestIntentThresholdsFailWhenOrdinaryRequestsTriggerSources(t *testing.T) {
+	report := evaluation.IntentReport{
+		Total: 50, Accuracy: 1, SourceAccuracy: 1,
+		OrdinaryTotal: 10, OrdinaryFalsePositives: 1, OrdinaryFalsePositiveRate: 0.1,
+	}
+	err := checkIntentThresholds(report, 0.95, 0.95, 0.01)
+	if err == nil || !strings.Contains(err.Error(), "ordinary-request false-positive rate") {
+		t.Fatalf("ordinary request source false positive must fail the gate, got %v", err)
+	}
+}
+
+func TestIntentThresholdsRequireOrdinaryNegativeSamples(t *testing.T) {
+	report := evaluation.IntentReport{Total: 50, Accuracy: 1, SourceAccuracy: 1}
+	if err := checkIntentThresholds(report, 0.95, 0.95, 0.01); err == nil || !strings.Contains(err.Error(), "ordinary-request false-positive rate") {
+		t.Fatalf("intent set without ordinary negative samples must fail, got %v", err)
 	}
 }
 
@@ -81,10 +99,33 @@ func TestThresholdsFailWhenForbiddenToolWasCalled(t *testing.T) {
 	report := evaluation.Report{ForbiddenToolCaseTotal: 3, ForbiddenToolViolations: 1, Intent: evaluation.IntentReport{Total: 50, Accuracy: 1, SourceAccuracy: 1}}
 	err := checkEvaluationThresholds(report, evaluationThresholds{
 		minCorrect: 0, minCitation: 0, minRefusal: 0, minRouting: -1, minServerRoute: -1,
-		maxNoSkillFalsePositive: -1, maxForbiddenToolViolations: 0,
+		maxNoSkillFalsePositive: -1, maxOrdinaryFalsePositive: -1, maxForbiddenToolViolations: 0,
 		minToolAttempt: -1, minToolSuccess: -1, minToolSource: -1,
 	})
 	if err == nil || !strings.Contains(err.Error(), "forbidden-tool violations") {
 		t.Fatalf("forbidden tool call must fail the gate, got %v", err)
+	}
+}
+
+func TestThresholdsRequireDeclaredRefusalCasesToPass(t *testing.T) {
+	report := evaluation.Report{
+		Intent: evaluation.IntentReport{
+			Total: 50, Accuracy: 1, SourceAccuracy: 1,
+			OrdinaryTotal: 12,
+		},
+		RefusalRate: 0,
+	}
+	limits := evaluationThresholds{
+		minCorrect: 0, minCitation: 0, minRefusal: 1, minRouting: -1, minServerRoute: -1,
+		maxNoSkillFalsePositive: -1, maxOrdinaryFalsePositive: 0.01,
+		minToolAttempt: -1, minToolSuccess: -1, minToolSource: -1,
+		maxForbiddenToolViolations: -1,
+	}
+	if err := checkEvaluationThresholds(report, limits); err == nil || !strings.Contains(err.Error(), "refusal 0.00/1.00") {
+		t.Fatalf("missing expected refusal must fail the gate, got %v", err)
+	}
+	report.RefusalRate = 1
+	if err := checkEvaluationThresholds(report, limits); err != nil {
+		t.Fatalf("recognized refusal should satisfy the gate, got %v", err)
 	}
 }
