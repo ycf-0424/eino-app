@@ -25,6 +25,11 @@ func NewChatModel(ctx context.Context, cfg *config.Config) (einomodel.ToolCallin
 		BaseURL: selected.BaseURL,
 		Timeout: time.Duration(cfg.Runtime.RequestTimeout),
 	}
+	// Tool selection, source citation, and structured classifier output must be
+	// reproducible. Providers may choose a non-zero default when temperature is
+	// omitted, which makes the safety/evaluation gates fluctuate between runs.
+	temperature := float32(0)
+	modelConfig.Temperature = &temperature
 	// 限制回答长度，防止本地模型长时间占用 CPU/GPU；0 表示沿用模型默认值。
 	if selected.MaxCompletionTokens > 0 {
 		modelConfig.MaxCompletionTokens = &selected.MaxCompletionTokens
@@ -58,6 +63,8 @@ func NewChatModelByID(ctx context.Context, cfg *config.Config, modelID string) (
 		BaseURL: selected.BaseURL,
 		Timeout: time.Duration(cfg.Runtime.RequestTimeout),
 	}
+	temperature := float32(0)
+	modelConfig.Temperature = &temperature
 	if selected.MaxCompletionTokens > 0 {
 		modelConfig.MaxCompletionTokens = &selected.MaxCompletionTokens
 	}
