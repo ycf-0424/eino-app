@@ -946,6 +946,13 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName, modelI
 	if attachmentContext != "" {
 		excludedTools = append(excludedTools, "local_file_read")
 	}
+	// Do not expose the approval-gated file writer unless the user explicitly
+	// asked to persist a note/document. The middleware still blocks implicit
+	// calls defensively, but hiding the tool prevents model attempts from being
+	// counted as forbidden side effects in ordinary answers.
+	if !toolset.WriteNoteRequested(query) {
+		excludedTools = append(excludedTools, "write_note")
+	}
 	chat, preloaded, err := s.newAgentWithMemoryFiltered(ctx, id, skillName, includeMemory, roleModels, excludedTools, route.preloadSkills...)
 	if err != nil {
 		finishRun(em, execution.StatusFailed, "agent_init_failed")
