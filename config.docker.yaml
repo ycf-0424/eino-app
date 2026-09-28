@@ -46,6 +46,20 @@ local_files:
     - "workspace-files"
   max_bytes: 10485760
 
+document_tools:
+  enabled: true
+  output_dir: "data/documents"
+  max_bytes: 26214400
+
+skill_tools:
+  enabled: true
+  writable_dir: "data/skills"
+  templates_dir: "data/templates"
+  allow_network: true
+  allowed_hosts: ["github.com"]
+  max_package_bytes: 52428800
+  max_file_count: 256
+
 # P8 实时执行进度；默认关闭，Compose 可通过环境变量或配置文件灰度开启。
 execution_events:
   enabled: true

@@ -1,58 +1,20 @@
 ---
-scenarios: ["安装技能"]
-not_for: ["当前没有安装工具，不能声称已安装技能"]
-description: 说明技能安装流程与来源要求；当前未接入安装工具，不能安装或声明已安装技能
+scenarios: ["从公开 GitHub 仓库安装技能"]
+not_for: ["没有仓库路径时猜测来源", "安装未知来源或未允许域名的压缩包"]
+description: 从管理员允许的公开 GitHub 仓库下载、校验并通过审批安装项目技能
 required_tools: [skill_install]
 ---
 
-# Skill Installer
+# 技能安装
 
-Helps install skills. By default these are from https://github.com/openai/skills/tree/main/skills/.curated, but users can also provide other locations. Experimental skills live in https://github.com/openai/skills/tree/main/skills/.experimental and can be installed the same way.
+安装前必须取得公开 GitHub 的 `owner/repository`、仓库内技能目录 `path`，并尽量指定不可变的 tag 或 commit `ref`。不猜测仓库来源，也不执行技能包中的脚本。
 
-Use the helper scripts based on the task:
-- List skills when the user asks what is available, or if the user uses this skill without specifying what to do. Default listing is `.curated`, but you can pass `--path skills/.experimental` when they ask about experimental skills.
-- Install from the curated list when the user provides a skill name.
-- Install from another repo when the user provides a GitHub repo/path (including private repos).
+调用 `skill_install` 后，服务端会：
 
-Install skills with the helper scripts.
+- 只从配置允许的下载域名获取 ZIP；
+- 限制压缩包大小、文件数量和路径穿越；
+- 要求包内存在合法的 `SKILL.md`；
+- 默认不覆盖同名项目技能；
+- 写入前请求人工审批，审批前不能声称技能已安装。
 
-## Communication
-
-When listing skills, output approximately as follows, depending on the context of the user's request. If they ask about experimental skills, list from `.experimental` instead of `.curated` and label the source accordingly:
-"""
-Skills from {repo}:
-1. skill-1
-2. skill-2 (already installed)
-3. ...
-Which ones would you like installed?
-"""
-
-After installing a skill, tell the user it will be available on their next turn.
-
-## Scripts
-
-All of these scripts use network, so when running in the sandbox, request escalation when running them.
-
-- `scripts/list-skills.py` (prints skills list with installed annotations)
-- `scripts/list-skills.py --format json`
-- Example (experimental list): `scripts/list-skills.py --path skills/.experimental`
-- `scripts/install-skill-from-github.py --repo <owner>/<repo> --path <path/to/skill> [<path/to/skill> ...]`
-- `scripts/install-skill-from-github.py --url https://github.com/<owner>/<repo>/tree/<ref>/<path>`
-- Example (experimental skill): `scripts/install-skill-from-github.py --repo openai/skills --path skills/.experimental/<skill-name>`
-
-## Behavior and Options
-
-- Defaults to direct download for public GitHub repos.
-- If download fails with auth/permission errors, falls back to git sparse checkout.
-- Aborts if the destination skill directory already exists.
-- Installs into `$CODEX_HOME/skills/<skill-name>` (defaults to `~/.codex/skills`).
-- Multiple `--path` values install multiple skills in one run, each named from the path basename unless `--name` is supplied.
-- Options: `--ref <ref>` (default `main`), `--dest <path>`, `--method auto|download|git`.
-
-## Notes
-
-- Curated listing is fetched from `https://github.com/openai/skills/tree/main/skills/.curated` via the GitHub API. If it is unavailable, explain the error and exit.
-- Private GitHub repos can be accessed via existing git credentials or optional `GITHUB_TOKEN`/`GH_TOKEN` for download.
-- Git fallback tries HTTPS first, then SSH.
-- The skills at https://github.com/openai/skills/tree/main/skills/.system are preinstalled, so no need to help users install those. If they ask, just explain this. If they insist, you can download and overwrite.
-- Installed annotations come from `$CODEX_HOME/skills`.
+当前实现面向公开 GitHub 仓库，不提供私有仓库凭据或 Git fallback。安装完成后，技能会在后续请求的技能加载目录中可用。

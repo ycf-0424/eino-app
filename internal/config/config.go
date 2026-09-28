@@ -66,6 +66,10 @@ type Config struct {
 	Attachments   AttachmentsConfig   `yaml:"attachments"`
 	// LocalFiles 控制 Agent 能读取哪些本地目录；未列出的路径一律拒绝。
 	LocalFiles LocalFiles `yaml:"local_files"`
+	// DocumentTools 控制需要人工审批的 DOCX 输出工具。
+	DocumentTools DocumentTools `yaml:"document_tools"`
+	// SkillTools 控制技能、模板和远程技能包的受控写入能力。
+	SkillTools SkillToolsConfig `yaml:"skill_tools"`
 	// ExecutionEvents 控制实时执行进度与执行记录；默认关闭，关闭时行为与 P7 一致。
 	ExecutionEvents ExecutionEvents `yaml:"execution_events"`
 	// Auth 控制登录认证与多用户隔离；关闭时以单用户模式运行，行为与改造前一致。
@@ -124,6 +128,25 @@ type LocalFiles struct {
 	Enabled  bool     `yaml:"enabled"`
 	Roots    []string `yaml:"roots"`
 	MaxBytes int64    `yaml:"max_bytes"`
+}
+
+// DocumentTools 是文档写入工具的安全边界。输入文件仍必须来自 LocalFiles.Roots，
+// 输出只能落在 OutputDir；工具不会覆盖源文件。
+type DocumentTools struct {
+	Enabled   bool   `yaml:"enabled"`
+	OutputDir string `yaml:"output_dir"`
+	MaxBytes  int64  `yaml:"max_bytes"`
+}
+
+// SkillTools 是技能/模板管理工具的安全边界。
+type SkillToolsConfig struct {
+	Enabled         bool     `yaml:"enabled"`
+	WritableDir     string   `yaml:"writable_dir"`
+	TemplatesDir    string   `yaml:"templates_dir"`
+	AllowNetwork    bool     `yaml:"allow_network"`
+	AllowedHosts    []string `yaml:"allowed_hosts"`
+	MaxPackageBytes int64    `yaml:"max_package_bytes"`
+	MaxFileCount    int      `yaml:"max_file_count"`
 }
 
 // Runtime 控制本地模型的请求超时和全局并发上限。
@@ -705,6 +728,51 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if c.DocumentTools.Enabled {
+		if !c.LocalFiles.Enabled {
+			return fmt.Errorf("document_tools.enabled requires local_files.enabled")
+		}
+		if strings.TrimSpace(c.DocumentTools.OutputDir) == "" {
+			c.DocumentTools.OutputDir = "data/documents"
+		}
+		if c.DocumentTools.MaxBytes == 0 {
+			c.DocumentTools.MaxBytes = 25 << 20
+		}
+		if c.DocumentTools.MaxBytes < 1 || c.DocumentTools.MaxBytes > 100<<20 {
+			return fmt.Errorf("document_tools.max_bytes must be between 1 and 100 MiB")
+		}
+	}
+	if c.SkillTools.Enabled {
+		if strings.TrimSpace(c.SkillTools.WritableDir) == "" {
+			c.SkillTools.WritableDir = "data/skills"
+		}
+		if strings.TrimSpace(c.SkillTools.TemplatesDir) == "" {
+			c.SkillTools.TemplatesDir = "data/templates"
+		}
+		if c.SkillTools.MaxPackageBytes == 0 {
+			c.SkillTools.MaxPackageBytes = 50 << 20
+		}
+		if c.SkillTools.MaxPackageBytes < 1 || c.SkillTools.MaxPackageBytes > 200<<20 {
+			return fmt.Errorf("skill_tools.max_package_bytes must be between 1 and 200 MiB")
+		}
+		if c.SkillTools.MaxFileCount == 0 {
+			c.SkillTools.MaxFileCount = 256
+		}
+		if c.SkillTools.MaxFileCount < 1 || c.SkillTools.MaxFileCount > 2048 {
+			return fmt.Errorf("skill_tools.max_file_count must be between 1 and 2048")
+		}
+		if c.SkillTools.AllowNetwork && len(c.SkillTools.AllowedHosts) == 0 {
+			c.SkillTools.AllowedHosts = []string{"github.com"}
+		}
+		for i, host := range c.SkillTools.AllowedHosts {
+			host = strings.ToLower(strings.TrimSpace(host))
+			host = strings.TrimSuffix(host, ".")
+			if host == "" || strings.ContainsAny(host, "/\\@:?") {
+				return fmt.Errorf("skill_tools.allowed_hosts[%d] is invalid", i)
+			}
+			c.SkillTools.AllowedHosts[i] = host
+		}
+	}
 	if c.ExecutionEvents.Enabled {
 		// 只在开启时补默认值，关闭时保持零值，便于判断「未启用」。
 		if c.ExecutionEvents.QueueSize <= 0 {
@@ -828,6 +896,15 @@ func Load() (*Config, error) {
 		cfg.Agent.CheckpointDir = resolveProjectPath(cfg.ProjectDir, cfg.Agent.CheckpointDir)
 		cfg.RAG.DocumentDir = resolveProjectPath(cfg.ProjectDir, cfg.RAG.DocumentDir)
 		cfg.Skills.Dir = resolveProjectPath(cfg.ProjectDir, cfg.Skills.Dir)
+		if cfg.DocumentTools.OutputDir != "" {
+			cfg.DocumentTools.OutputDir = resolveProjectPath(cfg.ProjectDir, cfg.DocumentTools.OutputDir)
+		}
+		if cfg.SkillTools.WritableDir != "" {
+			cfg.SkillTools.WritableDir = resolveProjectPath(cfg.ProjectDir, cfg.SkillTools.WritableDir)
+		}
+		if cfg.SkillTools.TemplatesDir != "" {
+			cfg.SkillTools.TemplatesDir = resolveProjectPath(cfg.ProjectDir, cfg.SkillTools.TemplatesDir)
+		}
 		if cfg.ExecutionEvents.Dir != "" {
 			cfg.ExecutionEvents.Dir = resolveProjectPath(cfg.ProjectDir, cfg.ExecutionEvents.Dir)
 		}

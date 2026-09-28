@@ -140,8 +140,49 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 		return nil, err
 	}
 	// 技能名与技能目录属于内部实现，只在 debug 模式向调用方暴露。
-	skillLoader := skill.NewLoader(cfg.Skills.Dir)
+	// 项目运行时读取顺序为：项目写入目录、模板目录、镜像内置目录。
+	// 写入目录只有在 SkillTools 开启时才参与，避免未启用管理能力时
+	// 意外读取 data/ 下的半成品技能。
+	var skillLoader *skill.Loader
+	if cfg.SkillTools.Enabled {
+		skillLoader = skill.NewLoaderWithDirs(cfg.Skills.Dir, cfg.SkillTools.WritableDir, cfg.SkillTools.TemplatesDir)
+	} else {
+		skillLoader = skill.NewLoader(cfg.Skills.Dir)
+	}
 	skillLoader.ExposeNames = cfg.Debug
+	if cfg.DocumentTools.Enabled {
+		documentTool, toolErr := toolset.NewDocumentWriteTool(cfg.LocalFiles.Roots, cfg.DocumentTools.OutputDir, cfg.DocumentTools.MaxBytes)
+		if toolErr != nil {
+			return nil, toolErr
+		}
+		tools = append(tools, documentTool)
+	}
+	if cfg.SkillTools.Enabled {
+		manager, managerErr := skill.NewManager(skill.ManagerConfig{
+			Loader:          skillLoader,
+			WritableDir:     cfg.SkillTools.WritableDir,
+			TemplatesDir:    cfg.SkillTools.TemplatesDir,
+			SourceRoots:     cfg.LocalFiles.Roots,
+			MaxPackageBytes: cfg.SkillTools.MaxPackageBytes,
+			MaxFileCount:    cfg.SkillTools.MaxFileCount,
+			AllowNetwork:    cfg.SkillTools.AllowNetwork,
+			AllowedHosts:    cfg.SkillTools.AllowedHosts,
+		})
+		if managerErr != nil {
+			return nil, managerErr
+		}
+		tools = append(tools,
+			toolset.NewSkillWriteTool(func(_ context.Context, input toolset.SkillWriteInput) (string, error) {
+				return manager.WriteSkill(input.Name, input.Description, input.Instruction, input.Scenarios, input.NotFor, input.RequiredTools, input.Overwrite)
+			}),
+			toolset.NewTemplateWriteTool(func(_ context.Context, input toolset.TemplateWriteInput) (string, error) {
+				return manager.WriteTemplate(input.Name, input.DisplayName, input.Description, input.Kind, input.ReferencePath, input.PreviewPath, input.Overwrite)
+			}),
+			toolset.NewSkillInstallTool(func(ctx context.Context, input toolset.SkillInstallInput) (string, error) {
+				return manager.InstallGitHubSkill(ctx, input.Repo, input.Path, input.Ref, input.Name, input.Overwrite)
+			}),
+		)
+	}
 	service := &Service{cfg: cfg, model: cm, tools: tools, knowledge: knowledge, localFiles: localFiles, checkpoints: cp, sessions: sessions, skills: skillLoader, execCfg: cfg.ExecutionEvents, locks: map[string]chan struct{}{}, concurrency: make(chan struct{}, cfg.Runtime.MaxConcurrency), queueLimit: int64(cfg.Runtime.QueueLimit), queueTimeout: time.Duration(cfg.Runtime.QueueTimeout), metricsToken: strings.TrimSpace(os.Getenv("METRICS_TOKEN"))}
 	executionStore, err := newExecutionStore(ctx, cfg, sessions)
 	if err != nil {
@@ -633,6 +674,39 @@ func containsString(values []string, value string) bool {
 	return false
 }
 
+func (s *Service) mutationToolConfigured(name string) bool {
+	if s == nil || s.cfg == nil {
+		return false
+	}
+	switch name {
+	case "document_write":
+		return s.cfg.DocumentTools.Enabled && s.cfg.LocalFiles.Enabled
+	case "template_write":
+		return s.cfg.SkillTools.Enabled && s.cfg.LocalFiles.Enabled
+	case "skill_write":
+		return s.cfg.SkillTools.Enabled
+	case "skill_install":
+		return s.cfg.SkillTools.Enabled && s.cfg.SkillTools.AllowNetwork
+	default:
+		return false
+	}
+}
+
+func mutationCapabilityNotice(name string) string {
+	switch name {
+	case "document_write":
+		return "当前未启用 DOCX 写入能力，或没有配置授权本地目录；我不会声称已经修改 Word 文件。"
+	case "template_write":
+		return "当前未启用模板落盘能力；我可以先设计模板内容，但不会声称已经保存模板文件。"
+	case "skill_write":
+		return "当前未启用技能写入能力；我可以先给出 SKILL.md 草稿，但不会声称已经创建技能。"
+	case "skill_install":
+		return "当前未启用技能安装网络能力；请由管理员开启 skill_tools.allow_network 并配置允许的下载域名。"
+	default:
+		return "当前未启用所请求的写入能力；我不会声称已经完成变更。"
+	}
+}
+
 type routeDecision struct {
 	preloadKnowledge bool
 	preloadSkills    []string
@@ -932,6 +1006,18 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName, modelI
 		s.countIntent(intentPlan.Kind)
 	}
 	route := decideRoute(query)
+	// Side-effect tools are opt-in per request. They are registered globally so
+	// an approval checkpoint can be resumed, but ordinary questions never expose
+	// them to the model. If a user explicitly requests a disabled capability,
+	// return a truthful notice instead of allowing a generic model fallback to
+	// imply that a file or skill was changed.
+	for _, toolName := range []string{"document_write", "template_write", "skill_write", "skill_install"} {
+		requested := toolset.MutationToolRequested(query, toolName)
+		configured := s.mutationToolConfigured(toolName)
+		if requested && !configured && route.capabilityNotice == "" {
+			route.capabilityNotice = mutationCapabilityNotice(toolName)
+		}
+	}
 	var attachmentContext string
 	var attachmentNotice string
 	if len(attachmentIDs) > 0 {
@@ -1028,6 +1114,11 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName, modelI
 	// counted as forbidden side effects in ordinary answers.
 	if !toolset.WriteNoteRequested(query) {
 		excludedTools = append(excludedTools, "write_note")
+	}
+	for _, toolName := range []string{"document_write", "template_write", "skill_write", "skill_install"} {
+		if !toolset.MutationToolRequested(query, toolName) || !s.mutationToolConfigured(toolName) {
+			excludedTools = append(excludedTools, toolName)
+		}
 	}
 	chat, preloaded, err := s.newAgentWithMemoryFiltered(ctx, id, skillName, includeMemory, roleModels, excludedTools, route.preloadSkills...)
 	if err != nil {

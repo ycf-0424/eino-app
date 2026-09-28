@@ -64,8 +64,42 @@ func Decide(query string) Decision {
 		decision.Source = SourceServer
 		decision.Reason = appendReason(decision.Reason, ReasonDocumentRead)
 	}
+	if isDocumentWriteRequest(q) {
+		decision.PreloadSkills = append(decision.PreloadSkills, "documents")
+		decision.Source = SourceServer
+		decision.Reason = appendReason(decision.Reason, "document_write_request")
+	}
+	if isTemplateWriteRequest(q) {
+		decision.PreloadSkills = append(decision.PreloadSkills, "template-creator")
+		decision.Source = SourceServer
+		decision.Reason = appendReason(decision.Reason, "template_write_request")
+	}
+	if isSkillWriteRequest(q) {
+		decision.PreloadSkills = append(decision.PreloadSkills, "skill-creator")
+		decision.Source = SourceServer
+		decision.Reason = appendReason(decision.Reason, "skill_write_request")
+	}
+	if isSkillInstallRequest(q) {
+		decision.PreloadSkills = append(decision.PreloadSkills, "skill-installer")
+		decision.Source = SourceServer
+		decision.Reason = appendReason(decision.Reason, "skill_install_request")
+	}
 
+	decision.PreloadSkills = uniqueStrings(decision.PreloadSkills)
 	return decision
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func appendReason(current, next string) string {
@@ -96,6 +130,40 @@ func isDocumentReadRequest(q string) bool {
 		"读取", "读出来", "阅读", "总结", "摘要", "提取", "解析", "写了什么", "说了什么", "内容是什么", "read", "summarize",
 	)
 	return object && action
+}
+
+func isDocumentWriteRequest(q string) bool {
+	if hasMutationAdviceLanguage(q) || !containsAny(q, "word", "docx", "文档") {
+		return false
+	}
+	return containsAny(q, "修改", "编辑", "替换", "添加", "写入", "保存", "另存", "更新", "批注", "edit", "save")
+}
+
+func isTemplateWriteRequest(q string) bool {
+	if hasMutationAdviceLanguage(q) || !containsAny(q, "模板", "template") {
+		return false
+	}
+	if !containsAny(q, "创建", "制作", "生成", "保存", "更新", "修改", "设计", "create", "generate", "save") {
+		return false
+	}
+	// A template write needs a concrete reference or a clear persistence
+	// request. A conceptual request such as “create a template and explain its
+	// structure” should remain an ordinary answer until a source is supplied.
+	return containsAny(q, ".docx", ".xlsx", ".xls", ".pptx", ".ppt", ".csv", ".png", ".jpg", ".txt", "docx", "xlsx", "pptx", "参考", "源文件", "文件", "保存", "落盘", "template file")
+}
+
+func isSkillWriteRequest(q string) bool {
+	if hasMutationAdviceLanguage(q) || !containsAny(q, "技能", "skill", "skill.md") {
+		return false
+	}
+	return containsAny(q, "创建", "新建", "编写", "修改", "更新", "写入", "生成", "create", "write", "update")
+}
+
+func isSkillInstallRequest(q string) bool {
+	if hasMutationAdviceLanguage(q) || !containsAny(q, "技能", "skill") {
+		return false
+	}
+	return containsAny(q, "安装", "下载", "导入", "install", "download")
 }
 
 func isReportWriteRequest(q string) bool {
@@ -151,6 +219,30 @@ func unsupportedCapability(q string) (notice, reason string) {
 
 func hasHowToOnlyLanguage(q string) bool {
 	return containsAny(q, "怎么", "如何", "方案", "设计思路", "实现思路", "原理", "技能怎么", "能力介绍")
+}
+
+func hasMutationAdviceLanguage(q string) bool {
+	if !containsAny(q, "怎么", "如何", "方案", "流程", "介绍", "说明", "区别", "什么", "哪些", "通常", "适合", "是什么", "能不能", "可以吗", "设计思路", "实现思路", "原理") {
+		return false
+	}
+	return !hasDirectMutationPrefix(q)
+}
+
+func hasDirectMutationPrefix(q string) bool {
+	for _, prefix := range []string{"请", "帮我", "请帮我", "替我", "直接", "please", "help me"} {
+		if !strings.HasPrefix(q, prefix) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(q, prefix))
+		runes := []rune(rest)
+		if len(runes) > 8 {
+			runes = runes[:8]
+		}
+		if len(runes) > 0 && containsAny(string(runes), "修改", "编辑", "替换", "添加", "写入", "保存", "创建", "新建", "编写", "生成", "制作", "设计", "安装", "下载", "导入", "create", "write", "edit", "save", "install", "download") {
+			return true
+		}
+	}
+	return (strings.HasPrefix(q, "根据") || strings.HasPrefix(q, "从")) && containsAny(q, "修改", "编辑", "创建", "生成", "制作", "安装", "下载", "导入")
 }
 
 func hasNegatedAction(q string, actions ...string) bool {

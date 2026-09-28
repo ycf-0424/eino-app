@@ -51,6 +51,16 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestDocumentToolsRequireLocalFileRoots(t *testing.T) {
+	cfg := Config{
+		OpenAI:        OpenAI{APIKey: "local", Model: "qwen", BaseURL: "http://localhost:11434/v1"},
+		DocumentTools: DocumentTools{Enabled: true},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "document_tools.enabled requires local_files.enabled") {
+		t.Fatalf("expected document/local-file dependency error, got %v", err)
+	}
+}
+
 func TestLoadFromCurrentDirectory(t *testing.T) {
 	dir := t.TempDir()
 	configFile := filepath.Join(dir, "config.yaml")

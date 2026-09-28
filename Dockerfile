@@ -30,7 +30,7 @@ COPY docs/knowledge ./docs/knowledge
 COPY workspace-files ./workspace-files
 
 # Session、Checkpoint 和工具输出都写入 /app/data，由 Compose 命名卷持久化。
-RUN mkdir -p /app/data/sessions /app/data/checkpoints /app/data/notes \
+RUN mkdir -p /app/data/sessions /app/data/checkpoints /app/data/notes /app/data/documents /app/data/skills /app/data/templates \
     && chown -R eino:eino /app
 
 USER eino

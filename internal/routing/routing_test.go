@@ -107,3 +107,27 @@ func TestDecideNoMatchHasStableDiagnostic(t *testing.T) {
 		t.Fatalf("unexpected fallback decision: %+v", decision)
 	}
 }
+
+func TestDecideMutationRoutesOnlyExplicitRequests(t *testing.T) {
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{"请修改这个 Word 文档并另存为新文件", "documents"},
+		{"根据这个 docx 制作一个可复用模板", "template-creator"},
+		{"请创建一个处理周报的新技能", "skill-creator"},
+		{"从 openai/skills 安装 skills/example 技能", "skill-installer"},
+	}
+	for _, test := range tests {
+		decision := Decide(test.query)
+		if len(decision.PreloadSkills) != 1 || decision.PreloadSkills[0] != test.want {
+			t.Fatalf("query=%q decision=%+v", test.query, decision)
+		}
+	}
+	for _, query := range []string{"Word 文档应该怎么修改", "模板创建方案怎么设计", "技能怎么创建", "技能安装流程是什么"} {
+		decision := Decide(query)
+		if len(decision.PreloadSkills) != 0 {
+			t.Fatalf("advice request should not preload mutation skill: query=%q decision=%+v", query, decision)
+		}
+	}
+}

@@ -97,6 +97,20 @@ local_files:
     - 'E:\11\work'
   max_bytes: 10485760
 
+document_tools:
+  enabled: true
+  output_dir: "data/documents"
+  max_bytes: 26214400
+
+skill_tools:
+  enabled: true
+  writable_dir: "data/skills"
+  templates_dir: "data/templates"
+  allow_network: true
+  allowed_hosts: ["github.com"]
+  max_package_bytes: 52428800
+  max_file_count: 256
+
 # P8 实时执行进度与执行记录；默认关闭，关闭时行为与 P7 完全一致。
 # 关闭状态下不采集、不传输、不落库，可在出现问题时不改代码直接回滚。
 execution_events:
