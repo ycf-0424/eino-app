@@ -347,7 +347,18 @@ func modelName(cfg *config.Config, modelID string) string {
 }
 
 func sourcesFromEvents(events []execution.Event) []string {
-	return uniqueSorted(stringsOfMany(events, "sources"))
+	var sources []string
+	for _, event := range events {
+		switch event.Type {
+		case execution.ToolCompleted:
+			sources = append(sources, stringsOf(event.Payload["sources"])...)
+		case execution.FileReadDone:
+			if fileName, ok := event.Payload["file_name"].(string); ok && strings.TrimSpace(fileName) != "" {
+				sources = append(sources, filepath.Base(strings.TrimSpace(fileName)))
+			}
+		}
+	}
+	return uniqueSorted(sources)
 }
 
 func stringsOfMany(events []execution.Event, key string) []string {

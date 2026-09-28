@@ -24,6 +24,8 @@ func TestClassifyIntentAtLeast50FixedSamples(t *testing.T) {
 		{"给一份通用项目计划模板", IntentGeneral},
 		{"怎么设计一个订单系统", IntentGeneral},
 		{"如何解析 PDF 文件", IntentGeneral},
+		{"分析销售额/成本的比例", IntentGeneral},
+		{"请读取 https://example.com/report.txt", IntentGeneral},
 		{"这个项目使用什么语言", IntentProjectFact},
 		{"星河系统的生产部署流程是什么", IntentProjectFact},
 		{"我们系统的 API 接口在哪里", IntentProjectFact},
@@ -50,6 +52,11 @@ func TestClassifyIntentAtLeast50FixedSamples(t *testing.T) {
 		{"把附件里的录音转写出来", IntentFileUnderstanding},
 		{"请总结这个视频的内容", IntentFileUnderstanding},
 		{"读取这份 Word 文件", IntentFileUnderstanding},
+		{"请读取 workspace-files/README.txt 并总结要点", IntentFileUnderstanding},
+		{"请读取 workspace-files/README 正文", IntentFileUnderstanding},
+		{"读取 workspace-files/README.txt，若要开放其他目录需要修改哪里？", IntentFileUnderstanding},
+		{"workspace-files/README.txt 路径格式表示什么？", IntentGeneral},
+		{"What does workspace-files/README.txt mean?", IntentGeneral},
 		{"扫描件里的内容是什么", IntentFileUnderstanding},
 		{"提取附件中的表格数据", IntentFileUnderstanding},
 		{"创建一个新工单", IntentExecution},
@@ -139,5 +146,26 @@ func TestWithClassificationIsFailClosedAndServerOwned(t *testing.T) {
 	high := WithClassification(IntentClassification{Kind: IntentExecution, Confidence: 0.95}, 0.7, nil)
 	if high.Kind != IntentExecution || !high.RequiresApproval || high.Operation != "" || len(high.RequiredSources) != 1 || high.RequiredSources[0] != "allowlisted_operation" {
 		t.Fatalf("classifier unexpectedly supplied execution data: %+v", high)
+	}
+}
+
+func TestWithLocalFilePathSelectsServerOwnedSource(t *testing.T) {
+	plan := ClassifyIntent("请读取 workspace-files/README.txt 并总结要点", nil)
+	if plan.Kind != IntentFileUnderstanding || !plan.NeedsClarification {
+		t.Fatalf("path request should initially require server root validation: %+v", plan)
+	}
+	resolved := WithLocalFilePath(plan)
+	if resolved.Kind != IntentFileUnderstanding || resolved.NeedsClarification || resolved.ReasonCode != "explicit_local_file_path" {
+		t.Fatalf("local path should satisfy file-source clarification: %+v", resolved)
+	}
+	if len(resolved.RequiredSources) != 1 || resolved.RequiredSources[0] != "local_file_read" {
+		t.Fatalf("local path should select the local reader source: %+v", resolved.RequiredSources)
+	}
+	withAttachment := WithLocalFilePath(ClassifyIntent("请读取 workspace-files/README.txt 并总结要点", []string{"att-1"}))
+	if len(withAttachment.RequiredSources) != 2 || withAttachment.RequiredSources[0] != "attachment_artifacts" || withAttachment.RequiredSources[1] != "local_file_read" {
+		t.Fatalf("path plus attachment should preserve both explicitly supplied sources: %+v", withAttachment.RequiredSources)
+	}
+	if unchanged := WithLocalFilePath(ClassifyIntent("你好", nil)); unchanged.Kind != IntentGeneral {
+		t.Fatalf("local-path override must not reclassify general chat: %+v", unchanged)
 	}
 }

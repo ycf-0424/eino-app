@@ -12,6 +12,7 @@ import (
 type IntentCase struct {
 	Question                   string             `json:"question"`
 	AttachmentIDs              []string           `json:"attachment_ids,omitempty"`
+	ExplicitLocalFilePath      bool               `json:"explicit_local_file_path,omitempty"`
 	ExpectedKind               routing.IntentKind `json:"expected_kind"`
 	ExpectedSources            []string           `json:"expected_sources"`
 	ExpectedNeedsClarification bool               `json:"expected_needs_clarification"`
@@ -56,6 +57,9 @@ func EvaluateIntentCases(cases []IntentCase) IntentReport {
 	report := IntentReport{Total: len(cases), Cases: make([]IntentCaseResult, 0, len(cases))}
 	for _, item := range cases {
 		plan := routing.ClassifyIntent(item.Question, item.AttachmentIDs)
+		if item.ExplicitLocalFilePath {
+			plan = routing.WithLocalFilePath(plan)
+		}
 		expectedSources := append([]string(nil), item.ExpectedSources...)
 		actualSources := append([]string(nil), plan.RequiredSources...)
 		sourcesMatch := equalStrings(expectedSources, actualSources)

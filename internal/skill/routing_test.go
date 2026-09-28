@@ -77,3 +77,13 @@ func TestRuntimeHidesSkillNamesUnlessExposed(t *testing.T) {
 		t.Fatalf("debug 模式应保留介绍技能的行为：%s", shown)
 	}
 }
+
+func TestDocumentsSkillAcceptsServerPreflightEvidence(t *testing.T) {
+	skill, err := NewLoader("../../skills").Load("documents")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(skill.Instruction, "本轮上下文已包含服务端注入的授权文件正文") || !strings.Contains(skill.Instruction, "不要重复读取") {
+		t.Fatalf("documents skill does not recognize server-preflighted evidence: %s", skill.Instruction)
+	}
+}

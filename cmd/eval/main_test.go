@@ -47,6 +47,17 @@ func TestRoutingFromEventsCountsAttemptSuccessAndFailureSeparately(t *testing.T)
 	}
 }
 
+func TestSourcesFromEventsIncludesPreflightFiles(t *testing.T) {
+	events := []execution.Event{
+		{Type: execution.ToolCompleted, Payload: map[string]any{"tool_name": "knowledge_search", "sources": []string{"milvus.md"}}},
+		{Type: execution.FileReadDone, Payload: map[string]any{"tool_name": "local_file_read", "file_name": "README.txt"}},
+	}
+	got := sourcesFromEvents(events)
+	if strings.Join(got, ",") != "README.txt,milvus.md" {
+		t.Fatalf("sources=%v, want both knowledge and file evidence", got)
+	}
+}
+
 func TestApplyDebugOverride(t *testing.T) {
 	for _, test := range []struct {
 		configured bool

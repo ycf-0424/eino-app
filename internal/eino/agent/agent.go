@@ -60,6 +60,22 @@ func (a *ChatAgent) SetMemoryContext(f func(context.Context, string) (string, er
 // It is kept on the per-request agent, so concurrent sessions cannot share it.
 func (a *ChatAgent) SetPreflightContext(text string) { a.preflight = strings.TrimSpace(text) }
 
+// AppendPreflightContext adds another independent server-verified evidence
+// block without allowing later routing rules to erase an earlier block. A
+// request may legitimately contain both an uploaded attachment and a private
+// knowledge hit, so replacement semantics are unsafe here.
+func (a *ChatAgent) AppendPreflightContext(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if a.preflight == "" {
+		a.preflight = text
+		return
+	}
+	a.preflight += "\n\n" + text
+}
+
 // Respond records a deterministic server response without invoking the model.
 // It is used for a knowledge miss where fabricating an answer would be unsafe.
 func (a *ChatAgent) Respond(query, answer string) error {
@@ -87,7 +103,24 @@ func New(ctx context.Context, cm einomodel.ToolCallingChatModel, debug, multiAge
 
 // NewWithInstruction 在基础 Prompt 后追加所选 Skill 的业务规则。
 func NewWithInstruction(ctx context.Context, cm einomodel.ToolCallingChatModel, debug, multiAgent bool, checkPointStore adk.CheckPointStore, instruction string, extraTools ...einotool.BaseTool) (*ChatAgent, error) {
-	return NewWithRoleModels(ctx, RoleModels{Supervisor: cm, Knowledge: cm, Writer: cm}, debug, multiAgent, checkPointStore, instruction, extraTools...)
+	tools, err := ensureWriteNoteTool(ctx, extraTools)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithRoleModels(ctx, RoleModels{Supervisor: cm, Knowledge: cm, Writer: cm}, debug, multiAgent, checkPointStore, instruction, tools...)
+}
+
+func ensureWriteNoteTool(ctx context.Context, tools []einotool.BaseTool) ([]einotool.BaseTool, error) {
+	for _, registered := range tools {
+		info, err := registered.Info(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if info.Name == "write_note" {
+			return tools, nil
+		}
+	}
+	return append(tools, toolset.NewWriteNoteTool()), nil
 }
 
 // RoleModels allows automatic routing to assign models by responsibility.
@@ -112,7 +145,7 @@ type RoleModels struct {
 
 // NewWithRoleModels builds the agent graph with explicit per-role models.
 func NewWithRoleModels(ctx context.Context, models RoleModels, debug, multiAgent bool, checkPointStore adk.CheckPointStore, instruction string, extraTools ...einotool.BaseTool) (*ChatAgent, error) {
-	tools := []einotool.BaseTool{toolset.NewTimeTool(), toolset.NewWriteNoteTool()}
+	tools := []einotool.BaseTool{toolset.NewTimeTool()}
 	tools = append(tools, extraTools...)
 	runtimeInstruction := wrapSkillInstruction(instruction)
 	supervisorInstruction := prompt.SystemInstruction + "\n" + runtimeInstruction

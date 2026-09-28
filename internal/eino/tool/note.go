@@ -21,7 +21,7 @@ var noteName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // note/document. A bare "remember this" request is deliberately excluded:
 // long-term memory is handled by the automatic memory pipeline and must not
 // be routed through the approval-gated file-writing tool.
-var writeNoteIntent = regexp.MustCompile(`(?i)(?:write[_ ]+note|(?:写|写入|创建|生成|保存|导出)[^。！？?]{0,12}(?:笔记|便签|备忘录|文档|文件|markdown|txt)|(?:笔记|便签|备忘录|文档|文件|markdown|txt)[^。！？?]{0,12}(?:写|写入|创建|生成|保存|导出)|(?:write|save|create|export)[^.!?]{0,20}(?:note|document|file))`)
+var writeNoteIntent = regexp.MustCompile(`(?i)(?:write[_ ]+note|(?:写|写入|创建|生成|保存|导出)[^。！？?]{0,12}(?:笔记|便签|备忘录|文档|文件|markdown|txt)|(?:笔记|便签|备忘录|文档|文件|markdown|txt)[^。！？?]{0,12}(?:写入|创建|生成|保存|导出)|(?:write|save|create|export)[^.!?]{0,20}(?:note|document|file))`)
 
 // WriteNoteRequested reports whether the user's current request explicitly
 // asks for a local note/document write. It is a conservative intent gate used

@@ -7,7 +7,7 @@ required_tools: [local_file_read]
 
 # 文档读取
 
-仅处理用户明确指定的文件。用户给出文件名或路径时，调用 `local_file_read` 读取；相对路径可以写成授权目录内路径，例如 `README.txt` 或 `workspace-files/README.txt`。
+仅处理用户明确指定的文件。用户给出文件名或路径时，若本轮上下文已包含服务端注入的授权文件正文，直接依据该正文完成任务，不要重复读取；否则调用 `local_file_read` 读取。相对路径可以写成授权目录内路径，例如 `README.txt` 或 `workspace-files/README.txt`。
 
 用户只说“这份文档”或“授权目录里的文件”但没有指出具体文件时，先请用户提供文件名或路径，不猜测文件内容，不编造示例工单。
 

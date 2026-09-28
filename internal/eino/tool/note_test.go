@@ -18,6 +18,8 @@ func TestWriteNoteRequestedIsConservative(t *testing.T) {
 		"请记住我们使用 Milvus",
 		"我们已经决定使用 Milvus",
 		"以后回答简洁一些",
+		"请先读取授权目录中的 workspace-files/README.txt 正文，再根据正文写一份中文报告。",
+		"读取 /workspace-files/report.txt 后，写一份报告。",
 	} {
 		if WriteNoteRequested(query) {
 			t.Fatalf("unexpected note intent for %q", query)

@@ -163,6 +163,33 @@ func planFor(kind IntentKind, attachmentIDs []string) IntentPlan {
 	return plan
 }
 
+// WithLocalFilePath marks a file-understanding plan as backed by a concrete
+// path that the service has matched to its configured local-file roots. The
+// reader still performs the authoritative resolved-path, symlink and file
+// policy checks; this plan only selects the server-owned evidence source.
+func WithLocalFilePath(plan IntentPlan) IntentPlan {
+	if plan.Kind != IntentFileUnderstanding {
+		return plan
+	}
+	if len(plan.AttachmentIDs) == 0 {
+		plan.RequiredSources = []string{"local_file_read"}
+		plan.NeedsClarification = false
+		plan.ReasonCode = "explicit_local_file_path"
+		return plan
+	}
+	for _, source := range plan.RequiredSources {
+		if source == "local_file_read" {
+			plan.NeedsClarification = false
+			plan.ReasonCode = "explicit_local_file_path"
+			return plan
+		}
+	}
+	plan.RequiredSources = append(plan.RequiredSources, "local_file_read")
+	plan.NeedsClarification = false
+	plan.ReasonCode = "explicit_local_file_path"
+	return plan
+}
+
 func cleanIDs(ids []string) []string {
 	seen := make(map[string]struct{}, len(ids))
 	cleaned := make([]string, 0, len(ids))
@@ -181,6 +208,10 @@ func cleanIDs(ids []string) []string {
 }
 
 func isExecutionIntent(q string) bool {
+	if hasAny(q, "怎么修改", "如何修改", "修改哪里", "改哪里", "需要修改哪里", "需要改哪里", "应该修改哪里", "应该改哪里", "在哪里修改") &&
+		!hasAny(q, "现在帮我", "请直接", "直接修改", "直接改", "立即", "马上", "执行") {
+		return false
+	}
 	if hasAny(q, "是什么", "有哪些", "在哪里", "指什么", "有什么作用", "怎么", "如何", "设计方案", "说明一下", "解释一下", "应该怎样", "能不能", "介绍") &&
 		!hasAny(q, "现在帮我", "请直接", "立即", "马上", "执行", "提交", "修改", "删除", "创建", "更新", "关闭", "批准") {
 		return false
@@ -193,9 +224,35 @@ func isFileRequest(q string) bool {
 	if hasAny(q, "不要读取", "不要打开", "不用上传", "不需要文件", "怎么解析", "如何解析", "如何读取", "设计解析方案") {
 		return false
 	}
-	object := hasAny(q, "附件", "上传的文件", "这个文件", "这份文件", "这张图片", "这份图片", "扫描件", "扫描 pdf", "扫描pdf", "pdf", ".pdf", "图片", "照片", "xlsx", "excel", "工作簿", "音频", "录音", "视频", "docx", "word 文件")
-	action := hasAny(q, "读取", "分析", "总结", "提取", "识别", "转写", "解析", "里面写了什么", "内容是什么", "看一下", "问答")
+	if strings.Contains(q, "://") || strings.Contains(q, "www.") {
+		return false
+	}
+	pathLike := strings.ContainsAny(q, "/\\") && (hasAny(q, "读取", "读一下", "读出来", "打开", "阅读") || hasEnglishWord(q, "read"))
+	pathLike = pathLike || hasAny(q, ".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".go", ".log")
+	object := pathLike || hasAny(q, "附件", "上传的文件", "这个文件", "这份文件", "这张图片", "这份图片", "扫描件", "扫描 pdf", "扫描pdf", "pdf", ".pdf", "图片", "照片", "xlsx", "excel", "工作簿", "音频", "录音", "视频", "docx", "word 文件")
+	action := hasAny(q, "读取", "分析", "总结", "提取", "识别", "转写", "解析", "里面写了什么", "内容是什么", "看一下", "问答") || hasEnglishWord(q, "read") || hasEnglishWord(q, "summarize")
 	return object && action
+}
+
+func hasEnglishWord(q, word string) bool {
+	for offset := strings.Index(q, word); offset >= 0; {
+		end := offset + len(word)
+		leftBoundary := offset == 0 || !isIntentWord(q[offset-1])
+		rightBoundary := end == len(q) || !isIntentWord(q[end])
+		if leftBoundary && rightBoundary {
+			return true
+		}
+		next := strings.Index(q[end:], word)
+		if next < 0 {
+			return false
+		}
+		offset = end + next
+	}
+	return false
+}
+
+func isIntentWord(value byte) bool {
+	return value == '_' || value == '-' || value == '.' || value >= 'a' && value <= 'z' || value >= '0' && value <= '9'
 }
 
 func isRealtimeRequest(q string) bool {
