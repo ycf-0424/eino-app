@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"html"
@@ -17,6 +19,7 @@ import (
 	"github.com/cloudwego/eino/components/tool/utils"
 	"github.com/cloudwego/eino/schema"
 
+	"my-eino-app/internal/auth"
 	"my-eino-app/internal/execution"
 )
 
@@ -100,8 +103,9 @@ func (w *documentWriter) write(ctx context.Context, input DocumentWriteInput) (s
 	if err != nil {
 		return "", err
 	}
-	target := filepath.Join(w.output, outputName)
-	if err := ensureOutputPath(w.output, target); err != nil {
+	outputDir := documentOutputDir(w.output, ctx)
+	target := filepath.Join(outputDir, outputName)
+	if err := ensureOutputPath(outputDir, target); err != nil {
 		return "", err
 	}
 	if _, err := os.Stat(target); err == nil {
@@ -116,10 +120,10 @@ func (w *documentWriter) write(ctx context.Context, input DocumentWriteInput) (s
 	if operations == 0 {
 		return "", fmt.Errorf("document_write requested no effective changes")
 	}
-	if err := os.MkdirAll(w.output, 0o750); err != nil {
+	if err := os.MkdirAll(outputDir, 0o750); err != nil {
 		return "", fmt.Errorf("create document output directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(w.output, ".document-write-*.docx")
+	tmp, err := os.CreateTemp(outputDir, ".document-write-*.docx")
 	if err != nil {
 		return "", fmt.Errorf("create document staging file: %w", err)
 	}
@@ -145,6 +149,18 @@ func (w *documentWriter) write(ctx context.Context, input DocumentWriteInput) (s
 		"operations":  operations,
 	})
 	return fmt.Sprintf("document written to %s (%d change(s)); original preserved", target, operations), nil
+}
+
+// documentOutputDir gives authenticated users an isolated artifact directory.
+// Single-user deployments keep the historical direct output path so existing
+// operators and CLI workflows remain compatible.
+func documentOutputDir(root string, ctx context.Context) string {
+	owner := auth.OwnerFromContext(ctx)
+	if owner == "" {
+		return root
+	}
+	sum := sha256.Sum256([]byte(owner))
+	return filepath.Join(root, "owners", hex.EncodeToString(sum[:8]))
 }
 
 type docxArchive struct {

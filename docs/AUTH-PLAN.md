@@ -112,6 +112,10 @@ type Auth struct {
 > 历史数据归属实际由 `cmd/session-migrate -claim-owner` 承担，管理员标记由
 > `auth_local_users.is_admin` 承担，该字段全项目零使用点。以 `docs/EXECUTION-PLAN.md` 为准。
 
+> **当前实现注记（2026-09-28）**：后续混合架构已启用管理员治理能力：本地账号的
+> `is_admin` 会进入登录态并保护知识库管理接口；飞书管理员通过 `auth.admin_owners`
+> 配置。上面的“零使用点”只描述 2026-09-17 的历史状态。
+
 **`internal/config/config.go` 改动**
 
 1. `Config` struct 加 `Auth Auth \`yaml:"auth"\``
@@ -282,6 +286,9 @@ func OwnerFromContext(ctx context.Context) string {
 > 「额外获得权限」**没有实现** —— 全项目没有任何按管理员身份放行的分支，
 > `auth_local_users.is_admin` 目前只在 `user-admin -list` 里显示。
 > 「飞书故障时有本地入口」这个目标本身是达成的（见步骤 2.10–2.13）。
+
+> **当前实现注记（2026-09-28）**：`is_admin` 已用于知识库治理和文档能力的服务端授权，
+> 不是普通用户可伪造的前端标记。
 
 ---
 

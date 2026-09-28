@@ -39,7 +39,9 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "authentication required"})
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(WithOwner(r.Context(), sess.Owner)))
+		requestContext := WithOwner(r.Context(), sess.Owner)
+		requestContext = WithAdmin(requestContext, sess.IsAdmin)
+		next.ServeHTTP(w, r.WithContext(requestContext))
 	})
 }
 

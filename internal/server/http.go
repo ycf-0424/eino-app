@@ -173,6 +173,16 @@ func (s *Service) Handler() http.Handler {
 			"auth_enabled":                      s.authEnabled(),
 			"attachments_enabled":               s.attachments != nil,
 			"attachments_max_files_per_request": maxAttachmentFiles,
+			"capabilities": map[string]bool{
+				"knowledge_search":  s.knowledge != nil,
+				"knowledge_ingest":  s.knowledgeEnabled(),
+				"attachments":       s.attachments != nil,
+				"document_write":    s.mutationToolConfigured("document_write"),
+				"document_download": s.mutationToolConfigured("document_write"),
+				"skill_write":       s.mutationToolConfigured("skill_write"),
+				"template_write":    s.mutationToolConfigured("template_write"),
+				"skill_install":     s.mutationToolConfigured("skill_install"),
+			},
 			"login": map[string]bool{
 				"feishu": s.authEnabled() && s.feishuReady(),
 				"local":  s.localLoginEnabled(),
@@ -215,6 +225,16 @@ func (s *Service) Handler() http.Handler {
 		mux.Handle("GET /attachments/{id}/artifacts", s.protected(http.HandlerFunc(s.handleAttachmentArtifacts)))
 		mux.Handle("POST /attachments/{id}/retry", s.protected(http.HandlerFunc(s.handleAttachmentRetry)))
 		mux.Handle("DELETE /attachments/{id}", s.protected(http.HandlerFunc(s.handleAttachmentDelete)))
+	}
+	if s.knowledgeIndexer != nil {
+		knowledgeRoutes := s.adminOnly(http.HandlerFunc(s.handleKnowledgeList))
+		mux.Handle("GET /knowledge/documents", knowledgeRoutes)
+		mux.Handle("POST /knowledge/documents", s.adminOnly(http.HandlerFunc(s.handleKnowledgeUpload)))
+		mux.Handle("DELETE /knowledge/documents/{name}", s.adminOnly(http.HandlerFunc(s.handleKnowledgeDelete)))
+		mux.Handle("POST /knowledge/reindex", s.adminOnly(http.HandlerFunc(s.handleKnowledgeReindex)))
+	}
+	if s.mutationToolConfigured("document_write") {
+		mux.Handle("GET /documents/{name}/download", s.protected(http.HandlerFunc(s.handleDocumentDownload)))
 	}
 	mux.Handle("GET /sessions", s.protected(http.HandlerFunc(s.handleSessions)))
 	// 会话 id 由服务端签发：前端不再自己造 id（app.js 的 makeSessionId 已移除）。

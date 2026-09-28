@@ -60,6 +60,7 @@
             <a class="button user-login" id="loginButton" href="/auth/login">登录</a>
             <button class="icon-button user-logout" id="logoutButton" type="button" title="退出登录" aria-label="退出登录">退出</button>
           </div>
+          <button class="secondary-button knowledge-button" id="knowledgeButton" type="button" hidden>知识库</button>
           <button class="icon-button" id="clearChat" type="button" title="删除当前会话" aria-label="删除当前会话">&#128465;</button>
         </div>
       </header>
@@ -127,6 +128,24 @@
       <button class="icon-button" id="closeModelDialog" type="button" title="关闭">&times;</button>
     </div>
     <div class="model-list" id="modelList"></div>
+  </dialog>
+  <dialog class="knowledge-dialog" id="knowledgeDialog">
+    <div class="model-dialog-header">
+      <div>
+        <h2>知识库管理</h2>
+        <p class="dialog-subtitle">仅管理员可修改；普通聊天不会自动写入知识库。</p>
+      </div>
+      <button class="icon-button" id="closeKnowledgeDialog" type="button" title="关闭">&times;</button>
+    </div>
+    <div class="knowledge-toolbar">
+      <label class="secondary-button knowledge-upload">
+        上传文档
+        <input id="knowledgeInput" type="file" hidden accept=".md,.txt,.html,.htm,.json,.docx,.pdf">
+      </label>
+      <button class="secondary-button" id="reindexKnowledge" type="button">重新索引</button>
+      <span id="knowledgeStatus" class="dialog-subtitle"></span>
+    </div>
+    <div id="knowledgeList" class="knowledge-list"></div>
   </dialog>
   <script src="/app.js" defer></script>
 </body>

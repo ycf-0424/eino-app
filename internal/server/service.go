@@ -41,16 +41,17 @@ import (
 
 // Service 类型。
 type Service struct {
-	memories    *memory.Engine
-	attachments *attachments.Manager
-	cfg         *config.Config
-	model       eino.ChatModel
-	tools       []eino.BaseTool
-	knowledge   eino.InvokableTool
-	localFiles  eino.InvokableTool
-	checkpoints *checkpoint.FileStore
-	sessions    *session.Store
-	skills      *skill.Loader
+	memories         *memory.Engine
+	attachments      *attachments.Manager
+	cfg              *config.Config
+	model            eino.ChatModel
+	tools            []eino.BaseTool
+	knowledge        eino.InvokableTool
+	knowledgeIndexer *rag.Indexer
+	localFiles       eino.InvokableTool
+	checkpoints      *checkpoint.FileStore
+	sessions         *session.Store
+	skills           *skill.Loader
 	// executions 在执行事件关闭或后端不可用时为 nil。
 	executions execution.Store
 	execCfg    config.ExecutionEvents
@@ -88,6 +89,9 @@ type Service struct {
 	attachmentUploads       atomic.Uint64
 	attachmentParseFailures atomic.Uint64
 	metricsToken            string
+	knowledgeMu             sync.RWMutex
+	knowledgeReport         rag.IndexReport
+	knowledgeIndexError     string
 }
 
 var ErrQueueFull = errors.New("request queue is full")
@@ -111,6 +115,7 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 	}
 	var tools []eino.BaseTool
 	var knowledge eino.InvokableTool
+	var knowledgeIndexer *rag.Indexer
 	var localFiles eino.InvokableTool
 	if cfg.LocalFiles.Enabled {
 		fileTool, toolErr := toolset.NewLocalFileReadTool(cfg.LocalFiles.Roots, cfg.LocalFiles.MaxBytes)
@@ -129,6 +134,19 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 		}
 		knowledgeTool := toolset.NewKnowledgeToolWithOptions(store, rag.SearchOptions{TopK: cfg.RAG.TopK, ScoreThreshold: cfg.RAG.ScoreThreshold, MaxContextChars: cfg.RAG.MaxContextChars})
 		knowledge = knowledgeTool
+		indexer, indexerErr := rag.NewIndexer(store, rag.IndexOptions{
+			DocumentDir:    cfg.RAG.DocumentDir,
+			EmbeddingModel: cfg.RAG.Embedding.Model,
+			Dimension:      cfg.RAG.Dimension,
+			ChunkSize:      cfg.RAG.ChunkSize,
+			ChunkOverlap:   cfg.RAG.ChunkOverlap,
+			Store:          cfg.RAG.Store,
+			Target:         rag.TargetFingerprint(cfg.RAG),
+		})
+		if indexerErr != nil {
+			return nil, indexerErr
+		}
+		knowledgeIndexer = indexer
 		tools = append(tools, knowledgeTool)
 	}
 	cp, err := checkpoint.New(cfg.Agent.CheckpointDir)
@@ -183,7 +201,7 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 			}),
 		)
 	}
-	service := &Service{cfg: cfg, model: cm, tools: tools, knowledge: knowledge, localFiles: localFiles, checkpoints: cp, sessions: sessions, skills: skillLoader, execCfg: cfg.ExecutionEvents, locks: map[string]chan struct{}{}, concurrency: make(chan struct{}, cfg.Runtime.MaxConcurrency), queueLimit: int64(cfg.Runtime.QueueLimit), queueTimeout: time.Duration(cfg.Runtime.QueueTimeout), metricsToken: strings.TrimSpace(os.Getenv("METRICS_TOKEN"))}
+	service := &Service{cfg: cfg, model: cm, tools: tools, knowledge: knowledge, knowledgeIndexer: knowledgeIndexer, localFiles: localFiles, checkpoints: cp, sessions: sessions, skills: skillLoader, execCfg: cfg.ExecutionEvents, locks: map[string]chan struct{}{}, concurrency: make(chan struct{}, cfg.Runtime.MaxConcurrency), queueLimit: int64(cfg.Runtime.QueueLimit), queueTimeout: time.Duration(cfg.Runtime.QueueTimeout), metricsToken: strings.TrimSpace(os.Getenv("METRICS_TOKEN"))}
 	executionStore, err := newExecutionStore(ctx, cfg, sessions)
 	if err != nil {
 		return nil, err

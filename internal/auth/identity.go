@@ -24,6 +24,19 @@ func OwnerFromContext(ctx context.Context) string {
 	return ""
 }
 
+type adminKey struct{}
+
+// WithAdmin records the server-verified administrator role in request context.
+func WithAdmin(ctx context.Context, isAdmin bool) context.Context {
+	return context.WithValue(ctx, adminKey{}, isAdmin)
+}
+
+// AdminFromContext returns the server-verified administrator role.
+func AdminFromContext(ctx context.Context) bool {
+	value, _ := ctx.Value(adminKey{}).(bool)
+	return value
+}
+
 // FeishuOwner 返回飞书身份的 owner 形式。open_id 为空时返回空串，
 // 调用方必须在此之前完成「拿不到用户信息即失败」的判定。
 func FeishuOwner(openID string) string {

@@ -281,6 +281,7 @@ type RAG struct {
 	TopK            int     `yaml:"top_k"`
 	ScoreThreshold  float64 `yaml:"score_threshold"`
 	MaxContextChars int     `yaml:"max_context_chars"`
+	MaxUploadBytes  int64   `yaml:"max_upload_bytes"`
 	Embedding       OpenAI  `yaml:"embedding"`
 	Dimension       int     `yaml:"dimension"`
 	Redis           Redis   `yaml:"redis"`
@@ -803,6 +804,12 @@ func (c *Config) Validate() error {
 		}
 		if c.RAG.DocumentDir == "" {
 			c.RAG.DocumentDir = "docs/knowledge"
+		}
+		if c.RAG.MaxUploadBytes == 0 {
+			c.RAG.MaxUploadBytes = 25 << 20
+		}
+		if c.RAG.MaxUploadBytes < 1 || c.RAG.MaxUploadBytes > 100<<20 {
+			return fmt.Errorf("rag.max_upload_bytes must be between 1 and 100 MiB")
 		}
 		if c.RAG.ChunkSize == 0 {
 			c.RAG.ChunkSize = 800

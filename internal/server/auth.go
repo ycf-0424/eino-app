@@ -224,7 +224,8 @@ func (s *Service) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	// 用户档案落库失败不阻断登录：登录态在进程内，auth_users 只是档案记录。
 	_ = s.authUsers.UpsertFeishu(r.Context(), user)
-	token, _, err := s.authSessions.Create(auth.FeishuOwner(user.OpenID), user.Name, user.AvatarURL, "feishu")
+	owner := auth.FeishuOwner(user.OpenID)
+	token, _, err := s.authSessions.CreateWithAdmin(owner, user.Name, user.AvatarURL, "feishu", s.configuredAdminOwner(owner))
 	if err != nil {
 		s.renderCallbackError(w, http.StatusInternalServerError, "签发登录态失败", err.Error())
 		return
@@ -332,7 +333,47 @@ func (s *Service) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		"name":       sess.Name,
 		"avatar_url": sess.AvatarURL,
 		"provider":   sess.Provider,
+		"is_admin":   s.adminFor(sess.Owner, sess.IsAdmin),
 	}})
+}
+
+// configuredAdminOwner allows an operator to grant management access to a
+// Feishu owner without pretending that the browser can choose its own role.
+func (s *Service) configuredAdminOwner(owner string) bool {
+	if s == nil || s.cfg == nil {
+		return false
+	}
+	for _, configured := range s.cfg.Auth.AdminOwners {
+		if strings.TrimSpace(configured) == owner {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) adminFor(owner string, sessionAdmin bool) bool {
+	return sessionAdmin || s.configuredAdminOwner(owner)
+}
+
+func (s *Service) isAdminRequest(r *http.Request) bool {
+	if !s.authEnabled() {
+		// Single-user mode is explicitly an administrator-controlled deployment.
+		return true
+	}
+	return s.adminFor(auth.OwnerFromContext(r.Context()), auth.AdminFromContext(r.Context()))
+}
+
+// adminOnly keeps management endpoints out of ordinary employee sessions.
+// Authentication is still applied first, so an unauthenticated request gets
+// the normal login response rather than a role leak.
+func (s *Service) adminOnly(next http.Handler) http.Handler {
+	return s.protected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.isAdminRequest(r) {
+			writeJSON(w, http.StatusForbidden, response{Error: "administrator role required"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
 }
 
 // feishuReady 判断飞书凭据是否齐备（三者缺一不可）。
@@ -396,7 +437,7 @@ func (s *Service) handleAuthLocal(w http.ResponseWriter, r *http.Request) {
 		s.loginLimiter.Refund(key)
 	}
 
-	token, _, err := s.authSessions.Create(sess.Owner, sess.Name, sess.AvatarURL, sess.Provider)
+	token, _, err := s.authSessions.CreateWithAdmin(sess.Owner, sess.Name, sess.AvatarURL, sess.Provider, sess.IsAdmin)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, response{Error: err.Error()})
 		return
@@ -406,6 +447,7 @@ func (s *Service) handleAuthLocal(w http.ResponseWriter, r *http.Request) {
 		"owner":    sess.Owner,
 		"name":     sess.Name,
 		"provider": sess.Provider,
+		"is_admin": sess.IsAdmin,
 	}})
 }
 

@@ -265,6 +265,7 @@ func (s *LocalStore) Login(ctx context.Context, username, password string, minPa
 		Owner:    LocalOwner(user.ID),
 		Name:     user.DisplayName,
 		Provider: "local",
+		IsAdmin:  user.IsAdmin,
 	}, nil
 }
 

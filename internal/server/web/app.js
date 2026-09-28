@@ -29,6 +29,7 @@ const state = {
   attachmentEnabled: false,
   attachmentMaxCount: 3,
   uploadingAttachments: false,
+  capabilities: {},
 };
 
 const ui = Object.fromEntries([
@@ -39,6 +40,7 @@ const ui = Object.fromEntries([
   "deleteDialog", "confirmDelete", "userBox", "userName", "loginButton", "logoutButton",
   "modelSelector", "currentModel", "modelDialog", "modelList", "closeModelDialog",
   "attachmentButton", "attachmentInput", "pendingAttachments",
+  "knowledgeButton", "knowledgeDialog", "closeKnowledgeDialog", "knowledgeInput", "reindexKnowledge", "knowledgeStatus", "knowledgeList",
 ].map((id) => [id, document.getElementById(id)]));
 
 // 工具与事件的中文标签；未知名称直接展示原名，不伪造语义。
@@ -48,6 +50,10 @@ const TOOL_LABELS = {
   load_skills: "加载技能",
   local_file_read: "读取本地文件",
   write_note: "写入笔记",
+  document_write: "修改文档",
+  template_write: "保存模板",
+  skill_write: "写入技能",
+  skill_install: "安装技能",
 };
 
 const ERROR_LABELS = {
@@ -318,7 +324,27 @@ function renderSources(node, sources, confidence) {
   if (typeof confidence === "number" && Number.isFinite(confidence)) {
     node.sources.append(el("span", "confidence", `置信度 ${(Math.max(0, Math.min(1, confidence)) * 100).toFixed(0)}%`));
   }
+  if (node.artifacts) {
+    node.artifacts.forEach((name) => {
+      const link = document.createElement("a");
+      link.className = "source-chip";
+      link.href = `/documents/${encodeURIComponent(name)}/download`;
+      link.textContent = `下载 ${name}`;
+      link.download = name;
+      node.sources.append(link);
+    });
+  }
   node.sources.hidden = node.sources.childElementCount === 0;
+}
+
+function addArtifactLink(node, outputFile) {
+  if (!node?.sources || !outputFile) return;
+  const name = String(outputFile).split(/[\\/]/).pop();
+  if (!name || !name.toLowerCase().endsWith(".docx")) return;
+  node.artifacts = node.artifacts || new Set();
+  if (node.artifacts.has(name)) return;
+  node.artifacts.add(name);
+  renderSources(node, [], null);
 }
 
 function setStreamStatus(node, text) {
@@ -651,6 +677,9 @@ function renderEvent(panel, event, live = false) {
           message.eventSources = payload.sources.filter((source) => typeof source === "string" && source.trim());
           renderSources(message, [], null);
         }
+      }
+      if (payload.tool_name === "document_write" && payload.output_file) {
+        addArtifactLink(panel._messageNode, payload.output_file);
       }
       if (typeof payload.duration_ms === "number") {
         item.dataset.ms = String(payload.duration_ms);
@@ -1165,6 +1194,12 @@ function renderAuthState() {
   ui.logoutButton.hidden = true;
 }
 
+function renderKnowledgeButton() {
+  const enabled = state.capabilities.knowledge_ingest === true;
+  const allowed = !state.authEnabled || state.user?.is_admin === true;
+  ui.knowledgeButton.hidden = !(enabled && allowed);
+}
+
 // 认证开启时显示当前身份；未登录时保留页面并显示登录入口，不能创建会话或聊天。
 async function loadUser() {
   try {
@@ -1174,6 +1209,91 @@ async function loadUser() {
     state.user = null;
   }
   renderAuthState();
+  renderKnowledgeButton();
+}
+
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderKnowledgeList(items) {
+  ui.knowledgeList.replaceChildren();
+  if (!items.length) {
+    ui.knowledgeList.append(el("div", "knowledge-empty", "知识库目录中还没有文档"));
+    return;
+  }
+  items.forEach((item) => {
+    const row = el("div", "knowledge-row");
+    const meta = el("div", "knowledge-meta");
+    meta.append(el("div", "knowledge-name", item.name));
+    const modified = item.modified_at ? new Date(item.modified_at).toLocaleString() : "";
+    meta.append(el("div", "knowledge-detail", `${String(item.format || "").toUpperCase()} · ${formatBytes(item.size)}${modified ? ` · ${modified}` : ""}`));
+    const remove = el("button", "knowledge-delete", "删除");
+    remove.type = "button";
+    remove.onclick = async () => {
+      if (!window.confirm(`删除知识库文档“${item.name}”？删除后会同步清理对应索引。`)) return;
+      remove.disabled = true;
+      try {
+        await api(`/knowledge/documents/${encodeURIComponent(item.name)}`, { method: "DELETE" });
+        showToast("知识库文档已删除并重新索引");
+        await loadKnowledgeDocuments();
+      } catch (error) {
+        showToast(error.message);
+        remove.disabled = false;
+      }
+    };
+    row.append(meta, remove);
+    ui.knowledgeList.append(row);
+  });
+}
+
+async function loadKnowledgeDocuments() {
+  const data = await api("/knowledge/documents");
+  renderKnowledgeList(Array.isArray(data?.documents) ? data.documents : []);
+  const index = data?.index || {};
+  if (index.last_error) {
+    ui.knowledgeStatus.textContent = `索引失败：${index.last_error}`;
+  } else if (index.last_report?.finished_at) {
+    ui.knowledgeStatus.textContent = `最近索引：${new Date(index.last_report.finished_at).toLocaleString()}`;
+  } else {
+    ui.knowledgeStatus.textContent = "尚未在服务端执行索引";
+  }
+}
+
+async function uploadKnowledgeDocument(file) {
+  if (!file) return;
+  const form = new FormData();
+  form.append("file", file);
+  ui.knowledgeStatus.textContent = "正在保存并索引…";
+  try {
+    const response = await fetch("/knowledge/documents", { method: "POST", body: form });
+    if (response.status === 401) { redirectToLogin(); return; }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.error) throw new Error(payload.error || `上传失败 (${response.status})`);
+    showToast("知识库文档已保存并索引");
+    await loadKnowledgeDocuments();
+  } catch (error) {
+    ui.knowledgeStatus.textContent = error.message || "上传失败";
+    showToast(error.message || "知识库文档上传失败");
+  }
+}
+
+async function reindexKnowledge() {
+  ui.reindexKnowledge.disabled = true;
+  ui.knowledgeStatus.textContent = "正在重新索引…";
+  try {
+    await api("/knowledge/reindex", { method: "POST" });
+    showToast("知识库已重新索引");
+    await loadKnowledgeDocuments();
+  } catch (error) {
+    ui.knowledgeStatus.textContent = error.message || "索引失败";
+    showToast(error.message || "知识库索引失败");
+  } finally {
+    ui.reindexKnowledge.disabled = false;
+  }
 }
 
 // 加载可用模型列表与当前激活模型。
@@ -1269,6 +1389,24 @@ ui.closeModelDialog.onclick = () => ui.modelDialog.close();
 ui.modelDialog.addEventListener("click", (event) => {
   if (event.target === ui.modelDialog) ui.modelDialog.close();
 });
+ui.knowledgeButton.onclick = async () => {
+  ui.knowledgeDialog.showModal();
+  try {
+    await loadKnowledgeDocuments();
+  } catch (error) {
+    ui.knowledgeStatus.textContent = error.message || "知识库不可用";
+  }
+};
+ui.closeKnowledgeDialog.onclick = () => ui.knowledgeDialog.close();
+ui.knowledgeDialog.addEventListener("click", (event) => {
+  if (event.target === ui.knowledgeDialog) ui.knowledgeDialog.close();
+});
+ui.knowledgeInput.addEventListener("change", () => {
+  const file = ui.knowledgeInput.files?.[0];
+  ui.knowledgeInput.value = "";
+  uploadKnowledgeDocument(file);
+});
+ui.reindexKnowledge.onclick = reindexKnowledge;
 document.querySelectorAll("[data-prompt]").forEach((button) => button.onclick = () => sendMessage(button.dataset.prompt));
 
 async function bootstrap() {
@@ -1280,10 +1418,12 @@ async function bootstrap() {
     state.attachmentEnabled = health?.attachments_enabled === true;
     state.attachmentMaxCount = Math.max(1, Number(health?.attachments_max_files_per_request) || 3);
     ui.attachmentButton.hidden = !state.attachmentEnabled;
+    state.capabilities = health?.capabilities || {};
     state.authEnabled = health?.auth_enabled === true || health?.login?.feishu === true || health?.login?.local === true;
     // 技能入口的显隐完全由后端 debug 状态决定，前端不做任何默认开启。
     applyDebugMode(health?.debug === true);
     await loadUser();
+    renderKnowledgeButton();
     await loadModels();
     state.authReady = true;
     // 未登录时保留欢迎页，但不向受保护的会话接口发请求。

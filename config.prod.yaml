@@ -70,6 +70,8 @@ auth:
   redirect_url: "${FEISHU_REDIRECT_URL}"
   session_ttl: 12h
   cookie_secure: true
+  # 可执行知识库治理的飞书 owner；本地账号管理员由 auth_local_users.is_admin 控制。
+  admin_owners: []
   local:
     enabled: true
     min_password_length: 12
@@ -157,6 +159,7 @@ rag:
   top_k: 5
   score_threshold: 0.50
   max_context_chars: 6000
+  max_upload_bytes: 26214400
   dimension: 1024
   embedding:
     api_key: "${EMBEDDING_API_KEY}"

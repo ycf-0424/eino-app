@@ -131,6 +131,7 @@ button { color: inherit; }
 .user-login { display: inline-flex; height: 32px; padding: 0 11px; align-items: center; border-radius: 6px; background: var(--text); color: #fff; font-size: 12px; text-decoration: none; }
 .user-login:hover { background: #303238; }
 .user-logout { width: auto; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; font-size: 12px; }
+.knowledge-button { min-height: 32px; padding: 0 10px; font-size: 12px; }
 
 .conversation {
 	width: 100%;
@@ -278,6 +279,26 @@ button { color: inherit; }
   max-width: 420px;
   width: calc(100vw - 32px);
 }
+.knowledge-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 40px));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0;
+  box-shadow: 0 8px 32px rgba(0,0,0,.12);
+}
+.knowledge-dialog::backdrop { background: rgba(0,0,0,.32); }
+.dialog-subtitle { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.knowledge-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.knowledge-upload { display: inline-flex; align-items: center; }
+.knowledge-list { max-height: 480px; overflow: auto; padding: 12px 20px 20px; }
+.knowledge-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.knowledge-row:last-child { border-bottom: 0; }
+.knowledge-meta { min-width: 0; }
+.knowledge-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.knowledge-detail { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.knowledge-delete { min-height: 30px; padding: 0 9px; border: 1px solid #e0b4b0; border-radius: 6px; background: #fff; color: var(--danger); cursor: pointer; font-size: 12px; }
+.knowledge-empty { padding: 24px 0; color: var(--muted); text-align: center; font-size: 13px; }
 .model-dialog::backdrop { background: rgba(0,0,0,.32); }
 .model-dialog-header {
   display: flex;
@@ -356,6 +377,7 @@ button { color: inherit; }
   .skill-control > span { display: none; }
   .skill-control select { max-width: 112px; }
   .topbar-actions { gap: 2px; }
+  .knowledge-button { padding: 0 7px; }
   .welcome { width: calc(100% - 28px); min-height: 360px; }
   .welcome h1 { font-size: 24px; }
   .suggestions { grid-template-columns: 1fr; margin-top: 24px; }

@@ -18,6 +18,10 @@ type Session struct {
 	Name      string
 	AvatarURL string
 	Provider  string // "feishu" | "local"，供前端显示与 /auth/me 返回
+	// IsAdmin controls server-side management actions such as knowledge-base
+	// ingestion. It is carried by the signed-in session rather than inferred
+	// from a client-supplied field.
+	IsAdmin   bool
 	ExpiresAt time.Time
 }
 
@@ -45,6 +49,13 @@ func (s *Sessions) TTL() time.Duration { return s.ttl }
 
 // Create 签发新登录态，返回明文 token（只此一次可见，之后只存哈希）。
 func (s *Sessions) Create(owner, name, avatarURL, provider string) (string, Session, error) {
+	return s.CreateWithAdmin(owner, name, avatarURL, provider, false)
+}
+
+// CreateWithAdmin signs in a session with an explicit server-side admin flag.
+// The legacy Create method remains non-admin for callers that do not have an
+// authoritative role source.
+func (s *Sessions) CreateWithAdmin(owner, name, avatarURL, provider string, isAdmin bool) (string, Session, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return "", Session{}, err
@@ -55,6 +66,7 @@ func (s *Sessions) Create(owner, name, avatarURL, provider string) (string, Sess
 		Name:      name,
 		AvatarURL: avatarURL,
 		Provider:  provider,
+		IsAdmin:   isAdmin,
 		ExpiresAt: time.Now().Add(s.ttl),
 	}
 	s.mu.Lock()

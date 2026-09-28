@@ -116,6 +116,19 @@ make start
 make index
 ```
 
+运行中的管理员也可以在聊天页面右上角打开“知识库”：上传或删除文档后服务端会自动执行增量索引，并显示索引结果。普通员工只能检索知识库，普通聊天不会把回答自动写回知识库。管理员权限来自本地账号的 `is_admin`，或 `auth.admin_owners` 中配置的飞书 owner；所有写入仍由后端校验，前端按钮不是权限边界。
+
+也可以直接调用受保护的管理接口：
+
+```text
+GET    /knowledge/documents
+POST   /knowledge/documents       # multipart/form-data，字段名 file
+DELETE /knowledge/documents/{name}
+POST   /knowledge/reindex
+```
+
+文档修改工具生成的 DOCX 会按登录用户隔离保存，并在助手消息中提供受控下载链接；源文件不会被覆盖。
+
 `make check` 是代码检查，`make eval` 是评测命令，都不是日常启动必需步骤。
 
 普通单元测试使用串行编译，避免低内存环境并行编译失败：

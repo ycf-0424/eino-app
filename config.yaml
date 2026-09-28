@@ -129,6 +129,8 @@ auth:
   redirect_url: ""         # 必须与飞书后台登记值完全一致；FEISHU_REDIRECT_URL
   session_ttl: 12h
   cookie_secure: false     # 内网 http 部署必须 false，否则浏览器不保存 Cookie
+  # 可执行知识库治理的飞书 owner；本地账号管理员由 auth_local_users.is_admin 控制。
+  admin_owners: []
   # 项目自有账号（例外通道）：仅管理员用 go run ./cmd/user-admin 建号，无注册接口。
   # 与 auth.enabled 独立；auth.enabled 为 true 时它是飞书之外的另一条登录入口，
   # 只启用它、不填飞书凭据也是合法组合。
@@ -234,6 +236,7 @@ rag:
   top_k: 5
   score_threshold: 0.50           # 根据本地 bge-m3 评测校准；事实问题最低约 0.54
   max_context_chars: 6000
+  max_upload_bytes: 26214400
   dimension: 1024                 # Ollama bge-m3 的向量维度
   embedding:
     api_key: "ollama"

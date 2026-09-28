@@ -14,7 +14,7 @@ go run ./cmd/server -addr 127.0.0.1:18181
 
 主要接口：
 
-- `GET /health`：服务健康状态，返回体含 `debug`、`attachments_enabled` 与 `attachments_max_files_per_request`，供前端判断能力入口
+- `GET /health`：服务健康状态，返回体含 `debug`、附件限制和 `capabilities` 能力清单，供前端判断入口；能力清单不是权限边界
 - `GET /skills`：可用 Skill。**仅 `debug: true` 时注册**，否则返回 404
 - `POST /chat`：非流式聊天，JSON 字段为 `session_id`、`query`、`skill`、`attachment_ids`。`skill` 仅在 `debug: true` 时生效，非调试模式一律忽略并按问题自主路由；附件 ID 必须属于当前 owner 且已解析完成
 - `POST /attachments`：启用 `attachments.enabled` 后可用，上传 `multipart/form-data` 的 `file`（或 `files`）字段
@@ -27,6 +27,11 @@ go run ./cmd/server -addr 127.0.0.1:18181
 - `GET /sessions/{id}/execution`：执行记录，参数 `run_id`、`after_sequence`、`limit`
 - `DELETE /sessions/{id}`：删除会话、Checkpoint 及执行记录
 - `POST /sessions/{id}/approval`：提交 `{"approved":true}` 并恢复任务
+- `GET /knowledge/documents`：管理员列出知识库源文件与最近索引状态
+- `POST /knowledge/documents`：管理员以 `multipart/form-data` 的 `file` 字段上传或替换一个知识库文档，保存后自动增量索引
+- `DELETE /knowledge/documents/{name}`：管理员删除源文件并清理对应向量
+- `POST /knowledge/reindex`：管理员重新执行增量索引；添加 `?force=true` 可强制重算当前目录文档
+- `GET /documents/{name}/download`：下载当前登录用户通过 `document_write` 生成的 DOCX 结果
 - `GET /ws?session_id={id}`：WebSocket 增量聊天
 - `GET /metrics`：查看累计请求数和当前执行中的请求数
 

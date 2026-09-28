@@ -1290,6 +1290,9 @@ err=file is outside the allowed local directories or does not exist`。
 
 ### 14.10 方案自身的缺陷：`auth.admin_open_id` 已删除（这是方案漏写，不是执行漏做）
 
+> 本节记录 2026-09-17 的历史状态。2026-09-28 的混合架构已新增 `auth.admin_owners`，
+> 并让本地账号的 `is_admin` 真正保护知识库管理接口；历史段落中的“没有授权用途”不适用于当前版本。
+
 **现象**：`auth.admin_open_id` 在 `internal/config/auth.go` 有声明、三份配置都写了（都是空值），
 但 `grep -rn AdminOpenID --include=*.go` **只命中声明本身，零使用点**。
 而上线前最终检查里有一项是「管理员 `AdminOpenID` 已配置，本地后门可用」——
@@ -1317,8 +1320,8 @@ err=file is outside the allowed local directories or does not exist`。
 与原文的差异。其中 D 节「保留管理员后门」**只实现了一半**：`/auth/local` 的开关最终是独立的
 `auth.local.enabled`，与 `AdminOpenID` 无关；「额外获得权限」**没有实现**。
 
-> **遗留**：`auth_local_users.is_admin` 同样没有任何授权用途，只在 `user-admin -list` 里显示。
-> 它不像 `admin_open_id` 那样暗示一个不存在的后门，先保留。
+> **历史遗留说明**：在本节对应的旧版本中，`auth_local_users.is_admin` 只在 `user-admin -list`
+> 里显示；当前版本已将它接入服务端管理员授权。
 
 ### 14.11 飞书凭据的接线缺口：compose 没有透传 `FEISHU_*`
 
