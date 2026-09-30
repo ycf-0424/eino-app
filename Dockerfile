@@ -11,7 +11,9 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/eino-server ./cmd/server \
     && go build -trimpath -ldflags="-s -w" -o /out/session-migrate ./cmd/session-migrate \
-    && go build -trimpath -ldflags="-s -w" -o /out/user-admin ./cmd/user-admin
+    && go build -trimpath -ldflags="-s -w" -o /out/user-admin ./cmd/user-admin \
+    && go build -trimpath -ldflags="-s -w" -o /out/indexer ./cmd/indexer \
+    && go build -trimpath -ldflags="-s -w" -o /out/memory-reindex ./cmd/memory-reindex
 
 # 运行镜像不包含 Go 编译器，减少镜像体积和攻击面。
 FROM alpine:3.22
@@ -24,6 +26,8 @@ WORKDIR /app
 COPY --from=builder /out/eino-server ./eino-server
 COPY --from=builder /out/session-migrate ./session-migrate
 COPY --from=builder /out/user-admin ./user-admin
+COPY --from=builder /out/indexer ./indexer
+COPY --from=builder /out/memory-reindex ./memory-reindex
 COPY config.docker.yaml ./config.yaml
 COPY skills ./skills
 COPY docs/knowledge ./docs/knowledge

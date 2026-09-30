@@ -85,7 +85,7 @@ start: ## 启动本地依赖、执行数据库迁移并启动应用
 build: ## 构建当前操作系统可执行文件
 	go build -trimpath -o $(SERVER) ./cmd/server
 
-index: ## 索引 docs/knowledge 文档，需要 Ollama 和 Milvus 已运行
+index: ## 索引 docs/knowledge 文档，需要当前 Embedding 服务和 Milvus 已运行
 	go run ./cmd/indexer
 
 retrieve: ## 使用示例问题查看原始检索分数

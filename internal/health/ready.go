@@ -13,6 +13,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,4 +131,36 @@ func OllamaTagsURL(baseURL string) string {
 		return ""
 	}
 	return base + "/api/tags"
+}
+
+// IsOllamaBaseURL reports whether an OpenAI-compatible endpoint is the local
+// Ollama service used by the development configurations. Remote providers may
+// expose an OpenAI-compatible API too, but they do not implement Ollama's
+// /api/tags endpoint and must not be probed as Ollama.
+func IsOllamaBaseURL(baseURL string) bool {
+	raw := strings.TrimSpace(baseURL)
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "localhost", "127.0.0.1", "::1", "host.docker.internal", "ollama":
+	default:
+		return false
+	}
+	// The standard Ollama API listens on 11434. Requiring the explicit port
+	// avoids probing arbitrary local HTTP services (for example the app itself
+	// on 18181) as if they exposed Ollama's /api/tags endpoint.
+	return u.Port() == "11434"
+}
+
+// ShouldCheckOllama is true only when both chat and embedding endpoints are
+// the same local Ollama service. Production may use remote chat and/or remote
+// embedding providers, in which case Ollama must not be a startup dependency.
+func ShouldCheckOllama(chatBaseURL, embeddingBaseURL string) bool {
+	return IsOllamaBaseURL(chatBaseURL) && IsOllamaBaseURL(embeddingBaseURL)
 }

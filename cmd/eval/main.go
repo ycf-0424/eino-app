@@ -90,8 +90,10 @@ func main() {
 		}
 		return
 	}
-	if err := health.CheckOllama(ctx, cfg.OpenAI.BaseURL, cfg.OpenAI.Model, cfg.RAG.Embedding.Model, cfg.RAG.Dimension, time.Duration(cfg.Ollama.Timeout)); err != nil {
-		fail(err)
+	if cfg.Ollama.HealthCheck && health.ShouldCheckOllama(cfg.OpenAI.BaseURL, cfg.RAG.Embedding.BaseURL) {
+		if err := health.CheckOllama(ctx, cfg.OpenAI.BaseURL, cfg.OpenAI.Model, cfg.RAG.Embedding.Model, cfg.RAG.Dimension, time.Duration(cfg.Ollama.Timeout)); err != nil {
+			fail(err)
+		}
 	}
 	// 向量库不可达时必须立刻失败。检索调用在连接断掉时不会返回错误，而是一直阻塞：
 	// 实测 Milvus 停掉后评测进程空转 18 分钟、零输出、CPU 占用接近 0。

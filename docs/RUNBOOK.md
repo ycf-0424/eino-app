@@ -1827,7 +1827,7 @@ docker compose -f docker-compose.milvus.yml up -d   # milvus/etcd/minio 需要�
 
 ### 14.25 生产 Compose、1Panel/OpenResty 与 Linux 运维
 
-生产栈使用仓库根目录的 `docker-compose.prod.yml`，它与开发 Compose 独立，不使用 `build:`，只接受不可变的 `APP_IMAGE`。先复制 `.env.prod.example` 为部署机 `.env.prod`，填入数据库、模型、飞书、指标 bearer token 和域名回调地址；再执行：
+生产栈使用仓库根目录的 `docker-compose.prod.yml`，它与开发 Compose 独立，不使用 `build:`，只接受不可变的 `APP_IMAGE`。先复制 `.env.prod.example` 为部署机 `.env.prod`，填入数据库、方舟 API Key、各聊天模型 Endpoint ID、支持 BGE-M3 的独立远程 Embedding 地址与密钥、飞书、指标 bearer token 和域名回调地址；方舟聊天地址不能直接当作 BGE Embedding 地址。生产不安装 Ollama，也不挂载 `host.docker.internal`。再执行：
 
 ```bash
 docker compose --env-file .env.prod -f docker-compose.prod.yml config
@@ -1844,6 +1844,15 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-dep
 ```
 
 建号命令省略 `-password` 时从标准输入读取；完成管理员建号后再启动 `app`。这样 bootstrap 不需要向宿主机发布 MySQL 端口，也不会把开发 Compose 的 CLI 或数据卷带入生产栈。
+
+生产镜像还包含 `indexer` 和 `memory-reindex`。若首次上线或更换 Embedding 模型，在完成迁移后执行：
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-deps --entrypoint ./indexer app
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-deps --entrypoint ./memory-reindex app -execute
+```
+
+切换 Embedding 前先确认输出维度与 `config.prod.yaml` 的 `rag.dimension` 一致；如果维度改变，应使用新的 Milvus Collection（同时修改 `rag.milvus.collection` 和 `memory.milvus_collection`）后再全量重建，不能混用旧向量。
 
 第一次上线如果需要从开发数据迁移，必须在切换生产 Compose 前完成 `session-migrate -claim-owner=<owner>` 和管理员建号；生产 Compose 使用独立 MySQL 卷 `eino-prod-mysql`，不要把开发的 `gozero_mysql_data` 直接作为生产默认卷。测试复用卷时必须显式设置 `MYSQL_VOLUME_NAME` 和 `MYSQL_VOLUME_EXTERNAL=true`，并先做备份。
 

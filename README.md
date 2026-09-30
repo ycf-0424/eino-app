@@ -164,7 +164,14 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --no-build
 docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 ```
 
-生产服务只在 Docker 内部网络通信，应用默认绑定服务器 `127.0.0.1:18180`，由 1Panel/OpenResty 提供 HTTPS、WebSocket 和域名入口。首次启动还需运行数据库迁移和 `user-admin` 建立管理员账号。完整顺序见 [`docs/RUNBOOK.md`](docs/RUNBOOK.md) 的生产章节。
+生产服务只在 Docker 内部网络通信，应用默认绑定服务器 `127.0.0.1:18180`，由 1Panel/OpenResty 提供 HTTPS、WebSocket 和域名入口。生产配置中聊天模型使用火山方舟，Embedding 必须单独使用支持 BGE-M3 的远程服务；方舟聊天接口不能直接提供 BGE-M3 向量。这样不需要安装 Ollama 或下载 Qwen/BGE；`.env.prod` 中的 `ARK_*_MODEL` 填方舟 Endpoint ID，前端会从 `/models` 显示并允许手动切换。首次启动还需运行数据库迁移和 `user-admin` 建立管理员账号。完整顺序见 [`docs/RUNBOOK.md`](docs/RUNBOOK.md) 的生产章节。
+
+如果更换了 Embedding 服务或模型，必须确认输出维度与 `config.prod.yaml` 的 `rag.dimension` 一致，并在生产容器内重新索引知识库和记忆（不要把不同维度的旧向量与新向量混用）：
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-deps --entrypoint ./indexer app
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-deps --entrypoint ./memory-reindex app -execute
+```
 
 `.env.prod` 含数据库、模型、飞书和指标凭据，禁止提交到 Git。生产数据卷与本地测试卷分开；正式上线前必须完成备份、恢复演练和 3–7 天内部灰度。
 

@@ -1,13 +1,52 @@
 # 生产配置模板。由 docker-compose.prod.yml 挂载为 /app/config.yaml。
-# 所有密钥和地址都由环境变量注入；未设置时启动会明确失败。
-openai:
-  api_key: "${OPENAI_API_KEY}"
-  model: "${OPENAI_MODEL}"
-  base_url: "${OPENAI_BASE_URL}"
-  reasoning_effort: "none"
-  max_completion_tokens: 2048
-  # Fill with the deployed provider model's total context window to enable dynamic history budgeting; 0 uses legacy caps.
-  context_window_tokens: 0
+# 生产环境不依赖 Ollama/Qwen；所有聊天模型通过 OpenAI-compatible 云端接口访问。
+# API Key、Endpoint ID 和地址都由环境变量注入；未设置时启动会明确失败。
+# models 列表会直接被 /models 返回，因此前端可以显示并手动切换这些模型。
+models:
+  # 快速模型同时承担自动路由分类和简单问题回答。
+  - id: ark-doubao-lite
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: "${ARK_DOUBAO_LITE_MODEL}"
+    base_url: "${ARK_BASE_URL}"
+    reasoning_effort: "none"
+    max_completion_tokens: 2048
+    context_window_tokens: 0
+  - id: ark-doubao
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: "${ARK_DOUBAO_MODEL}"
+    base_url: "${ARK_BASE_URL}"
+    reasoning_effort: "none"
+    max_completion_tokens: 4096
+    context_window_tokens: 0
+  - id: ark-glm
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: "${ARK_GLM_MODEL}"
+    base_url: "${ARK_BASE_URL}"
+    reasoning_effort: "none"
+    max_completion_tokens: 4096
+    context_window_tokens: 0
+  - id: ark-deepseek
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: "${ARK_DEEPSEEK_MODEL}"
+    base_url: "${ARK_BASE_URL}"
+    reasoning_effort: "none"
+    max_completion_tokens: 4096
+    context_window_tokens: 0
+  - id: ark-doubao-turbo
+    provider: volcengine-ark
+    api_key: "${ARK_API_KEY}"
+    model: "${ARK_DOUBAO_TURBO_MODEL}"
+    base_url: "${ARK_BASE_URL}"
+    reasoning_effort: "none"
+    max_completion_tokens: 4096
+    context_window_tokens: 0
+
+# CLI 和未指定模型时使用的默认 profile。开启自动路由时，Web 前端会优先显示“自动混合”。
+active_model: ark-doubao
 
 session_dir: "data/sessions"
 session:
@@ -79,6 +118,14 @@ auth:
 agent:
   multi_agent: true
   checkpoint_dir: "data/checkpoints"
+  # 先调用快速云端模型分类；简单问题由快速模型回答，复杂/不确定问题交给强模型。
+  # 每轮最多使用一个最终回答模型，不会并行消耗全部模型的 Token。
+  auto_routing:
+    enabled: true
+    fast_model: ark-doubao-lite
+    strong_model: ark-deepseek
+    confidence_threshold: 0.7
+    classifier_timeout: 8s
 
 # Keep phase 6 integrations closed until their target/provider passes validation.
 intent_routing:
@@ -142,7 +189,8 @@ memory:
 debug: false
 
 ollama:
-  health_check: true
+  # 生产环境没有 Ollama；远程模型不会执行 /api/tags 检查。
+  health_check: false
   timeout: 60s
 
 retry:

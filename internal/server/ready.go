@@ -54,9 +54,10 @@ func (s *Service) readinessChecks() []health.Checker {
 	if milvusRequired && cfg.RAG.Milvus.Address != "" {
 		checkers = append(checkers, health.Checker{Name: "milvus", Check: health.DialChecker(cfg.RAG.Milvus.Address)})
 	}
-	// Ollama：RAG 与自动记忆都使用 embedding 配置。
-	if cfg.RAG.Enabled || cfg.Memory.Enabled {
-		if url := health.OllamaTagsURL(cfg.OpenAI.BaseURL); url != "" {
+	// Ollama：只有 Embedding 实际指向本地 Ollama 时才探测。生产环境的
+	// Embedding 可以是任意 OpenAI 兼容云端服务，不应被拼接成 /api/tags。
+	if (cfg.RAG.Enabled || cfg.Memory.Enabled) && health.IsOllamaBaseURL(cfg.RAG.Embedding.BaseURL) {
+		if url := health.OllamaTagsURL(cfg.RAG.Embedding.BaseURL); url != "" {
 			checkers = append(checkers, health.Checker{Name: "ollama", Check: health.HTTPChecker(url)})
 		}
 	}

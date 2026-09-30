@@ -32,7 +32,7 @@ func main() {
 	if cfg.Debug {
 		observability.EnableDebug()
 	}
-	if cfg.Ollama.HealthCheck && cfg.RAG.Enabled {
+	if cfg.Ollama.HealthCheck && cfg.RAG.Enabled && health.ShouldCheckOllama(cfg.OpenAI.BaseURL, cfg.RAG.Embedding.BaseURL) {
 		if err := health.CheckOllama(ctx, cfg.OpenAI.BaseURL, cfg.OpenAI.Model, cfg.RAG.Embedding.Model, cfg.RAG.Dimension, time.Duration(cfg.Ollama.Timeout)); err != nil {
 			fail(err)
 		}

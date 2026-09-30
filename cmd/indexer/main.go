@@ -26,7 +26,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "rag is disabled")
 		os.Exit(1)
 	}
-	if cfg.Ollama.HealthCheck {
+	if cfg.Ollama.HealthCheck && health.ShouldCheckOllama(cfg.OpenAI.BaseURL, cfg.RAG.Embedding.BaseURL) {
 		if err := health.CheckOllama(ctx, cfg.OpenAI.BaseURL, cfg.OpenAI.Model, cfg.RAG.Embedding.Model, cfg.RAG.Dimension, time.Duration(cfg.Ollama.Timeout)); err != nil {
 			fmt.Fprintln(os.Stderr, "ollama:", err)
 			os.Exit(1)

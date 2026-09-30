@@ -72,7 +72,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "new chat model:", err)
 		os.Exit(1)
 	}
-	if cfg.Ollama.HealthCheck && cfg.RAG.Enabled && strings.Contains(strings.ToLower(cfg.OpenAI.BaseURL), "localhost") {
+	if cfg.Ollama.HealthCheck && cfg.RAG.Enabled && health.ShouldCheckOllama(cfg.OpenAI.BaseURL, cfg.RAG.Embedding.BaseURL) {
 		if err := health.CheckOllama(ctx, cfg.OpenAI.BaseURL, cfg.OpenAI.Model, cfg.RAG.Embedding.Model, cfg.RAG.Dimension, time.Duration(cfg.Ollama.Timeout)); err != nil {
 			fmt.Fprintln(os.Stderr, "ollama:", err)
 			os.Exit(1)
