@@ -50,6 +50,15 @@ func TestChatRecordsExecutionEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This test covers execution-event persistence, not the authentication
+	// middleware. Keep it isolated from the production config's auth and model
+	// catalog so the HTTP request reaches the mock model below.
+	cfg.Auth.Enabled = false
+	cfg.Auth.Local.Enabled = false
+	cfg.Models = nil
+	cfg.ActiveModel = ""
+	cfg.OpenAI.Model = "test"
+	cfg.Agent.AutoRouting.Enabled = false
 	cfg.Session.Store = "mysql"
 	cfg.Session.MaxMessages = 20
 	cfg.RAG.Enabled = false

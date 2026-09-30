@@ -33,6 +33,15 @@ func TestChatPersistsBeforeInferenceAndKeepsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This test exercises MySQL persistence around a mock model call. The
+	// production config enables auth and uses the multi-model catalog, so make
+	// those dependencies explicit here instead of relying on config.yaml.
+	cfg.Auth.Enabled = false
+	cfg.Auth.Local.Enabled = false
+	cfg.Models = nil
+	cfg.ActiveModel = ""
+	cfg.OpenAI.Model = "test"
+	cfg.Agent.AutoRouting.Enabled = false
 	cfg.Session.Store = "mysql"
 	cfg.Session.MaxMessages = 1
 	cfg.RAG.Enabled = false
