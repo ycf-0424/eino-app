@@ -156,15 +156,54 @@ docker compose -f docker-compose.milvus.yml logs -f --tail=200 app
 
 ## 生产部署
 
-生产环境不要使用开发 Compose。构建并推送不可变镜像后，在 1Panel 所在服务器准备 `.env.prod`，再使用独立生产 Compose：
+生产环境不要使用开发 Compose。生产栈使用独立的 `docker-compose.prod.yml`，应用镜像通过 `APP_IMAGE` 指定；可以在服务器本地构建镜像，也可以从镜像仓库拉取不可变版本。以下流程适用于一台尚未部署本项目的 1Panel 服务器。
+
+### 克隆项目并准备生产配置
+
+在 1Panel 的终端或 SSH 终端中执行。GitHub 和 Gitee 的 `master` 分支都包含当前生产代码，任选一个克隆即可：
 
 ```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml config
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --no-build
+git clone https://github.com/ycf-0424/eino-app.git /opt/eino-app
+# 或使用 Gitee 镜像：
+# git clone https://gitee.com/yangchengfeng/eino-app.git /opt/eino-app
+cd /opt/eino-app
+cp .env.prod.example .env.prod
+chmod 600 .env.prod
+```
+
+通过 1Panel 文件管理器或终端编辑 `/opt/eino-app/.env.prod`，替换模板中的占位值。生产启动所需的数据库、火山方舟模型、BGE-M3 Embedding、飞书和指标配置都在该文件中；飞书登录要填写 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 和 `FEISHU_REDIRECT_URL`。回调地址必须是公开 HTTPS 域名下的 `https://你的域名/auth/callback`，并与飞书开放平台登记值完全相同。Secret 只保存在服务器 `.env.prod`，不要写入仓库或粘贴到聊天中。
+
+首次部署可在服务器本地构建镜像，并使用当前 Git 提交生成不可变标签：
+
+```bash
+TAG="$(git rev-parse --short=12 HEAD)"
+docker build --pull -t "eino-app:${TAG}" .
+sed -i "s|^APP_IMAGE=.*|APP_IMAGE=eino-app:${TAG}|" .env.prod
+```
+
+如果使用镜像仓库，则先登录并拉取已发布镜像，再把 `.env.prod` 中的 `APP_IMAGE` 设置为该镜像的固定版本标签或 digest。不要使用会随时变化的 `latest` 标签。
+
+### 首次启动
+
+先校验 Compose 配置。`--quiet` 只做校验，不会把展开后的环境变量（含 Secret）打印到终端：
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml config --quiet
+```
+
+首次启动空数据库卷时，按顺序创建依赖、执行数据库迁移、创建管理员账号，最后启动应用：
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d mysql etcd minio milvus
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-deps --entrypoint ./session-migrate app
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-deps --entrypoint ./user-admin app -create -username=admin -admin
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --no-build app
 docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 ```
 
-生产服务只在 Docker 内部网络通信，应用默认绑定服务器 `127.0.0.1:18180`，由 1Panel/OpenResty 提供 HTTPS、WebSocket 和域名入口。生产配置中聊天模型使用火山方舟，Embedding 必须单独使用支持 BGE-M3 的远程服务；方舟聊天接口不能直接提供 BGE-M3 向量。这样不需要安装 Ollama 或下载 Qwen/BGE；`.env.prod` 中的 `ARK_*_MODEL` 填方舟 Endpoint ID，前端会从 `/models` 显示并允许手动切换。首次启动还需运行数据库迁移和 `user-admin` 建立管理员账号。完整顺序见 [`docs/RUNBOOK.md`](docs/RUNBOOK.md) 的生产章节。
+创建管理员时省略 `-password`，CLI 会从终端安全读取密码。生产服务只在 Docker 内部网络通信，应用默认绑定服务器 `127.0.0.1:18180`，由 1Panel/OpenResty 提供 HTTPS、WebSocket 和域名入口。首次上线前，在 1Panel 配置域名和证书，并按 [`deploy/openresty/my-eino-app.conf`](deploy/openresty/my-eino-app.conf) 配置反向代理。
+
+生产配置中聊天模型使用火山方舟，Embedding 必须单独使用支持 BGE-M3 的远程服务；方舟聊天接口不能直接提供 BGE-M3 向量。生产环境不需要安装 Ollama 或下载 Qwen/BGE；`.env.prod` 中的 `ARK_*_MODEL` 填方舟 Endpoint ID，前端会从 `/models` 显示并允许手动切换。完整上线、迁移和运维步骤见 [`docs/RUNBOOK.md`](docs/RUNBOOK.md) 的生产章节。
 
 如果更换了 Embedding 服务或模型，必须确认输出维度与 `config.prod.yaml` 的 `rag.dimension` 一致，并在生产容器内重新索引知识库和记忆（不要把不同维度的旧向量与新向量混用）：
 
