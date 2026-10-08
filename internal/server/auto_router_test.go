@@ -40,6 +40,22 @@ func TestContextLimitsForAutomaticFallback(t *testing.T) {
 	}
 }
 
+func TestAutomaticFallbackModelIDSupportsBothRoutes(t *testing.T) {
+	auto := config.AutoModelRouting{FastModel: "fast", StrongModel: "strong"}
+	if got := automaticFallbackModelID("fast", auto); got != "strong" {
+		t.Fatalf("fast route fallback = %q, want strong", got)
+	}
+	if got := automaticFallbackModelID("strong", auto); got != "fast" {
+		t.Fatalf("strong route fallback = %q, want fast", got)
+	}
+	if got := automaticFallbackModelID("other", auto); got != "" {
+		t.Fatalf("unknown route fallback = %q, want empty", got)
+	}
+	if got := automaticFallbackModelID("fast", config.AutoModelRouting{FastModel: "fast", StrongModel: "fast"}); got != "" {
+		t.Fatalf("same-model route fallback = %q, want empty", got)
+	}
+}
+
 func TestParseAutoRoute(t *testing.T) {
 	tests := []struct {
 		name      string

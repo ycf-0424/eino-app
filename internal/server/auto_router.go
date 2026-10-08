@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"my-eino-app/internal/config"
 	modelset "my-eino-app/internal/eino/model"
 	"my-eino-app/internal/execution"
 	"my-eino-app/internal/routing"
@@ -27,6 +28,20 @@ type autoRouteResult struct {
 type autoRouteResponse struct {
 	Route      string  `json:"route"`
 	Confidence float64 `json:"confidence"`
+}
+
+func automaticFallbackModelID(primaryID string, auto config.AutoModelRouting) string {
+	if auto.FastModel == auto.StrongModel {
+		return ""
+	}
+	switch primaryID {
+	case auto.FastModel:
+		return auto.StrongModel
+	case auto.StrongModel:
+		return auto.FastModel
+	default:
+		return ""
+	}
 }
 
 const autoRouteInstruction = `你是一个只负责模型路由的分类器，不回答用户问题，也不要调用工具。

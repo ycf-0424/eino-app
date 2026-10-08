@@ -925,13 +925,17 @@ func (s *Service) modelsForRequest(ctx context.Context, modelID, query string) (
 			return nil, profileErr
 		}
 		var fallbackProfile *config.ModelProfile
-		if decision.ModelID == auto.FastModel && auto.StrongModel != auto.FastModel {
-			fallback, fallbackErr := modelset.NewChatModelByID(ctx, s.cfg, auto.StrongModel)
+		// Keep automatic routing resilient in both directions. In particular,
+		// an unavailable strong endpoint must not fail the whole turn when the
+		// fast endpoint already classified it successfully.
+		fallbackID := automaticFallbackModelID(decision.ModelID, auto)
+		if fallbackID != "" && fallbackID != decision.ModelID {
+			fallback, fallbackErr := modelset.NewChatModelByID(ctx, s.cfg, fallbackID)
 			if fallbackErr != nil {
-				return nil, fmt.Errorf("initialize automatic fallback model %q: %w", auto.StrongModel, fallbackErr)
+				return nil, fmt.Errorf("initialize automatic fallback model %q: %w", fallbackID, fallbackErr)
 			}
 			selected = modelset.NewFallbackChatModel(selected, fallback)
-			resolvedFallback, profileErr := s.cfg.ResolveModelProfile(auto.StrongModel)
+			resolvedFallback, profileErr := s.cfg.ResolveModelProfile(fallbackID)
 			if profileErr != nil {
 				return nil, profileErr
 			}

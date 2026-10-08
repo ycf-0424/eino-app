@@ -38,6 +38,9 @@ button { color: inherit; }
 .sidebar-top, .brand, .sidebar-footer, .topbar, .topbar-actions, .skill-control,
 .user-box, .approval-actions, .composer-meta { display: flex; align-items: center; }
 
+/* Preserve the HTML hidden attribute even on elements with explicit display styles. */
+[hidden] { display: none !important; }
+
 .sidebar-top { justify-content: space-between; min-height: 40px; }
 .brand { gap: 10px; font-size: 14px; font-weight: 650; }
 .brand-mark, .welcome-mark {
@@ -120,8 +123,6 @@ button { color: inherit; }
 .model-identity span { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-actions { gap: 8px; }
 .skill-control { gap: 8px; color: var(--muted); font-size: 12px; }
-/* 技能名属于内部实现：只有 debug 模式才解除 hidden，因此需要显式覆盖上面共用的 display:flex。 */
-.skill-control[hidden] { display: none; }
 .skill-control select { height: 34px; max-width: 160px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--text); padding: 0 28px 0 10px; }
 
 /* 登录态区域：认证开启时显示当前用户或「未登录」入口。 */
