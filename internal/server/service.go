@@ -904,6 +904,13 @@ func (s *Service) Chat(ctx context.Context, id, query, skillName string, writer 
 // selected endpoint to every Agent role for this turn. A concrete profile
 // bypasses classification and pins every role to that model.
 func (s *Service) modelsForRequest(ctx context.Context, modelID, query string) (*agent.RoleModels, error) {
+	return s.modelsForRequestWithPreference(ctx, modelID, query, false)
+}
+
+// modelsForRequestWithPreference is used when the server has evidence that a
+// project-fact answer needs stronger reasoning. The fast model still performs
+// routing, but a knowledge miss escalates the final answer to strong_model.
+func (s *Service) modelsForRequestWithPreference(ctx context.Context, modelID, query string, preferStrong bool) (*agent.RoleModels, error) {
 	auto := s.cfg.Agent.AutoRouting
 	if modelID == "" && auto.Enabled {
 		modelID = "auto"
@@ -916,9 +923,38 @@ func (s *Service) modelsForRequest(ctx context.Context, modelID, query string) (
 		if err != nil {
 			return nil, err
 		}
-		selected, err := modelset.NewChatModelByID(ctx, s.cfg, decision.ModelID)
+		if preferStrong && decision.ModelID == auto.FastModel && auto.StrongModel != auto.FastModel {
+			fromModel := decision.ModelID
+			decision.ModelID = auto.StrongModel
+			decision.Route = "strong"
+			decision.Reason = "knowledge_miss_fallback"
+			execution.FromContext(ctx).Emit(execution.Event{Type: execution.ModelFallback, Payload: map[string]any{
+				"from_model_id": fromModel,
+				"to_model_id":   decision.ModelID,
+				"reason":        decision.Reason,
+			}})
+		}
+		primaryID := decision.ModelID
+		fallbackID := automaticFallbackModelID(primaryID, auto)
+		selected, err := modelset.NewChatModelByID(ctx, s.cfg, primaryID)
+		if err != nil && fallbackID != "" {
+			// If the routed endpoint cannot even be initialized, use the other
+			// configured endpoint as the final model instead of failing the turn.
+			fallback, fallbackErr := modelset.NewChatModelByID(ctx, s.cfg, fallbackID)
+			if fallbackErr == nil {
+				execution.FromContext(ctx).Emit(execution.Event{Type: execution.ModelFallback, Payload: map[string]any{
+					"from_model_id": primaryID,
+					"to_model_id":   fallbackID,
+					"reason":        "primary_init_error",
+				}})
+				selected = fallback
+				decision.ModelID = fallbackID
+				fallbackID = ""
+				err = nil
+			}
+		}
 		if err != nil {
-			return nil, fmt.Errorf("initialize routed model %q: %w", decision.ModelID, err)
+			return nil, fmt.Errorf("initialize routed model %q: %w", primaryID, err)
 		}
 		primaryProfile, profileErr := s.cfg.ResolveModelProfile(decision.ModelID)
 		if profileErr != nil {
@@ -928,18 +964,17 @@ func (s *Service) modelsForRequest(ctx context.Context, modelID, query string) (
 		// Keep automatic routing resilient in both directions. In particular,
 		// an unavailable strong endpoint must not fail the whole turn when the
 		// fast endpoint already classified it successfully.
-		fallbackID := automaticFallbackModelID(decision.ModelID, auto)
+		fallbackID = automaticFallbackModelID(decision.ModelID, auto)
 		if fallbackID != "" && fallbackID != decision.ModelID {
 			fallback, fallbackErr := modelset.NewChatModelByID(ctx, s.cfg, fallbackID)
-			if fallbackErr != nil {
-				return nil, fmt.Errorf("initialize automatic fallback model %q: %w", fallbackID, fallbackErr)
+			if fallbackErr == nil {
+				selected = modelset.NewFallbackChatModelWithIDs(selected, fallback, decision.ModelID, fallbackID)
+				resolvedFallback, profileErr := s.cfg.ResolveModelProfile(fallbackID)
+				if profileErr != nil {
+					return nil, profileErr
+				}
+				fallbackProfile = &resolvedFallback
 			}
-			selected = modelset.NewFallbackChatModel(selected, fallback)
-			resolvedFallback, profileErr := s.cfg.ResolveModelProfile(fallbackID)
-			if profileErr != nil {
-				return nil, profileErr
-			}
-			fallbackProfile = &resolvedFallback
 		}
 		// The same input must fit either endpoint in the fallback chain.
 		contextWindowTokens, maxCompletionTokens := contextLimitsForRoute(primaryProfile, fallbackProfile)
@@ -971,6 +1006,13 @@ func (s *Service) modelsForRequest(ctx context.Context, modelID, query string) (
 		Supervisor: selected, Knowledge: selected, Writer: selected,
 		ContextWindowTokens: profile.ContextWindowTokens, MaxCompletionTokens: profile.MaxCompletionTokens,
 	}, nil
+}
+
+func shouldPreferStrongForKnowledgeMiss(cfg *config.Config, modelID string, preloadKnowledge bool, knowledgeHits int) bool {
+	if cfg == nil || !cfg.Agent.AutoRouting.Enabled || !preloadKnowledge || knowledgeHits != 0 {
+		return false
+	}
+	return strings.TrimSpace(modelID) == "" || strings.TrimSpace(modelID) == "auto"
 }
 
 // ChatWithSink 与 Chat 相同，但把执行事件实时投递到 sink（WebSocket 队列或内存记录器）。
@@ -1116,7 +1158,8 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName, modelI
 			return ChatResult{}, err
 		}
 	}
-	roleModels, modelErr := s.modelsForRequest(ctx, modelID, query)
+	preferStrong := shouldPreferStrongForKnowledgeMiss(s.cfg, modelID, route.preloadKnowledge, preflight.Hit)
+	roleModels, modelErr := s.modelsForRequestWithPreference(ctx, modelID, query, preferStrong)
 	if modelErr != nil {
 		finishRun(em, execution.StatusFailed, "model_init_failed")
 		return ChatResult{}, modelErr
@@ -1130,6 +1173,12 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName, modelI
 	// prevents unrelated questions from probing paths and avoids a second,
 	// potentially divergent read after the authoritative preflight.
 	excludedTools := []string{"local_file_read"}
+	if route.preloadKnowledge {
+		// The server-side preflight is authoritative for this turn. Hiding the
+		// same tool prevents duplicate searches and keeps the model on the
+		// documented hit/miss evidence path.
+		excludedTools = append(excludedTools, "knowledge_search")
+	}
 	// Do not expose the approval-gated file writer unless the user explicitly
 	// asked to persist a note/document. The middleware still blocks implicit
 	// calls defensively, but hiding the tool prevents model attempts from being

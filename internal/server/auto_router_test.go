@@ -56,6 +56,22 @@ func TestAutomaticFallbackModelIDSupportsBothRoutes(t *testing.T) {
 	}
 }
 
+func TestShouldPreferStrongForKnowledgeMiss(t *testing.T) {
+	cfg := &config.Config{Agent: config.Agent{AutoRouting: config.AutoModelRouting{Enabled: true}}}
+	if !shouldPreferStrongForKnowledgeMiss(cfg, "auto", true, 0) {
+		t.Fatal("automatic project-fact miss should escalate to strong model")
+	}
+	if shouldPreferStrongForKnowledgeMiss(cfg, "ark-doubao-lite", true, 0) {
+		t.Fatal("manual model selection must not be overridden")
+	}
+	if shouldPreferStrongForKnowledgeMiss(cfg, "auto", true, 1) {
+		t.Fatal("knowledge hit must keep the routed model")
+	}
+	if shouldPreferStrongForKnowledgeMiss(cfg, "auto", false, 0) {
+		t.Fatal("ordinary questions must not escalate on a knowledge miss")
+	}
+}
+
 func TestParseAutoRoute(t *testing.T) {
 	tests := []struct {
 		name      string

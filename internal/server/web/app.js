@@ -136,7 +136,7 @@ function setGenerating(value) {
   ui.sendButton.querySelector("span").textContent = value ? "" : "↑";
   ui.sendButton.title = value ? "停止生成" : "发送消息";
   ui.attachmentButton.disabled = value || state.uploadingAttachments;
-  ui.requestStatus.textContent = value ? "正在生成" : "本地运行";
+  ui.requestStatus.textContent = value ? "正在生成" : "服务运行";
 }
 
 function resizeInput() {
@@ -651,6 +651,14 @@ function renderEvent(panel, event, live = false) {
       text.textContent = `已选择模型：${payload.model_id || "自动路由"}`;
       setStatus("正在生成回答…");
       break;
+    case "model_fallback":
+      item.dataset.state = "info";
+      icon.textContent = "↻";
+      text.textContent = payload.reason === "knowledge_miss_fallback"
+        ? `知识库无命中，已切换强模型：${payload.to_model_id || "备用模型"}`
+        : `主模型异常，已切换到：${payload.to_model_id || "备用模型"}`;
+      setStatus("正在使用备用模型生成回答…");
+      break;
     case "skill_preloaded": {
       const names = Array.isArray(payload.skill_names) ? payload.skill_names : [];
       item.dataset.state = "info";
@@ -947,7 +955,7 @@ async function uploadSelectedAttachments(files) {
   }
   state.uploadingAttachments = false;
   ui.attachmentButton.disabled = false;
-  ui.requestStatus.textContent = "本地运行";
+  ui.requestStatus.textContent = "服务运行";
   resizeInput();
 }
 
@@ -1312,7 +1320,7 @@ async function loadModels() {
 // 渲染当前选中的模型名称。
 function renderCurrentModel() {
   if (!state.activeModel || state.models.length === 0) {
-    ui.currentModel.textContent = "Ollama";
+    ui.currentModel.textContent = "自动路由";
     return;
   }
   const active = state.models.find((m) => m.id === state.activeModel);
@@ -1418,6 +1426,7 @@ async function bootstrap() {
     state.attachmentEnabled = health?.attachments_enabled === true;
     state.attachmentMaxCount = Math.max(1, Number(health?.attachments_max_files_per_request) || 3);
     ui.attachmentButton.hidden = !state.attachmentEnabled;
+    ui.composer.classList.toggle("with-attachments", state.attachmentEnabled);
     state.capabilities = health?.capabilities || {};
     state.authEnabled = health?.auth_enabled === true || health?.login?.feishu === true || health?.login?.local === true;
     // 技能入口的显隐完全由后端 debug 状态决定，前端不做任何默认开启。

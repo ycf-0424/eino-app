@@ -12,6 +12,7 @@ import (
 type fallbackTestModel struct {
 	message *schema.Message
 	err     error
+	stream  *schema.StreamReader[*schema.Message]
 	called  bool
 }
 
@@ -22,10 +23,25 @@ func (m *fallbackTestModel) Generate(context.Context, []*schema.Message, ...eino
 
 func (m *fallbackTestModel) Stream(context.Context, []*schema.Message, ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	m.called = true
+	if m.stream != nil {
+		return m.stream, nil
+	}
 	if m.err != nil {
 		return nil, m.err
 	}
 	return schema.StreamReaderFromArray([]*schema.Message{m.message}), nil
+}
+
+func errorStream(err error, messages ...*schema.Message) *schema.StreamReader[*schema.Message] {
+	reader, writer := schema.Pipe[*schema.Message](len(messages) + 1)
+	go func() {
+		for _, message := range messages {
+			writer.Send(message, nil)
+		}
+		writer.Send(nil, err)
+		writer.Close()
+	}()
+	return reader
 }
 
 func (m *fallbackTestModel) WithTools([]*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
@@ -68,5 +84,67 @@ func TestFallbackChatModelUsesSecondaryWhenPrimaryStreamCannotStart(t *testing.T
 	}
 	if got == nil || got.Content != fallback.message.Content {
 		t.Fatalf("Stream() message = %#v, want fallback response %q", got, fallback.message.Content)
+	}
+}
+
+func TestFallbackChatModelUsesSecondaryWhenPrimaryStreamFailsOnFirstRead(t *testing.T) {
+	primary := &fallbackTestModel{stream: errorStream(errors.New("upstream 502"))}
+	fallback := &fallbackTestModel{message: &schema.Message{Content: "备用模型回答。"}}
+	model := NewFallbackChatModel(primary, fallback)
+
+	stream, err := model.Stream(context.Background(), []*schema.Message{schema.UserMessage("请回答")})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	got, err := stream.Recv()
+	if err != nil || got == nil || got.Content != fallback.message.Content {
+		t.Fatalf("first fallback chunk = %#v, err=%v", got, err)
+	}
+	if !primary.called || !fallback.called {
+		t.Fatalf("primary called=%v, fallback called=%v; want both called", primary.called, fallback.called)
+	}
+}
+
+func TestFallbackChatModelUsesSecondaryWhenPrimaryStreamIsEmpty(t *testing.T) {
+	primary := &fallbackTestModel{stream: schema.StreamReaderFromArray([]*schema.Message{})}
+	fallback := &fallbackTestModel{message: &schema.Message{Content: "空响应后的备用回答。"}}
+	model := NewFallbackChatModel(primary, fallback)
+
+	stream, err := model.Stream(context.Background(), []*schema.Message{schema.UserMessage("请回答")})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	got, err := stream.Recv()
+	if err != nil || got == nil || got.Content != fallback.message.Content {
+		t.Fatalf("first fallback chunk = %#v, err=%v", got, err)
+	}
+	if !fallback.called {
+		t.Fatal("empty primary stream must call fallback")
+	}
+}
+
+func TestFallbackChatModelDoesNotRetryAfterPrimaryOutput(t *testing.T) {
+	primaryErr := errors.New("stream broke after output")
+	primary := &fallbackTestModel{stream: errorStream(primaryErr, &schema.Message{Content: "已输出的内容"})}
+	fallback := &fallbackTestModel{message: &schema.Message{Content: "不应重复输出"}}
+	model := NewFallbackChatModel(primary, fallback)
+
+	stream, err := model.Stream(context.Background(), []*schema.Message{schema.UserMessage("请回答")})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+	got, err := stream.Recv()
+	if err != nil || got == nil || got.Content != "已输出的内容" {
+		t.Fatalf("primary chunk = %#v, err=%v", got, err)
+	}
+	_, err = stream.Recv()
+	if !errors.Is(err, primaryErr) {
+		t.Fatalf("second Recv() error = %v, want %v", err, primaryErr)
+	}
+	if fallback.called {
+		t.Fatal("fallback must not replay a request after primary output started")
 	}
 }

@@ -1,5 +1,5 @@
 # 生产配置模板。由 docker-compose.prod.yml 挂载为 /app/config.yaml。
-# 生产环境不依赖 Ollama/Qwen；所有聊天模型通过 OpenAI-compatible 云端接口访问。
+# 生产环境不依赖本地模型；所有聊天模型通过 OpenAI-compatible 云端接口访问。
 # API Key、Endpoint ID 和地址都由环境变量注入；未设置时启动会明确失败。
 # models 列表会直接被 /models 返回，因此前端可以显示并手动切换这些模型。
 models:
@@ -187,11 +187,6 @@ memory:
   cleanup_interval: 24h
 
 debug: false
-
-ollama:
-  # 生产环境没有 Ollama；远程模型不会执行 /api/tags 检查。
-  health_check: false
-  timeout: 60s
 
 retry:
   max_attempts: 3

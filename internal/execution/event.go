@@ -27,6 +27,8 @@ const (
 	ModelWaiting Type = "model_waiting"
 	// ModelRouted 表示自动路由已经选定本轮最终回答模型。
 	ModelRouted Type = "model_routed"
+	// ModelFallback 表示最终回答模型在首个有效输出前发生故障，已切换到备用模型。
+	ModelFallback Type = "model_fallback"
 	// IntentClassified 表示服务端为本轮选择了固定意图类别；payload 不包含原始问题。
 	IntentClassified Type = "intent_classified"
 	// DataQueryStarted / Completed / Failed 是注册只读业务查询的审计事件。
@@ -61,7 +63,7 @@ const (
 const Version = 1
 
 var knownTypes = map[Type]bool{
-	RunStarted: true, ModelWaiting: true, ModelRouted: true, IntentClassified: true,
+	RunStarted: true, ModelWaiting: true, ModelRouted: true, ModelFallback: true, IntentClassified: true,
 	DataQueryStarted: true, DataQueryCompleted: true, DataQueryFailed: true, AttachmentProcessed: true,
 	ToolStarted: true, ToolCompleted: true,
 	ToolFailed: true, SkillPreloaded: true, SkillLoaded: true, FileReadDone: true,
