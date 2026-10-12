@@ -268,8 +268,8 @@ func isProjectFactRequest(q string) bool {
 		return false
 	}
 	return hasAny(q,
-		"项目", "本项目", "我们系统", "星河系统", "内部", "知识库", "项目资料", "项目文档", "生产部署", "配置", "代码", "接口", "技术栈", "项目版本", "历史决策",
-	)
+		"项目", "本项目", "我们系统", "星河系统", "内部", "知识库", "项目资料", "项目文档", "生产部署", "配置", "代码", "接口", "项目版本", "历史决策",
+	) || isProjectTechStackRequest(q)
 }
 
 func hasAny(q string, terms ...string) bool {

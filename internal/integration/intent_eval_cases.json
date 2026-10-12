@@ -15,6 +15,8 @@
   {"question":"我们系统的 API 接口在哪里","expected_kind":"project_fact","expected_sources":["project_documents","project_memory"],"expected_needs_clarification":false},
   {"question":"项目配置中的 session.store 有什么作用","expected_kind":"project_fact","expected_sources":["project_documents","project_memory"],"expected_needs_clarification":false},
   {"question":"请查一下项目文档里的技术栈","expected_kind":"project_fact","expected_sources":["project_documents","project_memory"],"expected_needs_clarification":false},
+  {"question":"你涉及到的技术栈有哪些","expected_kind":"project_fact","expected_sources":["project_documents","project_memory"],"expected_needs_clarification":false},
+  {"question":"什么是技术栈","expected_kind":"general","expected_sources":[],"expected_needs_clarification":false},
   {"question":"内部资料如何规定登录方式","expected_kind":"project_fact","expected_sources":["project_documents","project_memory"],"expected_needs_clarification":false},
   {"question":"本项目的历史决策是什么","expected_kind":"project_fact","expected_sources":["project_documents","project_memory"],"expected_needs_clarification":false},
   {"question":"项目版本号在哪里设置","expected_kind":"project_fact","expected_sources":["project_documents","project_memory"],"expected_needs_clarification":false},

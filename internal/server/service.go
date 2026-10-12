@@ -758,7 +758,8 @@ func (s *Service) runKnowledgePreflight(ctx context.Context, query string) (know
 	em := execution.FromContext(ctx)
 	callID := uuid.NewString()
 	started := time.Now()
-	args, _ := json.Marshal(map[string]string{"query": query})
+	searchQuery := routing.KnowledgeSearchQuery(query)
+	args, _ := json.Marshal(map[string]string{"query": searchQuery})
 	em.Emit(execution.Event{Type: execution.ToolStarted, Payload: map[string]any{"tool_name": "knowledge_search", "tool_call_id": callID, "args_digest": execution.DigestArgs(string(args)), "source": "server_preflight"}})
 	bag := execution.NewBag()
 	toolCtx := execution.WithBag(ctx, bag)
@@ -1223,8 +1224,11 @@ func (s *Service) ChatWithSink(ctx context.Context, id, query, skillName, modelI
 			chat.AppendPreflightContext(`<knowledge_preflight status="miss">
 服务端已检索项目文档知识库，但没有找到足够的文档依据。
 本轮不要再次调用 knowledge_search。
-如果 <memory_context> 中有与问题直接相关的项目长期记忆，可以使用，并明确说明依据来自项目长期记忆；如果长期记忆也没有相关内容，请按通用模型知识回答，并明确说明这不是项目文档中的已确认事实。
-不要因为文档知识库无命中就直接拒答，也不要把通用知识、推测或长期记忆伪装成项目文档事实。
+如果 <memory_context> 中有与问题直接相关的项目长期记忆，可以使用，并明确说明依据来自项目长期记忆。
+如果问题涉及项目或系统事实（包括技术栈、架构、版本、部署、配置），而文档和长期记忆都没有依据，只能明确说明无法确认，不得用通用知识补答项目事实。
+只有原问题本身是通用知识问题时，才允许按通用模型知识回答，并明确说明这不是项目文档或项目长期记忆的结论。
+无论哪种情况，都不得列出技能目录、工具清单，或把“当前具备/不具备的能力”当作项目技术栈的回答。
+不要因为文档知识库无命中就编造来源、推测项目事实或把长期记忆伪装成文档事实。
 </knowledge_preflight>`)
 		} else {
 			chat.AppendPreflightContext("<knowledge_preflight status=\"hit\">\n服务端已完成项目文档知识库检索，本轮不要再次调用 knowledge_search。以下内容是本轮可引用的文档资料，请基于它回答并列出来源；不要猜测或补充资料中没有的项目事实。\n<knowledge_results>\n" + preflight.Answer + "\n</knowledge_results>\n</knowledge_preflight>")

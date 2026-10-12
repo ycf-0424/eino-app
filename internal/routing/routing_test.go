@@ -23,9 +23,16 @@ func TestDecideDocumentVerbsAndRootPrefixedPath(t *testing.T) {
 }
 
 func TestDecideKnowledgeAndReportRoutes(t *testing.T) {
-	knowledge := Decide("星河系统使用什么技术栈？")
-	if !knowledge.PreloadKnowledge || knowledge.Source != SourceServer || knowledge.Reason != ReasonKnowledgePreflight {
-		t.Fatalf("unexpected knowledge route: %+v", knowledge)
+	for _, query := range []string{
+		"星河系统使用什么技术栈？",
+		"星河系统涉及到的技术栈有哪些？",
+		"你涉及到的技术栈有哪些？",
+		"你使用的是什么技术栈？",
+	} {
+		knowledge := Decide(query)
+		if !knowledge.PreloadKnowledge || knowledge.Source != SourceServer || knowledge.Reason != ReasonKnowledgePreflight {
+			t.Fatalf("query=%q unexpected knowledge route: %+v", query, knowledge)
+		}
 	}
 
 	for _, query := range []string{
@@ -41,6 +48,32 @@ func TestDecideKnowledgeAndReportRoutes(t *testing.T) {
 		if decision.Source != SourceServer || decision.Reason != ReasonReportWrite {
 			t.Fatalf("query=%q route diagnostics=%+v", query, decision)
 		}
+	}
+}
+
+func TestDecideDoesNotTreatGenericTechnologyQuestionsAsProjectFacts(t *testing.T) {
+	for _, query := range []string{
+		"什么是技术栈？",
+		"技术栈通常包括哪些内容？",
+		"微服务技术栈有哪些？",
+		"你有哪些能力？",
+	} {
+		decision := Decide(query)
+		if decision.PreloadKnowledge {
+			t.Fatalf("generic/capability question should not force project retrieval: query=%q decision=%+v", query, decision)
+		}
+	}
+}
+
+func TestKnowledgeSearchQueryAddsProjectContextForTechnologyStack(t *testing.T) {
+	got := KnowledgeSearchQuery("你涉及到的技术栈有哪些？")
+	for _, want := range []string{"星河系统", "项目", "技术栈", "你涉及到的技术栈有哪些？"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normalized query=%q does not contain %q", got, want)
+		}
+	}
+	if got := KnowledgeSearchQuery("星河系统的默认管理员是谁？"); got != "星河系统的默认管理员是谁？" {
+		t.Fatalf("non-technology query should remain unchanged, got %q", got)
 	}
 }
 

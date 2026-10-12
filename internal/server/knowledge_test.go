@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,11 +18,13 @@ import (
 	"my-eino-app/internal/auth"
 	"my-eino-app/internal/config"
 	"my-eino-app/internal/eino/rag"
+	toolset "my-eino-app/internal/eino/tool"
 )
 
 type knowledgeTestStore struct {
 	indexed [][]*schema.Document
 	removed [][]string
+	queries []string
 }
 
 func (s *knowledgeTestStore) Index(_ context.Context, docs []*schema.Document) ([]string, error) {
@@ -33,7 +36,8 @@ func (s *knowledgeTestStore) Index(_ context.Context, docs []*schema.Document) (
 	return ids, nil
 }
 
-func (s *knowledgeTestStore) Search(context.Context, string, int) ([]*schema.Document, error) {
+func (s *knowledgeTestStore) Search(_ context.Context, query string, _ int) ([]*schema.Document, error) {
+	s.queries = append(s.queries, query)
 	return nil, nil
 }
 
@@ -56,6 +60,23 @@ func newKnowledgeTestService(t *testing.T) (*Service, *knowledgeTestStore, strin
 	}
 	service := &Service{cfg: &config.Config{RAG: config.RAG{Enabled: true, DocumentDir: root, MaxUploadBytes: 1 << 20}}, knowledgeIndexer: indexer}
 	return service, store, root
+}
+
+func TestKnowledgePreflightUsesContextualTechnologyStackQuery(t *testing.T) {
+	service, store, _ := newKnowledgeTestService(t)
+	service.knowledge = toolset.NewKnowledgeToolWithOptions(store, rag.SearchOptions{TopK: 5})
+
+	if _, err := service.runKnowledgePreflight(context.Background(), "你涉及到的技术栈有哪些？"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.queries) != 1 {
+		t.Fatalf("search calls=%d, want 1", len(store.queries))
+	}
+	for _, want := range []string{"星河系统", "项目", "技术栈", "你涉及到的技术栈有哪些？"} {
+		if !strings.Contains(store.queries[0], want) {
+			t.Fatalf("search query=%q does not contain %q", store.queries[0], want)
+		}
+	}
 }
 
 func multipartKnowledgeRequest(t *testing.T, method, target, name, body string) *http.Request {

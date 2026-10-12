@@ -31,6 +31,8 @@ func TestClassifyIntentAtLeast50FixedSamples(t *testing.T) {
 		{"我们系统的 API 接口在哪里", IntentProjectFact},
 		{"项目配置中的 session.store 有什么作用", IntentProjectFact},
 		{"请查一下项目文档里的技术栈", IntentProjectFact},
+		{"你涉及到的技术栈有哪些", IntentProjectFact},
+		{"什么是技术栈", IntentGeneral},
 		{"内部资料如何规定登录方式", IntentProjectFact},
 		{"本项目的历史决策是什么", IntentProjectFact},
 		{"项目版本号在哪里设置", IntentProjectFact},

@@ -67,6 +67,15 @@ func TestRuntimeHidesSkillNamesUnlessExposed(t *testing.T) {
 	if !strings.Contains(hidden, "demo") || !strings.Contains(hidden, "查询资料") {
 		t.Fatalf("技能目录仍需进入提示词：%s", hidden)
 	}
+	for _, rule := range []string{
+		"技术栈、架构、版本、部署方式、配置",
+		"不能改答成能力清单",
+		"不能把技能目录当作项目技术栈",
+	} {
+		if !strings.Contains(hidden, rule) {
+			t.Fatalf("default runtime must distinguish project facts from capabilities: missing %q in %s", rule, hidden)
+		}
+	}
 
 	l.ExposeNames = true
 	shown, _, _, err := l.Runtime("", "knowledge_search")

@@ -27,6 +27,8 @@ func TestSystemInstructionsRequireRealFileReadEvidence(t *testing.T) {
 		"不得仅凭技能说明、目录摘要或模型常识声称已读取",
 		"不等于要保存文件或笔记",
 		"闲聊、一般解释、讨论技能适用场景或列举助手能做什么时，不得试探性调用工具",
+		"技术栈、架构、版本、部署方式、配置",
+		"不得把技能目录或工具清单当作项目技术栈",
 	} {
 		if !contains(SystemInstruction+WriterAgentInstruction, rule) {
 			t.Errorf("system and writer instructions should include evidence rule %q", rule)

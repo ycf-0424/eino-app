@@ -110,10 +110,54 @@ func appendReason(current, next string) string {
 }
 
 func isKnowledgeRequest(q string) bool {
-	return containsAny(q,
+	if containsAny(q,
 		"知识库", "项目资料", "内部资料", "私有资料", "知识问答",
-		"星河系统", "默认管理员", "生产部署", "内部版本", "技术栈", "幸运数字",
+		"星河系统", "默认管理员", "生产部署", "内部版本", "幸运数字",
+	) {
+		return true
+	}
+	return isProjectTechStackRequest(q)
+}
+
+// isProjectTechStackRequest distinguishes a project fact question from a
+// capability question.  "技术栈" alone is too broad: a user can be asking
+// about a generic technology stack or about what the assistant can do.  The
+// explicit "你涉及到的技术栈" form is treated as the current project's stack
+// because this assistant is the project-facing interface.
+func isProjectTechStackRequest(q string) bool {
+	if !strings.Contains(q, "技术栈") {
+		return false
+	}
+	if containsAny(q, "能做什么", "可以做什么", "支持哪些任务", "具备哪些能力", "有哪些能力", "当前能力") &&
+		!containsAny(q, "项目", "系统", "仓库", "代码", "部署", "文档", "架构") {
+		return false
+	}
+	return containsAny(q,
+		"项目", "本项目", "这个系统", "该系统", "本系统", "我们系统", "系统使用", "系统采用", "系统涉及",
+		"仓库", "代码", "部署", "文档", "架构", "配置",
+		"你涉及到的技术栈", "你涉及的技术栈", "你涉及的是什么技术栈", "你使用的技术栈", "你使用的是什么技术栈", "你使用了哪些技术栈", "你们使用的技术栈", "你们使用的是什么技术栈", "你们的技术栈", "你当前的技术栈", "你的技术栈", "助手的技术栈",
 	)
+}
+
+// KnowledgeSearchQuery adds stable project context to short technology-stack
+// questions.  Embedding search is sensitive to short, ambiguous queries; the
+// user's wording is retained so the returned evidence still matches the
+// original request.
+func KnowledgeSearchQuery(query string) string {
+	q := strings.TrimSpace(query)
+	if q == "" || !strings.Contains(q, "技术栈") {
+		return q
+	}
+	parts := make([]string, 0, 3)
+	if !strings.Contains(q, "星河系统") {
+		parts = append(parts, "星河系统")
+	}
+	if !strings.Contains(q, "项目") {
+		parts = append(parts, "项目")
+	}
+	parts = append(parts, "技术栈")
+	parts = append(parts, q)
+	return strings.Join(parts, " ")
 }
 
 func isDocumentReadRequest(q string) bool {
