@@ -103,7 +103,8 @@ intent_routing:
 dataquery:
   enabled: false
 attachments:
-  enabled: false
+  # Docker 网页端启用对话附件；首次部署需执行 session-migrate -attachments。
+  enabled: true
   storage_dir: "data/attachments"
   max_file_bytes: 10485760
   max_files_per_request: 3

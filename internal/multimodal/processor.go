@@ -65,7 +65,9 @@ func (p *Processor) Process(ctx context.Context, filePath string, item attachmen
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(p.cfg.ProcessingTimeout))
 	defer cancel()
 	switch item.MIMEType {
-	case "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+	case "text/markdown", "text/plain", "text/html", "application/json",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation":
 		sections, err := rag.ParseFile(filePath)
 		return p.ragArtifacts(sections, item.MIMEType), extractorVersion, err
 	case "text/csv":

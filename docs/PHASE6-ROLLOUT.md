@@ -2,7 +2,7 @@
 
 ## 当前边界
 
-- `intent_routing.enabled`、`dataquery.enabled`、`attachments.enabled` 均默认关闭。
+- `intent_routing.enabled`、`dataquery.enabled` 默认关闭；网页端附件已在生产/Docker 配置中开启，仍需先完成附件表迁移和 ClamAV 签名库初始化。
 - 本项目目前没有经确认的业务数据源或内部业务写入目标。只读注册表可以承载未来的固定操作定义，但当前为空；打开 `dataquery.enabled` 不会自动连接数据库或允许模型执行 SQL/URL。
 - 附件功能只处理用户显式上传且属于当前 owner 的文件。它不读取任意工作区路径，也不会把解析全文写入长期记忆或项目知识库。
 - 6.4–6.5（真实实时业务连接）和 6.9（内部业务写操作）在当前仓库记为 N/A。新增真实业务对象前需要先确认数据所有者、权限、字段和业务需求。
@@ -34,7 +34,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm --no-dep
 
 图片/扫描 PDF 与视频关键帧使用独立 OpenAI-compatible vision provider；音频/视频转写使用独立 `audio/transcriptions` provider。通过 `.env.prod` 设置 `ATTACHMENT_VISION_*`、`ATTACHMENT_TRANSCRIPTION_*`，不要把 API key 写入配置文件；在 `config.prod.yaml` 中按需将 `attachments.vision.enabled` 或 `attachments.transcription.enabled` 置为 `true`。provider 缺失、无效或超时会把附件标为 `failed`，不会伪造解析结果。
 
-第一批限制默认是每文件 10 MiB、每轮最多 3 个文件、PDF 最多 10 页、处理最多 2 分钟、保留 30 天；图片渲染、表格单元格、音视频时长/帧数另有固定上限。压缩包不作为上传类型接受，DOCX/XLSX 只解析受限白名单 XML 部件，不解压到任意路径。
+第一批限制默认是每文件 10 MiB、每轮最多 3 个文件、PDF 最多 10 页、处理最多 2 分钟、保留 30 天；图片渲染、表格单元格、音视频时长/帧数另有固定上限。压缩包不作为上传类型接受，DOCX/XLSX/PPTX 只解析受限白名单 XML 部件，不解压到任意路径。
 
 ## API 与状态
 

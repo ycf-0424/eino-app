@@ -443,8 +443,11 @@ func uniqueIDs(ids []string) []string {
 func validateFile(path, ext, declaredMIME string) (string, error) {
 	allowedExtensions := map[string]string{
 		".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-		".txt": "text/plain", ".csv": "text/csv", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		".md": "text/markdown", ".markdown": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
+		".html": "text/html", ".htm": "text/html", ".json": "application/json",
+		".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".mp4": "video/mp4",
+		".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 	}
 	mime, ok := allowedExtensions[ext]
 	if !ok {
@@ -470,12 +473,17 @@ func validateFile(path, ext, declaredMIME string) (string, error) {
 		valid = strings.HasPrefix(detected, "image/png")
 	case ".jpg", ".jpeg":
 		valid = strings.HasPrefix(detected, "image/jpeg")
-	case ".txt", ".csv":
+	case ".md", ".markdown", ".txt", ".csv", ".html", ".htm", ".json":
 		valid = !strings.ContainsRune(string(content), 0) && strings.HasPrefix(detected, "text/")
+		if ext == ".json" {
+			valid = !strings.ContainsRune(string(content), 0)
+		}
 	case ".docx":
 		valid = validateOfficeArchive(path, "word/document.xml") == nil
 	case ".xlsx":
 		valid = validateOfficeArchive(path, "xl/workbook.xml") == nil
+	case ".pptx":
+		valid = validateOfficeArchive(path, "ppt/presentation.xml") == nil
 	case ".mp3":
 		valid = strings.HasPrefix(detected, "audio/mpeg") || (len(content) > 2 && content[0] == 'I' && content[1] == 'D' && content[2] == '3')
 	case ".wav":
@@ -491,7 +499,9 @@ func validateFile(path, ext, declaredMIME string) (string, error) {
 	declared := strings.ToLower(strings.TrimSpace(strings.Split(declaredMIME, ";")[0]))
 	if declared != "" && declared != "application/octet-stream" && declared != mime {
 		// Browsers often label office archives and text/csv as generic ZIP/text.
-		compatible := (ext == ".docx" || ext == ".xlsx") && declared == "application/zip" || (ext == ".csv" && declared == "text/plain") || (ext == ".m4a" && declared == "video/mp4")
+		compatible := (ext == ".docx" || ext == ".xlsx" || ext == ".pptx") && declared == "application/zip" ||
+			(ext == ".csv" && declared == "text/plain") || (ext == ".md" || ext == ".markdown") && declared == "text/plain" ||
+			(ext == ".json" && declared == "text/plain") || (ext == ".m4a" && declared == "video/mp4")
 		if !compatible {
 			return "", fmt.Errorf("declared MIME type does not match file extension (got %q, expected %q)", declared, mime)
 		}

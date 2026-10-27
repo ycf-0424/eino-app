@@ -572,9 +572,9 @@ func (c *Config) Validate() error {
 		}
 		if len(c.Attachments.AllowedMIMEs) == 0 {
 			c.Attachments.AllowedMIMEs = []string{
-				"application/pdf", "image/jpeg", "image/png", "text/plain", "text/csv",
+				"application/pdf", "image/jpeg", "image/png", "text/markdown", "text/plain", "text/csv", "text/html", "application/json",
 				"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-				"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+				"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 				"audio/mpeg", "audio/wav", "audio/mp4", "video/mp4",
 			}
 		}

@@ -22,6 +22,8 @@ go run ./cmd/server -addr 127.0.0.1:18181
 - `GET /attachments/{id}/artifacts`：读取当前用户附件的来源化解析产物
 - `POST /attachments/{id}/retry`：重试失败附件的解析
 - `DELETE /attachments/{id}`：删除当前用户附件、原文件及解析产物
+
+附件对话支持常见文档、表格、演示文稿、图片、音频和视频：PDF、Markdown、TXT、CSV、HTML、JSON、DOCX、XLSX、PPTX、PNG/JPEG、MP3/WAV/M4A 和 MP4。生产环境首次开启前需完成 `session-migrate -attachments`，并确保 ClamAV 签名库已初始化。
 - `GET /sessions`：会话列表
 - `GET /sessions/{id}`：会话消息
 - `GET /sessions/{id}/execution`：执行记录，参数 `run_id`、`after_sequence`、`limit`

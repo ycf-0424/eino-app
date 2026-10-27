@@ -10,8 +10,8 @@ import (
 )
 
 var supportedDocumentExtensions = map[string]bool{
-	".md": true, ".txt": true, ".html": true, ".htm": true,
-	".json": true, ".docx": true, ".pdf": true,
+	".md": true, ".markdown": true, ".txt": true, ".html": true, ".htm": true,
+	".json": true, ".docx": true, ".pdf": true, ".pptx": true,
 }
 
 // LoadDocuments 递归读取知识库目录，将所有支持的格式转换为 Eino Document。

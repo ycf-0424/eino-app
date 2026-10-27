@@ -135,7 +135,8 @@ intent_routing:
 dataquery:
   enabled: false
 attachments:
-  enabled: false
+  # 生产网页端对话框的附件入口依赖此开关；启用前请执行 session-migrate -attachments。
+  enabled: true
   storage_dir: "data/attachments"
   max_file_bytes: 10485760
   max_files_per_request: 3

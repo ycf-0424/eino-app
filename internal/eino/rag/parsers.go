@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -55,7 +56,7 @@ func PDFPageCount(path string) (int, error) {
 
 func parseDocument(path, ext string) ([]documentSection, error) {
 	switch ext {
-	case ".md":
+	case ".md", ".markdown":
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
@@ -73,6 +74,8 @@ func parseDocument(path, ext string) ([]documentSection, error) {
 		return parseJSON(path)
 	case ".docx":
 		return parseDOCX(path)
+	case ".pptx":
+		return parsePPTX(path)
 	case ".pdf":
 		return parsePDF(path)
 	default:
@@ -194,6 +197,70 @@ func parseDOCX(path string) ([]documentSection, error) {
 		return []documentSection{{Content: cleanText(b.String())}}, nil
 	}
 	return nil, fmt.Errorf("word/document.xml not found")
+}
+
+func parsePPTX(path string) ([]documentSection, error) {
+	r, e := zip.OpenReader(path)
+	if e != nil {
+		return nil, e
+	}
+	defer r.Close()
+	type slideFile struct {
+		name string
+		file *zip.File
+	}
+	var slides []slideFile
+	for _, f := range r.File {
+		if strings.HasPrefix(f.Name, "ppt/slides/slide") && strings.HasSuffix(f.Name, ".xml") {
+			slides = append(slides, slideFile{name: f.Name, file: f})
+		}
+	}
+	sort.Slice(slides, func(i, j int) bool {
+		number := func(name string) int {
+			base := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(name), "slide"), ".xml")
+			value, err := strconv.Atoi(base)
+			if err != nil {
+				return int(^uint(0) >> 1)
+			}
+			return value
+		}
+		left, right := number(slides[i].name), number(slides[j].name)
+		if left == right {
+			return slides[i].name < slides[j].name
+		}
+		return left < right
+	})
+	sections := make([]documentSection, 0, len(slides))
+	for i, slide := range slides {
+		stream, err := slide.file.Open()
+		if err != nil {
+			return nil, err
+		}
+		decoder := xml.NewDecoder(stream)
+		var b strings.Builder
+		for {
+			token, tokenErr := decoder.Token()
+			if tokenErr == io.EOF {
+				break
+			}
+			if tokenErr != nil {
+				_ = stream.Close()
+				return nil, tokenErr
+			}
+			if text, ok := token.(xml.CharData); ok {
+				b.Write([]byte(text))
+				b.WriteByte(' ')
+			}
+		}
+		_ = stream.Close()
+		if content := cleanText(b.String()); content != "" {
+			sections = append(sections, documentSection{Content: content, MetaData: map[string]any{"slide": i + 1}})
+		}
+	}
+	if len(sections) == 0 {
+		return nil, fmt.Errorf("presentation contains no readable slides")
+	}
+	return sections, nil
 }
 
 func parsePDF(path string) ([]documentSection, error) {
