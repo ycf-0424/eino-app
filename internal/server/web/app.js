@@ -959,6 +959,32 @@ async function uploadSelectedAttachments(files) {
   resizeInput();
 }
 
+// 浏览器允许通过 ClipboardEvent 传递用户从文件管理器复制的文件。
+// 不同浏览器对 clipboardData.files/items 的实现不同，因此两条路径都兼容。
+function clipboardFiles(event) {
+  const direct = Array.from(event.clipboardData?.files || []);
+  if (direct.length) return direct;
+  return Array.from(event.clipboardData?.items || [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+
+function handleFilePaste(event) {
+  const files = clipboardFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  uploadSelectedAttachments(files);
+}
+
+function handleFileDrop(event) {
+  event.preventDefault();
+  ui.composer.classList.remove("drop-active");
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (!files.length) return;
+  uploadSelectedAttachments(files);
+}
+
 function stopGeneration() {
   if (!state.generating) return;
   // 优先通知后端取消本轮执行；连接已断开时才退回关闭连接。
@@ -1361,12 +1387,21 @@ ui.composer.addEventListener("submit", (event) => {
   sendMessage(ui.promptInput.value.trim());
 });
 ui.promptInput.addEventListener("input", resizeInput);
+ui.promptInput.addEventListener("paste", handleFilePaste);
 ui.attachmentButton.onclick = () => ui.attachmentInput.click();
 ui.attachmentInput.addEventListener("change", () => {
   const files = Array.from(ui.attachmentInput.files || []);
   ui.attachmentInput.value = "";
   uploadSelectedAttachments(files);
 });
+ui.composer.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  if (state.attachmentEnabled) ui.composer.classList.add("drop-active");
+});
+ui.composer.addEventListener("dragleave", (event) => {
+  if (!ui.composer.contains(event.relatedTarget)) ui.composer.classList.remove("drop-active");
+});
+ui.composer.addEventListener("drop", handleFileDrop);
 ui.promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
@@ -1425,8 +1460,13 @@ async function bootstrap() {
     setHealth(true);
     state.attachmentEnabled = health?.attachments_enabled === true;
     state.attachmentMaxCount = Math.max(1, Number(health?.attachments_max_files_per_request) || 3);
-    ui.attachmentButton.hidden = !state.attachmentEnabled;
-    ui.composer.classList.toggle("with-attachments", state.attachmentEnabled);
+    // 入口始终保留，避免健康检查字段异常时把用户入口完全隐藏；
+    // 上传请求由后端最终判断附件能力是否真的可用。
+    ui.attachmentButton.hidden = false;
+    ui.composer.classList.add("with-attachments");
+    ui.promptInput.placeholder = "输入消息，或粘贴/拖入文件";
+    ui.promptInput.title = "支持 Ctrl+V 粘贴文件，或将文件拖入输入框";
+    ui.attachmentButton.title = state.attachmentEnabled ? "添加附件" : "附件服务尚未启用";
     state.capabilities = health?.capabilities || {};
     state.authEnabled = health?.auth_enabled === true || health?.login?.feishu === true || health?.login?.local === true;
     // 技能入口的显隐完全由后端 debug 状态决定，前端不做任何默认开启。
