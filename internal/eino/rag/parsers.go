@@ -46,7 +46,8 @@ func ParseFile(path string) ([]Section, error) {
 }
 
 // PDFPageCount returns the declared page count before rendering work begins.
-func PDFPageCount(path string) (int, error) {
+func PDFPageCount(path string) (pages int, err error) {
+	defer recoverPDFPanic(&err)
 	doc, err := pdf.Open(path)
 	if err != nil {
 		return 0, err
@@ -263,12 +264,13 @@ func parsePPTX(path string) ([]documentSection, error) {
 	return sections, nil
 }
 
-func parsePDF(path string) ([]documentSection, error) {
+func parsePDF(path string) (sections []documentSection, err error) {
+	defer recoverPDFPanic(&err)
 	r, e := pdf.Open(path)
 	if e != nil {
 		return nil, e
 	}
-	sections := make([]documentSection, 0, r.NumPage())
+	sections = make([]documentSection, 0, r.NumPage())
 	for page := 1; page <= r.NumPage(); page++ {
 		items := r.Page(page).Content().Text
 		sort.SliceStable(items, func(i, j int) bool {
@@ -292,6 +294,15 @@ func parsePDF(path string) ([]documentSection, error) {
 		}
 	}
 	return sections, nil
+}
+
+// recoverPDFPanic converts panics from the third-party PDF parser into normal
+// parse errors. A malformed PDF must fail its attachment, never terminate the
+// HTTP handler and surface as a proxy 502.
+func recoverPDFPanic(errp *error) {
+	if recovered := recover(); recovered != nil {
+		*errp = fmt.Errorf("parse PDF: %v", recovered)
+	}
 }
 
 func cleanText(text string) string {

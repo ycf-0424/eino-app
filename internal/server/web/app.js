@@ -29,6 +29,7 @@ const state = {
   attachmentEnabled: false,
   attachmentMaxCount: 3,
   uploadingAttachments: false,
+  attachmentPollers: new Map(),
   capabilities: {},
 };
 
@@ -123,6 +124,15 @@ function showToast(message) {
   showToast.timer = setTimeout(() => ui.toast.classList.remove("visible"), 2800);
 }
 
+function explainModelError(message) {
+  const raw = String(message || "生成失败");
+  const lower = raw.toLowerCase();
+  if (lower.includes("out-of-memory") || lower.includes("cuda_host buffer") || lower.includes("cpu_repack buffer") || lower.includes("unable to allocate")) {
+    return "本地模型启动失败：可用内存/显存不足，当前 qwen3.5:9b 无法加载。请关闭占用内存的程序，或改用更小的 Ollama 模型（如 qwen3.5:4b/2b）后重试。";
+  }
+  return raw;
+}
+
 function setHealth(online) {
   ui.statusDot.className = `status-dot ${online ? "online" : "offline"}`;
   ui.statusText.textContent = online ? "服务已就绪" : "服务不可用";
@@ -143,6 +153,16 @@ function resizeInput() {
   ui.promptInput.style.height = "auto";
   ui.promptInput.style.height = `${Math.min(ui.promptInput.scrollHeight, 180)}px`;
   if (!state.generating) ui.sendButton.disabled = !ui.promptInput.value.trim() && !state.pendingAttachments.some((item) => item.status === "ready");
+}
+
+function refreshAttachmentStatus() {
+  if (state.generating) return;
+  if (state.uploadingAttachments) {
+    ui.requestStatus.textContent = "正在上传附件";
+    return;
+  }
+  const processing = state.pendingAttachments.some((item) => item.status === "processing" || item.status === "uploaded");
+  ui.requestStatus.textContent = processing ? "正在解析附件" : "服务运行";
 }
 
 function normalizeText(value) {
@@ -871,11 +891,12 @@ function sendMessage(query) {
     } else if (message.type === "done") {
       finishGeneration();
     } else if (message.type === "error") {
+      const friendlyError = explainModelError(message.error);
       if (!assistant.rawText) {
-        assistant.rawText = `请求失败：${message.error}`;
+        assistant.rawText = `请求失败：${friendlyError}`;
         renderAssistant(assistant, assistant.rawText, false);
       }
-      showToast(message.error || "生成失败");
+      showToast(friendlyError);
       finishGeneration();
     }
   };
@@ -897,11 +918,13 @@ function renderPendingAttachments() {
   for (const item of state.pendingAttachments) {
     const chip = el("div", "attachment-chip");
     const name = el("span", "attachment-chip-name", item.name);
-    const statusText = item.status === "ready" ? "已解析" : item.status === "failed" ? "解析失败" : item.status;
+    const statusText = item.status === "ready" ? "已解析" : item.status === "failed" ? "解析失败" : item.status === "processing" || item.status === "uploaded" ? "解析中" : item.status;
     const status = el("span", "attachment-chip-status", statusText);
+    if (item.error) chip.title = item.error;
     chip.append(name, status);
     if (item.status === "failed") {
       const retry = el("button", "", "重试");
+      retry.className = "attachment-retry";
       retry.type = "button";
       retry.onclick = async () => {
         retry.disabled = true;
@@ -911,6 +934,7 @@ function renderPendingAttachments() {
           item.error = updated.error || "";
           renderPendingAttachments();
           if (item.status === "ready") resizeInput();
+          else if (item.status === "processing") watchAttachment(item);
         } catch (error) { showToast(error.message); retry.disabled = false; }
       };
       chip.append(retry);
@@ -919,6 +943,9 @@ function renderPendingAttachments() {
     remove.type = "button";
     remove.setAttribute("aria-label", `移除附件 ${item.name}`);
     remove.onclick = async () => {
+      const timer = state.attachmentPollers.get(item.id);
+      if (timer) clearTimeout(timer);
+      state.attachmentPollers.delete(item.id);
       state.pendingAttachments = state.pendingAttachments.filter((candidate) => candidate.id !== item.id);
       renderPendingAttachments();
       resizeInput();
@@ -927,6 +954,43 @@ function renderPendingAttachments() {
     chip.append(remove);
     ui.pendingAttachments.append(chip);
   }
+  refreshAttachmentStatus();
+}
+
+function watchAttachment(item) {
+  if (!item?.id || state.attachmentPollers.has(item.id)) return;
+  let attempts = 0;
+  const poll = async () => {
+    try {
+      const updated = await api(`/attachments/${encodeURIComponent(item.id)}`);
+      item.status = updated.status;
+      item.error = updated.error || "";
+      renderPendingAttachments();
+      resizeInput();
+      refreshAttachmentStatus();
+      if (item.status === "processing" || item.status === "uploaded") {
+        attempts += 1;
+        if (attempts < 900) {
+          const timer = setTimeout(poll, 800);
+          state.attachmentPollers.set(item.id, timer);
+          return;
+        }
+        item.status = "failed";
+        item.error = "解析等待超时，请点击重试";
+        renderPendingAttachments();
+      }
+    } catch (error) {
+      if (attempts < 20) {
+        attempts += 1;
+        const timer = setTimeout(poll, 1200);
+        state.attachmentPollers.set(item.id, timer);
+        return;
+      }
+      showToast(error.message || "获取附件状态失败");
+    }
+    state.attachmentPollers.delete(item.id);
+  };
+  poll();
 }
 
 async function uploadSelectedAttachments(files) {
@@ -938,7 +1002,7 @@ async function uploadSelectedAttachments(files) {
   state.uploadingAttachments = true;
   ui.attachmentButton.disabled = true;
   ui.requestStatus.textContent = "正在上传附件";
-  for (const file of files) {
+  const uploadOne = async (file) => {
     const form = new FormData();
     form.append("file", file, file.name);
     try {
@@ -948,14 +1012,17 @@ async function uploadSelectedAttachments(files) {
       if (!response.ok || payload.error) throw new Error(payload.error || `上传失败 (${response.status})`);
       const item = payload.data?.attachments?.[0];
       if (!item) throw new Error("服务器未返回附件状态");
-      state.pendingAttachments.push({ id: item.id, name: item.name, status: item.status, error: item.error || "" });
+      const pending = { id: item.id, name: item.name, status: item.status, error: item.error || "" };
+      state.pendingAttachments.push(pending);
       renderPendingAttachments();
+      if (item.status === "processing" || item.status === "uploaded") watchAttachment(pending);
       if (item.status === "failed") showToast(`${item.name} 已上传，但解析失败；可重试或检查能力配置`);
     } catch (error) { showToast(error.message || "附件上传失败"); }
-  }
+  };
+  await Promise.all(files.map(uploadOne));
   state.uploadingAttachments = false;
   ui.attachmentButton.disabled = false;
-  ui.requestStatus.textContent = "服务运行";
+  refreshAttachmentStatus();
   resizeInput();
 }
 

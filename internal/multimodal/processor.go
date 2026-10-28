@@ -132,6 +132,16 @@ func (p *Processor) parsePDF(ctx context.Context, filePath string, item attachme
 	}
 	sections, err := rag.ParseFile(filePath)
 	if err != nil {
+		// rsc.io/pdf cannot read some valid PDFs with embedded CJK fonts. The
+		// container already ships Poppler, so use pdftotext as a bounded fallback
+		// before treating the attachment as an unreadable/scanned PDF.
+		artifacts, fallbackErr := p.parsePDFWithPoppler(ctx, filePath, pageCount)
+		if fallbackErr == nil && len(artifacts) > 0 {
+			return artifacts, nil
+		}
+		if fallbackErr != nil {
+			return nil, fmt.Errorf("extract PDF text: %w; poppler fallback: %v", err, fallbackErr)
+		}
 		return nil, fmt.Errorf("extract PDF text: %w", err)
 	}
 	textPages := make(map[int]bool)
@@ -185,6 +195,32 @@ func (p *Processor) parsePDF(ctx context.Context, filePath string, item attachme
 			return nil, fmt.Errorf("OCR page %d: %w", page, err)
 		}
 		artifacts = append(artifacts, artifactFor(fmt.Sprintf("page %d", page), result.text, result.confidence))
+	}
+	return artifacts, nil
+}
+
+func (p *Processor) parsePDFWithPoppler(ctx context.Context, filePath string, pageCount int) ([]attachments.Artifact, error) {
+	// A single Poppler process is substantially faster than starting one
+	// process per page. pdftotext separates pages with form-feed characters.
+	cmd := exec.CommandContext(ctx, "pdftotext", "-layout", filePath, "-")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, errors.New("pdftotext is unavailable or failed")
+	}
+	pages := strings.Split(string(output), "\f")
+	if len(pages) > pageCount {
+		pages = pages[:pageCount]
+	}
+	artifacts := make([]attachments.Artifact, 0, len(pages))
+	for page, raw := range pages {
+		text := strings.TrimSpace(raw)
+		if text == "" {
+			continue
+		}
+		artifacts = append(artifacts, artifactFor(fmt.Sprintf("page %d", page+1), text, nil))
+	}
+	if len(artifacts) == 0 {
+		return nil, errors.New("pdftotext produced no readable text")
 	}
 	return artifacts, nil
 }

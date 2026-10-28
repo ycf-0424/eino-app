@@ -170,6 +170,32 @@ func NewManager(policy Policy, repo Repository, processor Processor, scanner Sca
 func (m *Manager) MaxPerRequest() int { return m.maxCount }
 
 func (m *Manager) Upload(ctx context.Context, owner, name, declaredMIME string, source io.Reader) (Attachment, error) {
+	item, err := m.store(ctx, owner, name, declaredMIME, source, true)
+	if err != nil {
+		return Attachment{}, err
+	}
+	return m.process(ctx, item, StatusUploaded)
+}
+
+// UploadAsync stores and validates an attachment, then starts parsing in the
+// background. The caller receives a processing attachment immediately instead
+// of holding the HTTP request open for PDF/OCR work.
+func (m *Manager) UploadAsync(ctx context.Context, owner, name, declaredMIME string, source io.Reader) (Attachment, error) {
+	item, err := m.store(ctx, owner, name, declaredMIME, source, false)
+	if err != nil {
+		return Attachment{}, err
+	}
+	if err := m.repo.BeginProcessing(ctx, item.OwnerID, item.ID, StatusUploaded); err != nil {
+		return Attachment{}, err
+	}
+	item.Status = StatusProcessing
+	go func() {
+		_, _ = m.processStarted(context.WithoutCancel(ctx), item, true)
+	}()
+	return item, nil
+}
+
+func (m *Manager) store(ctx context.Context, owner, name, declaredMIME string, source io.Reader, scan bool) (Attachment, error) {
 	if source == nil {
 		return Attachment{}, errors.New("attachment content is required")
 	}
@@ -210,11 +236,13 @@ func (m *Manager) Upload(ctx context.Context, owner, name, declaredMIME string, 
 	if len(m.allowed) > 0 && !m.allowed[mime] {
 		return Attachment{}, fmt.Errorf("attachment MIME type %q is not allowed", mime)
 	}
-	if err := m.scanner.Scan(ctx, tempPath); err != nil {
-		if errors.Is(err, ErrMalwareDetected) {
-			return Attachment{}, ErrMalwareDetected
+	if scan {
+		if err := m.scanner.Scan(ctx, tempPath); err != nil {
+			if errors.Is(err, ErrMalwareDetected) {
+				return Attachment{}, ErrMalwareDetected
+			}
+			return Attachment{}, fmt.Errorf("attachment scan unavailable: %w", err)
 		}
-		return Attachment{}, fmt.Errorf("attachment scan unavailable: %w", err)
 	}
 	key := uuid.NewString() + ext
 	finalPath, err := m.path(key)
@@ -231,12 +259,32 @@ func (m *Manager) Upload(ctx context.Context, owner, name, declaredMIME string, 
 		_ = os.Remove(finalPath)
 		return Attachment{}, fmt.Errorf("save attachment metadata: %w", err)
 	}
-	return m.process(ctx, item, StatusUploaded)
+	return item, nil
 }
 
 func (m *Manager) process(ctx context.Context, item Attachment, expected Status) (Attachment, error) {
 	if err := m.repo.BeginProcessing(ctx, item.OwnerID, item.ID, expected); err != nil {
 		return Attachment{}, err
+	}
+	return m.processStarted(ctx, item, false)
+}
+
+func (m *Manager) processStarted(ctx context.Context, item Attachment, scan bool) (Attachment, error) {
+	if scan {
+		filePath, pathErr := m.path(item.StorageKey)
+		if pathErr == nil {
+			scanCtx, scanCancel := context.WithTimeout(ctx, 30*time.Second)
+			scanErr := m.scanner.Scan(scanCtx, filePath)
+			scanCancel()
+			if scanErr != nil {
+				statusCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				reason := safeError(scanErr)
+				_ = m.repo.SetStatus(statusCtx, item.OwnerID, item.ID, StatusFailed, reason, item.ParserVersion)
+				item.Status, item.ErrorReason, item.UpdatedAt = StatusFailed, reason, time.Now().UTC()
+				return item, nil
+			}
+		}
 	}
 	filePath, err := m.path(item.StorageKey)
 	if err == nil {
@@ -308,6 +356,26 @@ func (m *Manager) Retry(ctx context.Context, owner, id string) (Attachment, erro
 		return Attachment{}, ErrInvalidState
 	}
 	return m.process(ctx, item, StatusFailed)
+}
+
+// RetryAsync changes a failed attachment back to processing and returns at
+// once. Parsing continues independently so the browser can remain responsive.
+func (m *Manager) RetryAsync(ctx context.Context, owner, id string) (Attachment, error) {
+	item, err := m.repo.Get(ctx, owner, id)
+	if err != nil {
+		return Attachment{}, err
+	}
+	if item.Status != StatusFailed {
+		return Attachment{}, ErrInvalidState
+	}
+	if err := m.repo.BeginProcessing(ctx, item.OwnerID, item.ID, StatusFailed); err != nil {
+		return Attachment{}, err
+	}
+	item.Status = StatusProcessing
+	go func() {
+		_, _ = m.processStarted(context.WithoutCancel(ctx), item, true)
+	}()
+	return item, nil
 }
 
 func (m *Manager) Delete(ctx context.Context, owner, id string) error {

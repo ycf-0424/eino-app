@@ -372,7 +372,7 @@ func (s *Service) handleAttachmentUpload(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, http.StatusBadRequest, response{Data: map[string]any{"attachments": items}, Error: "could not open uploaded file"})
 			return
 		}
-		item, uploadErr := s.attachments.Upload(r.Context(), ownerOf(r), header.Filename, header.Header.Get("Content-Type"), file)
+		item, uploadErr := s.attachments.UploadAsync(r.Context(), ownerOf(r), header.Filename, header.Header.Get("Content-Type"), file)
 		_ = file.Close()
 		if uploadErr != nil {
 			status := http.StatusBadRequest
@@ -422,7 +422,7 @@ func (s *Service) handleAttachmentArtifacts(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Service) handleAttachmentRetry(w http.ResponseWriter, r *http.Request) {
-	item, err := s.attachments.Retry(r.Context(), ownerOf(r), r.PathValue("id"))
+	item, err := s.attachments.RetryAsync(r.Context(), ownerOf(r), r.PathValue("id"))
 	if errors.Is(err, attachments.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, response{Error: "attachment not found"})
 		return

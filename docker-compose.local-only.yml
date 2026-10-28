@@ -1,0 +1,7 @@
+services:
+  app:
+    image: my-eino-app:local-test
+    environment:
+      FEISHU_APP_ID: ""
+      FEISHU_APP_SECRET: ""
+      FEISHU_REDIRECT_URL: ""
