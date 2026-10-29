@@ -32,7 +32,7 @@ type knowledgeIndexState struct {
 }
 
 var supportedKnowledgeFormats = map[string]bool{
-	".md": true, ".txt": true, ".html": true, ".htm": true,
+	".md": true, ".markdown": true, ".txt": true, ".html": true, ".htm": true,
 	".json": true, ".docx": true, ".pdf": true,
 }
 

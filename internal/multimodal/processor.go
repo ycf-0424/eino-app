@@ -68,6 +68,10 @@ func (p *Processor) Process(ctx context.Context, filePath string, item attachmen
 	case "text/markdown", "text/plain", "text/html", "application/json",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		"application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		if item.MIMEType != "text/plain" && item.MIMEType != "application/json" && item.MIMEType != "application/vnd.openxmlformats-officedocument.presentationml.presentation" {
+			blocks, err := rag.ParseBlocks(filePath)
+			return p.blockArtifacts(blocks), extractorVersion, err
+		}
 		sections, err := rag.ParseFile(filePath)
 		return p.ragArtifacts(sections, item.MIMEType), extractorVersion, err
 	case "text/csv":
@@ -122,6 +126,37 @@ func (p *Processor) ragArtifacts(sections []rag.Section, _ string) []attachments
 	return artifacts
 }
 
+func (p *Processor) blockArtifacts(blocks []rag.Block) []attachments.Artifact {
+	artifacts := make([]attachments.Artifact, 0, len(blocks))
+	for i, block := range blocks {
+		text := block.Text
+		if block.Type == "table" {
+			var rows strings.Builder
+			for rowIndex, row := range block.Rows {
+				if rowIndex > 0 {
+					rows.WriteByte('\n')
+				}
+				rows.WriteString(strings.Join(row, " | "))
+			}
+			text = rows.String()
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		ref := fmt.Sprintf("%s %d", block.Type, i+1)
+		if page, ok := block.Metadata["page"].(int); ok {
+			ref = fmt.Sprintf("page %d %s", page, block.Type)
+		}
+		artifact := artifactFor(ref, text, nil)
+		artifact.Blocks = []attachments.Block{{Kind: block.Type, Text: text, Level: block.Level, Rows: block.Rows, HeadingPath: block.HeadingPath}}
+		if page, ok := block.Metadata["page"].(int); ok {
+			artifact.Blocks[0].Page = page
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	return artifacts
+}
+
 func (p *Processor) parsePDF(ctx context.Context, filePath string, item attachments.Attachment) ([]attachments.Artifact, error) {
 	pageCount, err := rag.PDFPageCount(filePath)
 	if err != nil {
@@ -129,6 +164,17 @@ func (p *Processor) parsePDF(ctx context.Context, filePath string, item attachme
 	}
 	if pageCount < 1 || pageCount > p.cfg.MaxPages {
 		return nil, fmt.Errorf("PDF page count %d exceeds the configured limit %d", pageCount, p.cfg.MaxPages)
+	}
+	if blocks, blockErr := rag.ParseBlocks(filePath); blockErr == nil && len(blocks) > 0 {
+		pages := make(map[int]bool)
+		for _, block := range blocks {
+			if page, ok := block.Metadata["page"].(int); ok {
+				pages[page] = true
+			}
+		}
+		if len(pages) == pageCount {
+			return p.blockArtifacts(blocks), nil
+		}
 	}
 	sections, err := rag.ParseFile(filePath)
 	if err != nil {

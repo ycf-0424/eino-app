@@ -60,6 +60,48 @@ func TestLoadDocumentsInvalidChunkConfig(t *testing.T) {
 	}
 }
 
+func TestParseBlocksStructuredFormats(t *testing.T) {
+	dir := t.TempDir()
+	md := filepath.Join(dir, "guide.md")
+	writeTestFile(t, md, "# Guide\n\nIntro paragraph.\n\n| Name | Count |\n| --- | ---: |\n| A | 10 |")
+	blocks, err := ParseBlocks(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 3 || blocks[0].Type != "title" || blocks[1].Type != "paragraph" || blocks[2].Type != "table" {
+		t.Fatalf("markdown blocks=%+v", blocks)
+	}
+	if len(blocks[2].Rows) != 2 || blocks[2].Rows[1][1] != "10" {
+		t.Fatalf("markdown table=%+v", blocks[2].Rows)
+	}
+
+	htmlPath := filepath.Join(dir, "page.html")
+	writeTestFile(t, htmlPath, `<html><script>ignore</script><body><h2>Section</h2><p>Paragraph</p><table><tr><th>Name</th><th>Count</th></tr><tr><td>A</td><td>10</td></tr></table></body></html>`)
+	blocks, err = ParseBlocks(htmlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 3 || blocks[0].Type != "title" || blocks[1].Type != "paragraph" || blocks[2].Type != "table" {
+		t.Fatalf("html blocks=%+v", blocks)
+	}
+	if strings.Contains(blocks[1].Text, "ignore") || blocks[2].Rows[1][0] != "A" {
+		t.Fatalf("html content/table=%+v", blocks)
+	}
+
+	docxPath := filepath.Join(dir, "manual.docx")
+	writeStructuredDOCX(t, docxPath)
+	blocks, err = ParseBlocks(docxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 3 || blocks[0].Type != "title" || blocks[1].Type != "paragraph" || blocks[2].Type != "table" {
+		t.Fatalf("docx blocks=%+v", blocks)
+	}
+	if blocks[0].Level != 1 || blocks[2].Rows[1][1] != "10" {
+		t.Fatalf("docx structure=%+v", blocks)
+	}
+}
+
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -85,6 +127,29 @@ func writeDOCX(t *testing.T, path string, paragraphs ...string) {
 	}
 	xml.WriteString("</w:body></w:document>")
 	if _, err = w.Write([]byte(xml.String())); err != nil {
+		t.Fatal(err)
+	}
+	if err = z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeStructuredDOCX(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z := zip.NewWriter(f)
+	w, err := z.Create("word/document.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := `<w:document xmlns:w="x"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p><w:p><w:r><w:t>Paragraph</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Count</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>10</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>`
+	if _, err = w.Write([]byte(content)); err != nil {
 		t.Fatal(err)
 	}
 	if err = z.Close(); err != nil {

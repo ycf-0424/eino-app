@@ -55,10 +55,14 @@ type Attachment struct {
 }
 
 type Block struct {
-	Kind      string  `json:"kind"`
-	Text      string  `json:"text,omitempty"`
-	StartTime float64 `json:"start_time,omitempty"`
-	EndTime   float64 `json:"end_time,omitempty"`
+	Kind        string     `json:"kind"`
+	Text        string     `json:"text,omitempty"`
+	Level       int        `json:"level,omitempty"`
+	Rows        [][]string `json:"rows,omitempty"`
+	HeadingPath []string   `json:"heading_path,omitempty"`
+	Page        int        `json:"page,omitempty"`
+	StartTime   float64    `json:"start_time,omitempty"`
+	EndTime     float64    `json:"end_time,omitempty"`
 }
 
 type Artifact struct {

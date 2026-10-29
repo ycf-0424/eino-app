@@ -31,10 +31,11 @@ func LoadDocuments(dir string, chunkSize, overlap int) ([]*schema.Document, erro
 		if !supportedDocumentExtensions[ext] {
 			return nil
 		}
-		sections, err := parseDocument(path, ext)
+		blocks, err := ParseBlocks(path)
 		if err != nil {
 			return fmt.Errorf("parse %s: %w", path, err)
 		}
+		sections := blocksToSections(blocks)
 		rel, err := filepath.Rel(dir, path)
 		if err != nil {
 			rel = path
@@ -57,6 +58,80 @@ func LoadDocuments(dir string, chunkSize, overlap int) ([]*schema.Document, erro
 		return nil
 	})
 	return docs, err
+}
+
+func blocksToSections(blocks []Block) []documentSection {
+	var sections []documentSection
+	var current *documentSection
+	var blockTypes []string
+	var tables [][][]string
+	flush := func() {
+		if current == nil {
+			return
+		}
+		current.Content = cleanText(current.Content)
+		if current.Content != "" {
+			if len(blockTypes) > 0 {
+				current.MetaData["block_types"] = append([]string(nil), blockTypes...)
+			}
+			if len(tables) > 0 {
+				current.MetaData["tables"] = append([][][]string(nil), tables...)
+			}
+			sections = append(sections, *current)
+		}
+		current = nil
+		blockTypes = nil
+		tables = nil
+	}
+	for _, block := range blocks {
+		if block.Type == "title" {
+			flush()
+			meta := map[string]any{"title": block.Text, "title_level": block.Level, "block_type": "title"}
+			for key, value := range block.Metadata {
+				meta[key] = value
+			}
+			current = &documentSection{Content: block.Text, MetaData: meta}
+			blockTypes = append(blockTypes, block.Type)
+			continue
+		}
+		if current == nil {
+			current = &documentSection{MetaData: map[string]any{}}
+		}
+		if existing, ok := current.MetaData["block_type"].(string); !ok || existing == "" {
+			current.MetaData["block_type"] = block.Type
+		} else if existing != block.Type {
+			current.MetaData["block_type"] = "mixed"
+		}
+		for key, value := range block.Metadata {
+			current.MetaData[key] = value
+		}
+		if block.HeadingPath != nil && len(block.HeadingPath) > 0 {
+			current.MetaData["heading_path"] = append([]string(nil), block.HeadingPath...)
+		}
+		if block.Type == "table" {
+			current.MetaData["has_table"] = true
+			rows := make([][]string, len(block.Rows))
+			for i := range block.Rows {
+				rows[i] = append([]string(nil), block.Rows[i]...)
+			}
+			tables = append(tables, rows)
+			var table strings.Builder
+			for _, row := range block.Rows {
+				if table.Len() > 0 {
+					table.WriteByte('\n')
+				}
+				table.WriteString(strings.Join(row, " | "))
+			}
+			if table.Len() > 0 {
+				current.Content += "\n" + table.String()
+			}
+		} else if block.Text != "" {
+			current.Content += "\n" + block.Text
+		}
+		blockTypes = append(blockTypes, block.Type)
+	}
+	flush()
+	return sections
 }
 
 // SplitText 使用 rune 切分以避免截断中文，重叠区用于保留跨块上下文。

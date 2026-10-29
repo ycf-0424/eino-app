@@ -57,7 +57,17 @@ func NewKnowledgeToolWithOptions(store rag.Store, options rag.SearchOptions) ein
 		})
 		var out strings.Builder
 		for i, doc := range docs {
-			fmt.Fprintf(&out, "[%d] source=%v score=%.4f\n%s\n\n", i+1, doc.MetaData["source"], doc.Score(), doc.Content)
+			fmt.Fprintf(&out, "[%d] source=%v", i+1, doc.MetaData["source"])
+			if title := fmt.Sprint(doc.MetaData["title"]); title != "<nil>" && title != "" {
+				fmt.Fprintf(&out, " title=%s", title)
+			}
+			if page := fmt.Sprint(doc.MetaData["page"]); page != "<nil>" && page != "" {
+				fmt.Fprintf(&out, " page=%s", page)
+			}
+			if blockType := fmt.Sprint(doc.MetaData["block_type"]); blockType != "<nil>" && blockType != "" {
+				fmt.Fprintf(&out, " block_type=%s", blockType)
+			}
+			fmt.Fprintf(&out, " score=%.4f\n%s\n\n", doc.Score(), doc.Content)
 		}
 		return out.String(), nil
 	})
