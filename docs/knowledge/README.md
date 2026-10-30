@@ -17,6 +17,8 @@ go run ./cmd/indexer
 
 当前知识库还包含 `project-lifecycle-l1-l9.md`，这是面向 L1–L9 项目交付问题整理的脱敏资料。它只保留架构、部署、验收、故障、恢复和优化事实；密钥、口令、Token、真实域名、绝对路径、账号标识、会话标识和原始敏感日志均已移除。回答时仍需区分“已验证”“设计/计划”和“待补充”。
 
+`tech-stack.md` 是项目技术栈问题的标准回答资料，集中说明 Go、Eino、Milvus、BGE-M3、BM25、MySQL 和 Docker Compose/1Panel 的职责边界。
+
 程序会按 `config.yaml` 切分文档，使用 Ollama `bge-m3` 生成向量，并写入
 `rag.store` 指定的 Redis Stack 或 Milvus。
 
