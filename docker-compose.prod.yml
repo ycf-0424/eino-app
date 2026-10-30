@@ -116,6 +116,8 @@ services:
       - "127.0.0.1:${APP_PORT:-18180}:8080"
     volumes:
       - app-data:/app/data
+      # 知识库源文件必须独立持久化；否则重建 app 容器会丢失网页上传的文档。
+      - knowledge-data:/app/docs/knowledge
       - ./config.prod.yaml:/app/config.yaml:ro
       - ./workspace-files:/app/workspace-files:ro
     depends_on:
@@ -150,3 +152,6 @@ volumes:
   app-data:
     name: "${APP_VOLUME_NAME:-eino-prod-app-data}"
     external: ${APP_VOLUME_EXTERNAL:-false}
+  knowledge-data:
+    name: "${KNOWLEDGE_VOLUME_NAME:-eino-prod-knowledge}"
+    external: ${KNOWLEDGE_VOLUME_EXTERNAL:-false}
