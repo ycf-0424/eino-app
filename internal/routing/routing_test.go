@@ -100,6 +100,22 @@ func TestKnowledgeSearchQueryKeepsExplicitSystemTechnologyStack(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSearchQueryExpandsIndustryStandards(t *testing.T) {
+	got := KnowledgeSearchQuery("家居物品设计规范有哪些要求？")
+	for _, want := range []string{
+		"家居物品设计规范有哪些要求？",
+		"GB/T 47600.3-2026",
+		"家居产品",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expanded query=%q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "GB/T 39016-2020") || strings.Contains(got, "GB/T 51301-2018") {
+		t.Fatalf("query expansion should target the relevant standard, got %q", got)
+	}
+}
+
 func TestDecideCompoundSupportedRequest(t *testing.T) {
 	decision := Decide("先读取 workspace-files 里的工单，然后据此汇总成一份中文报告。")
 	want := []string{"report_writer", "documents"}

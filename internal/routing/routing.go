@@ -150,7 +150,34 @@ func isProjectTechStackRequest(q string) bool {
 // original request.
 func KnowledgeSearchQuery(query string) string {
 	q := strings.TrimSpace(query)
-	if q == "" || !strings.Contains(q, "技术栈") {
+	if q == "" {
+		return q
+	}
+	if isIndustryStandardRequest(strings.ToLower(q)) {
+		// The uploaded standards use formal names that may differ from a user's
+		// shorthand (for example, “家居物品设计规范”). Keep the original query
+		// and add stable identifiers so both vector and lexical retrieval can
+		// reach the intended PDF chunks.
+		parts := []string{q}
+		if containsAny(strings.ToLower(q), "家居物品", "家居产品", "电子商务交易产品") {
+			parts = append(parts, "GB/T 47600.3-2026 电子商务交易产品信息描述 第3部分 家居产品")
+		}
+		if containsAny(strings.ToLower(q), "定制家具", "家具设计") {
+			parts = append(parts, "GB/T 39016-2020 定制家具 通用设计规范")
+		}
+		if containsAny(strings.ToLower(q), "建筑信息模型", "bim", "设计交付") {
+			parts = append(parts, "GB/T 51301-2018 建筑信息模型设计交付标准")
+		}
+		if len(parts) == 1 {
+			parts = append(parts,
+				"GB/T 39016-2020 定制家具 通用设计规范",
+				"GB/T 47600.3-2026 电子商务交易产品信息描述 第3部分 家居产品",
+				"GB/T 51301-2018 建筑信息模型设计交付标准",
+			)
+		}
+		return strings.Join(parts, " ")
+	}
+	if !strings.Contains(q, "技术栈") {
 		return q
 	}
 	parts := make([]string, 0, 3)
@@ -163,6 +190,14 @@ func KnowledgeSearchQuery(query string) string {
 	parts = append(parts, "技术栈")
 	parts = append(parts, q)
 	return strings.Join(parts, " ")
+}
+
+func isIndustryStandardRequest(q string) bool {
+	return containsAny(q,
+		"规范", "标准", "国标", "gb/t", "gbt", "家居产品", "家居物品",
+		"定制家具", "家具设计", "建筑信息模型", "bim", "设计交付",
+		"信息模型", "信息描述", "电子商务交易产品",
+	)
 }
 
 func isDocumentReadRequest(q string) bool {
