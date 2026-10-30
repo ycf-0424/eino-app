@@ -31,11 +31,14 @@ COPY --from=builder /out/memory-reindex ./memory-reindex
 COPY config.docker.yaml ./config.yaml
 COPY skills ./skills
 COPY docs/knowledge ./docs/knowledge
+COPY docs/knowledge ./knowledge-seed
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 COPY workspace-files ./workspace-files
 
 # Session、Checkpoint 和工具输出都写入 /app/data，由 Compose 命名卷持久化。
 RUN mkdir -p /app/data/sessions /app/data/checkpoints /app/data/notes /app/data/documents /app/data/skills /app/data/templates \
-    && chown -R eino:eino /app
+    && chown -R eino:eino /app \
+    && chmod 755 /app/docker-entrypoint.sh
 
 USER eino
 EXPOSE 8080
@@ -43,5 +46,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
     CMD wget -q -O /dev/null http://127.0.0.1:8080/health || exit 1
 
-ENTRYPOINT ["./eino-server"]
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["-addr", ":8080"]
