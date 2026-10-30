@@ -128,6 +128,14 @@ func fuseLexical(ctx context.Context, query string, vectorDocs []*schema.Documen
 			byID[key] = item
 		}
 		item.lexical = doc.Score()
+		// Preserve the fact that this candidate was independently found by the
+		// lexical path even when the vector path returned the same document ID.
+		// FilterDocuments uses this marker to avoid discarding an exact keyword
+		// hit solely because its semantic score is below the vector threshold.
+		if item.doc.MetaData == nil {
+			item.doc.MetaData = map[string]any{}
+		}
+		item.doc.MetaData["retrieval_mode"] = "lexical"
 	}
 	out := make([]*schema.Document, 0, len(byID))
 	for _, item := range byID {

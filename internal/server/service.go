@@ -169,7 +169,9 @@ func NewService(ctx context.Context, cfg *config.Config) (*Service, error) {
 		knowledgeStore = store
 		if cfg.RAG.HybridSearch {
 			lexicalIndex = rag.NewBM25Index()
-			_ = lexicalIndex.Refresh(cfg.RAG.DocumentDir, cfg.RAG.ChunkSize, cfg.RAG.ChunkOverlap)
+			if refreshErr := lexicalIndex.Refresh(cfg.RAG.DocumentDir, cfg.RAG.ChunkSize, cfg.RAG.ChunkOverlap); refreshErr != nil {
+				return nil, fmt.Errorf("build lexical knowledge index: %w", refreshErr)
+			}
 		}
 		searchOptions := rag.SearchOptions{TopK: cfg.RAG.TopK, ScoreThreshold: cfg.RAG.ScoreThreshold, MaxContextChars: cfg.RAG.MaxContextChars, Hybrid: cfg.RAG.HybridSearch, Lexical: lexicalIndex}
 		if cfg.RAG.Reranker.Enabled {
@@ -847,6 +849,10 @@ func (s *Service) runKnowledgePreflight(ctx context.Context, query string) (know
 		return knowledgePreflight{}, err
 	}
 	execution.MergeAnnotations(toolCtx, payload)
+	payload["query"] = searchQuery
+	if s.lexicalIndex != nil {
+		payload["lexical_index_ready"] = s.lexicalIndex.Ready()
+	}
 	em.Emit(execution.Event{Type: execution.ToolCompleted, Payload: payload})
 	hit := 0
 	if value, ok := payload["hit_count"].(int); ok {

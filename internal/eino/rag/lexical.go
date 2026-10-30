@@ -29,6 +29,18 @@ type BM25Index struct {
 
 func NewBM25Index() *BM25Index { return &BM25Index{df: map[string]int{}} }
 
+// Ready reports whether the in-memory lexical index has been built at least
+// once. It is used by the server to avoid silently running hybrid retrieval
+// with an empty BM25 side when a deployment starts with a stale/missing path.
+func (b *BM25Index) Ready() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.docs) > 0
+}
+
 func (b *BM25Index) Refresh(dir string, chunkSize, overlap int) error {
 	docs, err := LoadDocuments(dir, chunkSize, overlap)
 	if err != nil {

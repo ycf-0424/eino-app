@@ -622,6 +622,20 @@ function describeEvent(event) {
   }
 }
 
+// Only these events describe a user-visible phase. Prompt hashes, model
+// attempts, context snapshots and agent handoffs remain in the audit log but
+// are intentionally hidden from the compact execution panel.
+const visibleExecutionEvents = new Set([
+  "run_started", "memory_retrieved", "citation_checked", "evidence_conflict",
+  "model_fallback", "tool_completed", "file_read_completed", "tool_failed",
+  "approval_required", "run_completed", "run_failed", "run_cancelled",
+]);
+
+function isInternalToolEvent(event) {
+  const name = event?.payload?.tool_name;
+  return name === "load_skills" || name === "transfer_to_agent";
+}
+
 // renderEvent 把一条事件渲染进面板；同一 tool_call_id 复用同一条目。
 //
 // live 表示这是本轮正在发生的事件。历史回放（openSession → replayExecution）
@@ -631,6 +645,15 @@ function renderEvent(panel, event, live = false) {
   if (!panel || !event || !event.type) return;
   if (event.type === "chunk") return;
   const payload = event.payload || {};
+  if (isInternalToolEvent(event)) return;
+  if (!visibleExecutionEvents.has(event.type)) {
+    // Internal model events still update the live status text without adding
+    // noisy rows to the user's execution summary.
+    if (live && event.type === "model_waiting") {
+      setStreamStatus(panel._messageNode, payload.phase === "routing" ? "正在选择合适的模型…" : "正在思考…");
+    }
+    return;
+  }
   // 技能属于内部实现：非调试模式下不展示任何技能相关事件，
   // 包括 load_skills 的工具调用本身，否则面板会露出「加载技能」。
   if (!state.debug && (event.type === "skill_preloaded" || event.type === "skill_loaded" || payload.tool_name === "load_skills")) return;

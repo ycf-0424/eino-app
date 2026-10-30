@@ -35,6 +35,26 @@ func TestRetrieveHybridExpandsAndReranksCandidates(t *testing.T) {
 	}
 }
 
+type lexicalTestIndex struct{ docs []*schema.Document }
+
+func (l lexicalTestIndex) SearchLexical(context.Context, string, int) ([]*schema.Document, error) {
+	return l.docs, nil
+}
+
+func TestHybridExactLexicalHitSurvivesVectorThreshold(t *testing.T) {
+	vector := newScoredDoc("exact", "星河系统使用 Go、Eino 和 Milvus", 0.20, "md")
+	lexical := newScoredDoc("exact", vector.Content, 0.95, "md")
+	got, err := Retrieve(context.Background(), &retrieveTestStore{docs: []*schema.Document{vector}}, "星河系统 技术栈", SearchOptions{
+		TopK: 1, ScoreThreshold: 0.50, Hybrid: true, Lexical: lexicalTestIndex{docs: []*schema.Document{lexical}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "exact" {
+		t.Fatalf("exact lexical hit was filtered: %+v", got)
+	}
+}
+
 func TestBM25IndexSearchesIndependentLexicalCandidates(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "guide.md"), []byte("# Milvus 配置\n\nqwen3.5:9b 使用 Milvus 向量库。"), 0o600); err != nil {

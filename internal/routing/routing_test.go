@@ -77,6 +77,15 @@ func TestKnowledgeSearchQueryAddsProjectContextForTechnologyStack(t *testing.T) 
 	}
 }
 
+func TestKnowledgeSearchQueryKeepsExplicitSystemTechnologyStack(t *testing.T) {
+	got := KnowledgeSearchQuery("星河系统使用什么技术栈？")
+	for _, want := range []string{"星河系统", "项目", "技术栈", "星河系统使用什么技术栈？"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("query=%q missing %q", got, want)
+		}
+	}
+}
+
 func TestDecideCompoundSupportedRequest(t *testing.T) {
 	decision := Decide("先读取 workspace-files 里的工单，然后据此汇总成一份中文报告。")
 	want := []string{"report_writer", "documents"}
