@@ -26,3 +26,20 @@ func TestCitationFailureAndConflictDetection(t *testing.T) {
 		t.Fatal("expected conflict summary")
 	}
 }
+
+func TestConflictDetectionIgnoresRetrievalMetadataAndUnlabelledReleaseIDs(t *testing.T) {
+	evidence := `[1] source=tech-stack.md block_type=paragraph score=0.91
+星河系统主要使用 Go、Eino 和 Milvus。
+
+[2] source=milvus-validation.md block_type=mixed score=0.84
+系统幸运数字：7319，文档编号 XH-2026-09。`
+	if conflicts := DetectEvidenceConflicts(evidence); len(conflicts) != 0 {
+		t.Fatalf("retrieval metadata or unrelated release id became a conflict: %+v", conflicts)
+	}
+
+	versionEvidence := "source=a.md\n内部版本号：XH-2026-09\nsource=b.md\n内部版本号：XH-2026-10"
+	conflicts := DetectEvidenceConflicts(versionEvidence)
+	if len(conflicts) != 1 || conflicts[0].Key != "version" {
+		t.Fatalf("expected explicit version conflict, got %+v", conflicts)
+	}
+}

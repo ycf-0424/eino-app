@@ -17,8 +17,8 @@ type EvidenceConflict struct {
 	Category string   `json:"category"`
 }
 
-var evidenceAssignment = regexp.MustCompile(`(?i)([a-z][a-z0-9_.-]{1,})\s*[:=]\s*([^\s,;，；]+)`)
-var evidenceVersion = regexp.MustCompile(`(?i)\b(?:v?\d+\.\d+(?:\.\d+)?|[A-Z]{1,8}-\d{4}-\d{2})\b`)
+var evidenceAssignment = regexp.MustCompile(`(?i)([a-z][a-z0-9_.-]{1,})\s*[:=：]\s*([^\s,;，；]+)`)
+var evidenceVersionLabel = regexp.MustCompile(`(?i)(?:版本(?:号|信息)?|version)\s*[:=：]?\s*(v?\d+(?:\.\d+){1,2}|[A-Z]{1,8}-\d{4}-\d{2})`)
 var evidenceSource = regexp.MustCompile(`(?i)\bsource=([^\s]+)`)
 
 type evidenceCandidate struct{ value, source string }
@@ -38,7 +38,7 @@ func DetectEvidenceConflicts(evidence string) []EvidenceConflict {
 		versionAssigned := false
 		for _, match := range evidenceAssignment.FindAllStringSubmatch(line, -1) {
 			key, value := strings.ToLower(strings.TrimSpace(match[1])), strings.TrimSpace(match[2])
-			if !conflictKey(key) || value == "" {
+			if !conflictKey(key) || isEvidenceMetadataKey(key) || value == "" {
 				continue
 			}
 			groups["key:"+key] = append(groups["key:"+key], evidenceCandidate{value, source})
@@ -47,7 +47,15 @@ func DetectEvidenceConflicts(evidence string) []EvidenceConflict {
 				versionAssigned = true
 			}
 		}
-		for _, value := range evidenceVersion.FindAllString(line, -1) {
+		// A version-looking token in ordinary prose is not evidence of a
+		// version claim. Only inspect it when the line explicitly labels it as
+		// a version; this avoids treating unrelated release IDs in retrieved
+		// chunks as a conflict for an otherwise unrelated question.
+		for _, match := range evidenceVersionLabel.FindAllStringSubmatch(line, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			value := match[1]
 			if versionAssigned {
 				continue
 			}
@@ -87,6 +95,19 @@ func conflictKey(key string) bool {
 		}
 	}
 	return strings.Contains(key, "_") || strings.Contains(key, ".")
+}
+
+// isEvidenceMetadataKey filters fields emitted by the retrieval formatter.
+// They describe how a chunk was returned, rather than a project fact. In
+// particular, block_type commonly differs between adjacent chunks and must
+// never be presented as a factual contradiction to the user.
+func isEvidenceMetadataKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "source", "title", "title_level", "page", "block_type", "block_types", "score", "retrieval_mode", "distance", "rank":
+		return true
+	default:
+		return false
+	}
 }
 
 func uniqueCandidates(items []evidenceCandidate) ([]string, []string) {
