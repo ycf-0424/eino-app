@@ -65,6 +65,20 @@ func TestDecideDoesNotTreatGenericTechnologyQuestionsAsProjectFacts(t *testing.T
 	}
 }
 
+func TestDecideIndustryStandardQuestionsUseKnowledge(t *testing.T) {
+	for _, query := range []string{
+		"家居物品设计规范有哪些要求？",
+		"定制家具的设计原则是什么？",
+		"GB/T 51301 的设计交付要求是什么？",
+		"家居产品信息模型包括哪些内容？",
+	} {
+		decision := Decide(query)
+		if !decision.PreloadKnowledge || decision.Source != SourceServer || decision.Reason != ReasonKnowledgePreflight {
+			t.Fatalf("query=%q unexpected industry-standard route: %+v", query, decision)
+		}
+	}
+}
+
 func TestKnowledgeSearchQueryAddsProjectContextForTechnologyStack(t *testing.T) {
 	got := KnowledgeSearchQuery("你涉及到的技术栈有哪些？")
 	for _, want := range []string{"星河系统", "项目", "技术栈", "你涉及到的技术栈有哪些？"} {
