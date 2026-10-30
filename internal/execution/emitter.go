@@ -19,6 +19,15 @@ type Emitter interface {
 	Emit(Event)
 }
 
+// ScopedEmitter associates future events with a durable turn/step/attempt.
+type ScopedEmitter interface {
+	SetScope(turnID, stepID, attemptID string)
+	// Scope returns the current durable identifiers so concurrent middleware
+	// operations can put their own step/attempt IDs directly on events without
+	// mutating the session-wide default scope.
+	Scope() (turnID, stepID, attemptID string)
+}
+
 // Sink 是事件的实时出口（WebSocket 队列、HTTP 内存记录器或自定义消费者）。
 type Sink interface {
 	Push(Event)
@@ -26,10 +35,12 @@ type Sink interface {
 
 type nopEmitter struct{}
 
-func (nopEmitter) RunID() string       { return "" }
-func (nopEmitter) SessionID() string   { return "" }
-func (nopEmitter) NextSequence() int64 { return 0 }
-func (nopEmitter) Emit(Event)          {}
+func (nopEmitter) RunID() string                   { return "" }
+func (nopEmitter) SessionID() string               { return "" }
+func (nopEmitter) NextSequence() int64             { return 0 }
+func (nopEmitter) Emit(Event)                      {}
+func (nopEmitter) SetScope(string, string, string) {}
+func (nopEmitter) Scope() (string, string, string) { return "", "", "" }
 
 // Nop 返回一个什么都不做的发射器：开关关闭或控制台模式下使用。
 // FromContext 永不返回 nil，因此调用方无需判空。
@@ -39,6 +50,10 @@ type Session struct {
 	runID     string
 	sessionID string
 	seq       atomic.Int64
+	turnID    string
+	stepID    string
+	attemptID string
+	scopeMu   sync.RWMutex
 	sink      Sink
 	store     Store
 
@@ -89,6 +104,24 @@ func NewSession(runID, sessionID string, store Store, sink Sink, options Session
 func (s *Session) RunID() string     { return s.runID }
 func (s *Session) SessionID() string { return s.sessionID }
 
+func (s *Session) SetScope(turnID, stepID, attemptID string) {
+	if s == nil {
+		return
+	}
+	s.scopeMu.Lock()
+	defer s.scopeMu.Unlock()
+	s.turnID, s.stepID, s.attemptID = turnID, stepID, attemptID
+}
+
+func (s *Session) Scope() (string, string, string) {
+	if s == nil {
+		return "", "", ""
+	}
+	s.scopeMu.RLock()
+	defer s.scopeMu.RUnlock()
+	return s.turnID, s.stepID, s.attemptID
+}
+
 // NextSequence 返回下一个 run 内唯一的序号，正文和事件共用。
 func (s *Session) NextSequence() int64 { return s.seq.Add(1) }
 
@@ -109,15 +142,26 @@ func (s *Session) Emit(ev Event) {
 	if s.store == nil || s.persist == nil {
 		return
 	}
-	if s.emitted.Add(1) > s.limit {
-		// 超过单 run 上限后停止入库，但实时进度不受影响。
+	if s.emitted.Add(1) > s.limit && !durableEvent(ev.Type) {
+		// 超过单 run 上限后停止入库，但实时进度不受影响；关键状态
+		// 事件仍需落库以保证恢复判断正确。
 		return
 	}
 	select {
 	case s.persist <- ev:
 	default:
-		// 入库队列已满时丢弃中间事件，保证不阻塞调用方。
+		// 入库队列已满时仍保留状态机关键事件. Dropping an approval or
+		// terminal event would make a restart choose the wrong recovery path.
+		if durableEvent(ev.Type) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = s.store.AppendEvents(ctx, s.runID, []Event{ev})
+			cancel()
+		}
 	}
+}
+
+func durableEvent(t Type) bool {
+	return t == RunStarted || t == RunContext || t == ApprovalRequired || t.Terminal()
 }
 
 // prepare 补齐信封中缺失的字段，并保证 sequence 单调。
@@ -137,6 +181,17 @@ func (s *Session) prepare(ev *Event) {
 	if ev.SessionID == "" {
 		ev.SessionID = s.sessionID
 	}
+	s.scopeMu.RLock()
+	if ev.TurnID == "" {
+		ev.TurnID = s.turnID
+	}
+	if ev.StepID == "" {
+		ev.StepID = s.stepID
+	}
+	if ev.AttemptID == "" {
+		ev.AttemptID = s.attemptID
+	}
+	s.scopeMu.RUnlock()
 	if ev.OccurredAt.IsZero() {
 		ev.OccurredAt = time.Now().UTC()
 	}
@@ -164,15 +219,15 @@ func (s *Session) Finish(status, errorCode string) {
 	}
 	switch status {
 	case StatusCompleted:
-		s.Emit(Event{Type: RunCompleted})
+		s.Emit(Event{Type: RunCompleted, Payload: map[string]any{"stop_reason": "completed"}})
 	case StatusCancelled:
-		payload := map[string]any{}
+		payload := map[string]any{"stop_reason": "cancelled"}
 		if errorCode != "" {
 			payload["reason"] = errorCode
 		}
 		s.Emit(Event{Type: RunCancelled, Payload: payload})
 	case StatusFailed:
-		payload := map[string]any{}
+		payload := map[string]any{"stop_reason": "failed"}
 		if errorCode != "" {
 			payload["error_code"] = errorCode
 		}
@@ -253,6 +308,40 @@ func (r *Recorder) Events() []Event {
 }
 
 type emitterKey struct{}
+
+type modelMetadataKey struct{}
+
+// WithModelMetadata carries prompt identity into the model adapter. Values
+// are hashes and structural summaries only, so retry events can be persisted
+// without copying prompt or private knowledge bodies.
+func WithModelMetadata(ctx context.Context, metadata map[string]any) context.Context {
+	if len(metadata) == 0 {
+		return ctx
+	}
+	copyMeta := ModelMetadata(ctx)
+	if copyMeta == nil {
+		copyMeta = make(map[string]any, len(metadata))
+	}
+	for k, v := range metadata {
+		copyMeta[k] = v
+	}
+	return context.WithValue(ctx, modelMetadataKey{}, copyMeta)
+}
+
+func ModelMetadata(ctx context.Context) map[string]any {
+	if ctx == nil {
+		return nil
+	}
+	meta, _ := ctx.Value(modelMetadataKey{}).(map[string]any)
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(meta))
+	for k, v := range meta {
+		out[k] = v
+	}
+	return out
+}
 
 // WithEmitter 把发射器挂到 context 上，供中间件和 Agent 读取。
 func WithEmitter(ctx context.Context, em Emitter) context.Context {

@@ -243,6 +243,7 @@ func (s *Service) Handler() http.Handler {
 	mux.Handle("GET /sessions/{id}/execution", s.protected(http.HandlerFunc(s.handleExecution)))
 	mux.Handle("DELETE /sessions/{id}", s.protected(http.HandlerFunc(s.handleDeleteSession)))
 	mux.Handle("POST /sessions/{id}/approval", s.protected(http.HandlerFunc(s.handleApproval)))
+	mux.Handle("POST /sessions/{id}/resume", s.protected(http.HandlerFunc(s.handleResumeInterrupted)))
 	// WebSocket 认证只能靠 Cookie（浏览器无法自定义 Header）；
 	// 中间件包在 mux 内部，最外层的超时豁免不受影响。
 	mux.Handle("GET /ws", s.protected(s.throttle(http.HandlerFunc(s.handleWebSocket))))
@@ -480,6 +481,27 @@ func (s *Service) handleApproval(w http.ResponseWriter, r *http.Request) {
 		result.Events = nil
 	}
 	writeJSON(w, 200, response{Data: result})
+}
+
+func (s *Service) handleResumeInterrupted(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.checkSessionOwner(r.Context(), id); err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	var output bytes.Buffer
+	recorder := execution.NewRecorder(s.execCfg.MaxEventsPerRun)
+	result, err := s.ResumeInterruptedWithSink(r.Context(), id, &output, recorder)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, response{Error: err.Error()})
+		return
+	}
+	result.Answer = strings.TrimSpace(output.String())
+	result.Events = execution.WithoutChunks(recorder.Events())
+	if len(result.Events) == 0 {
+		result.Events = nil
+	}
+	writeJSON(w, http.StatusOK, response{Data: result})
 }
 
 // handleSessions 只返回当前登录用户的会话；owner 来自认证中间件注入的 context。

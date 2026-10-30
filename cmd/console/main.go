@@ -99,9 +99,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "rag:", ragErr)
 			os.Exit(1)
 		}
-		extraTools = append(extraTools, toolset.NewKnowledgeToolWithOptions(knowledgeStore, rag.SearchOptions{
-			TopK: cfg.RAG.TopK, ScoreThreshold: cfg.RAG.ScoreThreshold, MaxContextChars: cfg.RAG.MaxContextChars,
-		}))
+		searchOptions := rag.SearchOptions{TopK: cfg.RAG.TopK, ScoreThreshold: cfg.RAG.ScoreThreshold, MaxContextChars: cfg.RAG.MaxContextChars, Hybrid: cfg.RAG.HybridSearch}
+		if cfg.RAG.Reranker.Enabled {
+			searchOptions.Reranker = rag.LexicalReranker{}
+		}
+		extraTools = append(extraTools, toolset.NewKnowledgeToolWithOptions(knowledgeStore, searchOptions))
 	}
 	var ragChain *chain.RAGChain
 	if *mode == "rag-chain" {
@@ -114,6 +116,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "new rag chain:", err)
 			os.Exit(1)
 		}
+		searchOptions := rag.SearchOptions{Hybrid: cfg.RAG.HybridSearch}
+		if cfg.RAG.Reranker.Enabled {
+			searchOptions.Reranker = rag.LexicalReranker{}
+		}
+		ragChain.SetSearchOptions(searchOptions)
 	}
 	checkpointStore, err := checkpoint.New(cfg.Agent.CheckpointDir)
 	if err != nil {
@@ -130,7 +137,7 @@ func main() {
 		os.Exit(1)
 	}
 	extraTools = append(extraTools, skillTool)
-	chat, err := agent.NewWithInstruction(ctx, cm, cfg.Debug, cfg.Agent.MultiAgent, checkpointStore, skillInstruction, extraTools...)
+	chat, err := agent.NewWithInstructionProfile(ctx, cm, cfg.Debug, cfg.Agent.MultiAgent, checkpointStore, skillInstruction, cfg.Prompt.Profile, extraTools...)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "new agent:", err)
 		os.Exit(1)
@@ -188,6 +195,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "load pending approval:", pendingErr)
 		os.Exit(1)
 	} else if pending != nil {
+		chat.RestoreTurn(pending.TurnID)
+		meta := chat.PromptMetadata()
+		if pending.PromptVersion != "" && (meta["version"] != pending.PromptVersion || meta["hash"] != pending.PromptHash || meta["tool_set_hash"] != pending.ToolSetHash) {
+			fmt.Fprintln(os.Stderr, "resume approval: checkpoint capability changed; refusing unsafe resume")
+			os.Exit(1)
+		}
 		request := &agent.ApprovalRequest{TargetID: pending.TargetID, ToolName: pending.ToolName, Arguments: pending.Arguments}
 		if err := resumeWithApproval(ctx, chat, checkpointStore, *sessionID, approvalScanner, request); err != nil {
 			fmt.Fprintln(os.Stderr, "resume approval:", err)
@@ -330,7 +343,9 @@ func runWithApproval(ctx context.Context, chat *agent.ChatAgent, store *checkpoi
 		if !errors.As(err, &approval) {
 			return err
 		}
-		if saveErr := store.SaveApproval(sessionID, checkpoint.PendingApproval{TargetID: approval.TargetID, ToolName: approval.ToolName, Arguments: approval.Arguments}); saveErr != nil {
+		turnID, stepID, attemptID := chat.RuntimeScope()
+		meta := chat.PromptMetadata()
+		if saveErr := store.SaveApproval(sessionID, checkpoint.PendingApproval{TargetID: approval.TargetID, ToolName: approval.ToolName, Arguments: approval.Arguments, TurnID: turnID, StepID: stepID, AttemptID: attemptID, PromptVersion: meta["version"], PromptHash: meta["hash"], ToolSetHash: meta["tool_set_hash"]}); saveErr != nil {
 			return saveErr
 		}
 		err = resumeWithApproval(ctx, chat, store, sessionID, scanner, approval)
@@ -350,7 +365,9 @@ func resumeWithApproval(ctx context.Context, chat *agent.ChatAgent, store *check
 	}
 	var next *agent.ApprovalRequest
 	if errors.As(err, &next) {
-		if saveErr := store.SaveApproval(sessionID, checkpoint.PendingApproval{TargetID: next.TargetID, ToolName: next.ToolName, Arguments: next.Arguments}); saveErr != nil {
+		turnID, stepID, attemptID := chat.RuntimeScope()
+		meta := chat.PromptMetadata()
+		if saveErr := store.SaveApproval(sessionID, checkpoint.PendingApproval{TargetID: next.TargetID, ToolName: next.ToolName, Arguments: next.Arguments, TurnID: turnID, StepID: stepID, AttemptID: attemptID, PromptVersion: meta["version"], PromptHash: meta["hash"], ToolSetHash: meta["tool_set_hash"]}); saveErr != nil {
 			return saveErr
 		}
 		return resumeWithApproval(ctx, chat, store, sessionID, scanner, next)

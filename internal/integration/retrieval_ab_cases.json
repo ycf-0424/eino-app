@@ -1,0 +1,5 @@
+[
+  {"query":"星河系统使用什么技术栈？","must_cite":["milvus-validation.md"]},
+  {"query":"星河系统的内部版本号是什么？","must_cite":["milvus-validation.md"]},
+  {"query":"项目配置中的模型名称是什么？","must_cite":["config.yaml"]}
+]

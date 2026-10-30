@@ -32,12 +32,12 @@ func TestPendingApprovalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := PendingApproval{TargetID: "tool:1", ToolName: "write_note", Arguments: `{}`}
+	want := PendingApproval{TargetID: "tool:1", ToolName: "write_note", Arguments: `{}`, TurnID: "turn-1", StepID: "step-1", AttemptID: "attempt-1", PromptHash: "abc", ToolSetHash: "def", ExcludedTools: []string{"knowledge_search"}}
 	if err := s.SaveApproval("run-1", want); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.LoadApproval("run-1")
-	if err != nil || got == nil || got.TargetID != want.TargetID {
+	if err != nil || got == nil || got.TargetID != want.TargetID || got.TurnID != want.TurnID || got.PromptHash != want.PromptHash || len(got.ExcludedTools) != 1 {
 		t.Fatalf("LoadApproval = %#v, %v", got, err)
 	}
 	if err := s.ClearApproval("run-1"); err != nil {

@@ -204,9 +204,15 @@ func (m *MemoryStore) RecoverStale(_ context.Context, olderThan time.Duration) (
 		if run.Status != StatusRunning || run.StartedAt.After(cutoff) {
 			continue
 		}
+		recovery := InspectRecovery(m.events[run.RunID])
+		if recovery.PendingApproval {
+			continue
+		}
 		now := time.Now().UTC()
 		run.Status = StatusFailed
 		run.FinishedAt = &now
+		sequence := int64(len(m.events[run.RunID]) + 1)
+		m.events[run.RunID] = append(m.events[run.RunID], Event{Version: Version, EventID: newEventID(), RunID: run.RunID, SessionID: run.SessionID, Sequence: sequence, OccurredAt: now, Type: RunFailed, Payload: map[string]any{"error_code": "interrupted", "stop_reason": "interrupted"}})
 		count++
 	}
 	return count, nil

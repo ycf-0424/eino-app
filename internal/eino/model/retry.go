@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -12,6 +13,8 @@ import (
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
+	"my-eino-app/internal/execution"
 )
 
 // RetryConfig 是模型层实际使用的重试参数。
@@ -32,6 +35,41 @@ type RetryChatModel struct {
 	config RetryConfig
 }
 
+// MetadataChatModel attaches role/prompt identity to every provider request
+// made by one Agent role. It survives WithTools, which Eino invokes when
+// constructing tool-capable model nodes.
+type MetadataChatModel struct {
+	inner    einomodel.ToolCallingChatModel
+	metadata map[string]any
+}
+
+func WithRequestMetadata(inner einomodel.ToolCallingChatModel, metadata map[string]any) einomodel.ToolCallingChatModel {
+	if inner == nil || len(metadata) == 0 {
+		return inner
+	}
+	copyMeta := make(map[string]any, len(metadata))
+	for k, v := range metadata {
+		copyMeta[k] = v
+	}
+	return &MetadataChatModel{inner: inner, metadata: copyMeta}
+}
+
+func (m *MetadataChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
+	return m.inner.Generate(execution.WithModelMetadata(ctx, m.metadata), input, opts...)
+}
+
+func (m *MetadataChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	return m.inner.Stream(execution.WithModelMetadata(ctx, m.metadata), input, opts...)
+}
+
+func (m *MetadataChatModel) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
+	inner, err := m.inner.WithTools(tools)
+	if err != nil {
+		return nil, err
+	}
+	return WithRequestMetadata(inner, m.metadata), nil
+}
+
 // NewRetryChatModel 创建带重试能力的 ChatModel 包装器。
 func NewRetryChatModel(inner einomodel.ToolCallingChatModel, config RetryConfig) einomodel.ToolCallingChatModel {
 	return &RetryChatModel{inner: inner, config: config}
@@ -43,9 +81,31 @@ func NewRetryChatModel(inner einomodel.ToolCallingChatModel, config RetryConfig)
 // 真正的请求仍由 inner.Generate 执行，RetryChatModel 只负责增加重试能力。
 func (m *RetryChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
 	var result *schema.Message
+	attempt := 0
 	err := retry(ctx, m.config, func() error {
+		attempt++
+		em := execution.FromContext(ctx)
+		turnID, stepID, _ := modelScope(em)
+		attemptID := uuid.NewString()
+		requestPayload := modelMetadata(ctx)
+		requestPayload["operation"] = "generate"
+		requestPayload["attempt"] = attempt
+		requestPayload["input_digest"] = messageDigest(input)
+		requestPayload["model_request"] = map[string]any{"operation": "generate", "attempt": attempt, "input_digest": requestPayload["input_digest"]}
+		em.Emit(execution.Event{TurnID: turnID, StepID: stepID, AttemptID: attemptID, Type: execution.ModelRequest, Payload: requestPayload})
 		var err error
 		result, err = m.inner.Generate(ctx, input, opts...)
+		payload := modelMetadata(ctx)
+		payload["operation"] = "generate"
+		payload["attempt"] = attempt
+		payload["model_request"] = map[string]any{"operation": "generate", "attempt": attempt}
+		if result != nil && result.ResponseMeta != nil {
+			payload["finish_reason"] = result.ResponseMeta.FinishReason
+		}
+		if err != nil {
+			payload["error"] = execution.DigestArgs(err.Error())
+		}
+		em.Emit(execution.Event{TurnID: turnID, StepID: stepID, AttemptID: attemptID, Type: execution.ModelCompleted, Payload: payload})
 		return err
 	})
 	return result, err
@@ -58,12 +118,57 @@ func (m *RetryChatModel) Generate(ctx context.Context, input []*schema.Message, 
 // 以避免已经输出的回答被重复打印。
 func (m *RetryChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
 	var stream *schema.StreamReader[*schema.Message]
+	attempt := 0
 	err := retry(ctx, m.config, func() error {
+		attempt++
+		em := execution.FromContext(ctx)
+		turnID, stepID, _ := modelScope(em)
+		attemptID := uuid.NewString()
+		requestPayload := modelMetadata(ctx)
+		requestPayload["operation"] = "stream"
+		requestPayload["attempt"] = attempt
+		requestPayload["input_digest"] = messageDigest(input)
+		requestPayload["model_request"] = map[string]any{"operation": "stream", "attempt": attempt, "input_digest": requestPayload["input_digest"]}
+		em.Emit(execution.Event{TurnID: turnID, StepID: stepID, AttemptID: attemptID, Type: execution.ModelRequest, Payload: requestPayload})
 		var err error
 		stream, err = m.inner.Stream(ctx, input, opts...)
+		if err != nil {
+			payload := modelMetadata(ctx)
+			payload["operation"] = "stream"
+			payload["attempt"] = attempt
+			payload["model_request"] = map[string]any{"operation": "stream", "attempt": attempt}
+			payload["error"] = execution.DigestArgs(err.Error())
+			em.Emit(execution.Event{TurnID: turnID, StepID: stepID, AttemptID: attemptID, Type: execution.ModelCompleted, Payload: payload})
+		}
 		return err
 	})
 	return stream, err
+}
+
+func messageDigest(messages []*schema.Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(messages)
+	if err != nil {
+		return ""
+	}
+	return execution.DigestArgs(string(data))
+}
+
+func modelMetadata(ctx context.Context) map[string]any {
+	metadata := execution.ModelMetadata(ctx)
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	return metadata
+}
+
+func modelScope(em execution.Emitter) (turnID, stepID, attemptID string) {
+	if scoped, ok := em.(execution.ScopedEmitter); ok {
+		return scoped.Scope()
+	}
+	return "", "", ""
 }
 
 // WithTools 为底层模型绑定工具，并返回一个新的带重试能力的模型包装器。

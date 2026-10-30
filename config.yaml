@@ -113,6 +113,8 @@ skill_tools:
 
 # P8 实时执行进度与执行记录；默认关闭，关闭时行为与 P7 完全一致。
 # 关闭状态下不采集、不传输、不落库，可在出现问题时不改代码直接回滚。
+prompt:
+  profile: legacy
 execution_events:
   enabled: true
   queue_size: 256          # WebSocket 出站队列容量；满时中间事件可丢，终态必须送达
@@ -230,6 +232,14 @@ retry:
 rag:
   enabled: true                     # 已启用 RAG，当前使用本地 Milvus
   store: "milvus"                 # 可选 redis 或 milvus
+  hybrid_search: true              # 向量分数与关键词重合度联合排序
+  reranker:
+    enabled: true                  # 使用无外部依赖的本地词项二次排序基线
+    provider: "lexical"
+  citation_guard:
+    enabled: true                  # 记录回答与检索证据的覆盖校验事件
+    enforce: true                  # 校验失败时明确降级回答，避免无依据结论被当作事实
+    min_coverage: 0.08
   document_dir: "docs/knowledge"
   chunk_size: 800
   chunk_overlap: 120

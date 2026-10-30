@@ -31,10 +31,23 @@ type FileStore struct {
 // PendingApproval 是跨进程恢复审批所需的最小元数据；执行状态本身保存在 checkpoint 中。
 // RunID 用于审批恢复时续用同一次执行记录；旧文件缺少该字段时视为空，会另起一个新 run。
 type PendingApproval struct {
-	TargetID  string `json:"target_id"`
-	ToolName  string `json:"tool_name"`
-	Arguments string `json:"arguments"`
-	RunID     string `json:"run_id,omitempty"`
+	TargetID      string   `json:"target_id"`
+	ToolName      string   `json:"tool_name"`
+	Arguments     string   `json:"arguments"`
+	RunID         string   `json:"run_id,omitempty"`
+	TurnID        string   `json:"turn_id,omitempty"`
+	StepID        string   `json:"step_id,omitempty"`
+	AttemptID     string   `json:"attempt_id,omitempty"`
+	SkillName     string   `json:"skill_name,omitempty"`
+	PreloadSkills []string `json:"preload_skills,omitempty"`
+	ExcludedTools []string `json:"excluded_tools,omitempty"`
+	IncludeMemory bool     `json:"include_memory,omitempty"`
+	PromptVersion string   `json:"prompt_version,omitempty"`
+	PromptHash    string   `json:"prompt_hash,omitempty"`
+	ToolSetHash   string   `json:"tool_set_hash,omitempty"`
+	ModelID       string   `json:"model_id,omitempty"`
+	Automatic     bool     `json:"automatic,omitempty"`
+	SingleModel   bool     `json:"single_model,omitempty"`
 }
 
 // New 函数。

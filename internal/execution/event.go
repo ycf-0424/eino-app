@@ -23,8 +23,25 @@ type Type string
 const (
 	// RunStarted 在一轮请求建立执行上下文后立即发出，早于模型首字。
 	RunStarted Type = "run_started"
+	// RunContext records the safe reconstruction inputs for a checkpoint.
+	RunContext Type = "run_context"
 	// ModelWaiting 在真正调用模型之前发出，用于区分「等待模型」和「等待工具」。
 	ModelWaiting Type = "model_waiting"
+	// ModelRequest records one concrete model request attempt. The payload is
+	// metadata only; prompt and private context bodies are never persisted.
+	ModelRequest Type = "model_request"
+	// ModelCompleted records the provider stop reason for one model response.
+	ModelCompleted Type = "model_completed"
+	// PromptAssembled records the model-facing prompt identity without storing
+	// prompt or private context contents in the execution log.
+	PromptAssembled Type = "prompt_assembled"
+	// MemoryRetrieved records whether the automatic long-term memory context
+	// contributed evidence to the model request. It never contains memory text.
+	MemoryRetrieved Type = "memory_retrieved"
+	// CitationChecked records the server-side evidence/citation check.
+	CitationChecked Type = "citation_checked"
+	// EvidenceConflict records a compact summary when retrieved sources disagree.
+	EvidenceConflict Type = "evidence_conflict"
 	// ModelRouted 表示自动路由已经选定本轮最终回答模型。
 	ModelRouted Type = "model_routed"
 	// ModelFallback 表示最终回答模型在首个有效输出前发生故障，已切换到备用模型。
@@ -63,7 +80,7 @@ const (
 const Version = 1
 
 var knownTypes = map[Type]bool{
-	RunStarted: true, ModelWaiting: true, ModelRouted: true, ModelFallback: true, IntentClassified: true,
+	RunStarted: true, RunContext: true, ModelWaiting: true, ModelRequest: true, ModelCompleted: true, PromptAssembled: true, MemoryRetrieved: true, CitationChecked: true, EvidenceConflict: true, ModelRouted: true, ModelFallback: true, IntentClassified: true,
 	DataQueryStarted: true, DataQueryCompleted: true, DataQueryFailed: true, AttachmentProcessed: true,
 	ToolStarted: true, ToolCompleted: true,
 	ToolFailed: true, SkillPreloaded: true, SkillLoaded: true, FileReadDone: true,
@@ -88,6 +105,9 @@ type Event struct {
 	EventID    string         `json:"event_id"`
 	RunID      string         `json:"run_id"`
 	SessionID  string         `json:"session_id,omitempty"`
+	TurnID     string         `json:"turn_id,omitempty"`
+	StepID     string         `json:"step_id,omitempty"`
+	AttemptID  string         `json:"attempt_id,omitempty"`
 	Sequence   int64          `json:"sequence"`
 	OccurredAt time.Time      `json:"occurred_at"`
 	Type       Type           `json:"type"`

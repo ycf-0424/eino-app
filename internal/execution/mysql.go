@@ -229,10 +229,19 @@ func (s *MySQLStore) RecoverStale(ctx context.Context, olderThan time.Duration) 
 		if err != nil {
 			return recovered, err
 		}
+		events, listErr := s.ListEvents(ctx, item.sessionID, item.runID, 0, 0)
+		if listErr != nil {
+			return recovered, listErr
+		}
+		recovery := InspectRecovery(events)
+		if recovery.PendingApproval {
+			continue
+		}
 		ev := Event{
 			Version: Version, EventID: newEventID(), RunID: item.runID, SessionID: item.sessionID,
+			TurnID: recovery.TurnID, StepID: recovery.OpenStepID, AttemptID: recovery.OpenAttemptID,
 			Sequence: max + 1, OccurredAt: time.Now().UTC(), Type: RunFailed,
-			Summary: "运行中断", Payload: map[string]any{"error_code": "interrupted"},
+			Summary: "运行中断", Payload: map[string]any{"error_code": "interrupted", "stop_reason": "interrupted", "recovery_safe": recovery.SafeToRetry},
 		}
 		if err = s.AppendEvents(ctx, item.runID, []Event{ev}); err != nil {
 			return recovered, err

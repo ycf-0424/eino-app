@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -21,6 +22,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
+	modelset "my-eino-app/internal/eino/model"
 	"my-eino-app/internal/eino/observability"
 	"my-eino-app/internal/eino/prompt"
 	toolset "my-eino-app/internal/eino/tool"
@@ -46,10 +48,20 @@ type ChatAgent struct {
 	em    execution.Emitter
 	runID string
 	// reasoning 保存推理模型单独返回的思考内容；它与最终回答分开持久化和传输。
-	reasoning     string
-	debug         bool
-	memoryContext func(context.Context, string) (string, error)
-	preflight     string
+	reasoning      string
+	debug          bool
+	memoryContext  func(context.Context, string) (string, error)
+	preflight      string
+	promptProfile  string
+	promptVersion  string
+	promptHash     string
+	promptRole     prompt.Role
+	toolSetHash    string
+	shadowHash     string
+	turnID         string
+	stepID         string
+	attemptID      string
+	rolePromptMeta map[prompt.Role]map[string]string
 }
 
 func (a *ChatAgent) SetMemoryContext(f func(context.Context, string) (string, error)) {
@@ -59,6 +71,96 @@ func (a *ChatAgent) SetMemoryContext(f func(context.Context, string) (string, er
 // SetPreflightContext injects server-verified context for the current turn.
 // It is kept on the per-request agent, so concurrent sessions cannot share it.
 func (a *ChatAgent) SetPreflightContext(text string) { a.preflight = strings.TrimSpace(text) }
+
+// PromptMetadata exposes the exact prompt identity selected for this agent.
+// The full prompt remains model-internal; only version and hash are suitable
+// for execution audit payloads.
+func (a *ChatAgent) PromptMetadata() map[string]string {
+	meta := map[string]string{"profile": a.promptProfile, "version": a.promptVersion, "hash": a.promptHash, "agent_role": string(a.promptRole), "tool_set_hash": a.toolSetHash}
+	if a.shadowHash != "" {
+		meta["shadow_prompt_hash"] = a.shadowHash
+	}
+	return meta
+}
+
+// RuntimeScope returns the durable identifiers of the current turn and the
+// latest model/tool attempt. It is used when persisting an approval ticket.
+func (a *ChatAgent) RuntimeScope() (turnID, stepID, attemptID string) {
+	return a.turnID, a.stepID, a.attemptID
+}
+
+// RestoreTurn attaches a previously persisted turn to a newly constructed
+// Agent. ResumeApprovalTo creates a fresh step and attempt under this turn.
+func (a *ChatAgent) RestoreTurn(turnID string) {
+	if strings.TrimSpace(turnID) != "" {
+		a.turnID = strings.TrimSpace(turnID)
+	}
+}
+
+func (a *ChatAgent) setScope(turnID, stepID, attemptID string) {
+	a.turnID, a.stepID, a.attemptID = turnID, stepID, attemptID
+	if scoped, ok := a.em.(execution.ScopedEmitter); ok {
+		scoped.SetScope(turnID, stepID, attemptID)
+	}
+}
+
+func (a *ChatAgent) promptAuditPayload(phase string, contextSnapshot prompt.ContextSnapshot, query string) map[string]any {
+	blocks := make([]map[string]any, 0, len(contextSnapshot.Blocks))
+	for _, block := range contextSnapshot.Blocks {
+		blocks = append(blocks, map[string]any{
+			"name": block.Name, "required": block.Required,
+			"hash": prompt.HashText(block.Text), "chars": utf8.RuneCountInString(block.Text),
+		})
+	}
+	payload := map[string]any{
+		"phase":   phase,
+		"profile": a.promptProfile, "prompt_version": a.promptVersion, "prompt_hash": a.promptHash,
+		"agent_role": string(a.promptRole), "tool_set_hash": a.toolSetHash,
+		"model_request": map[string]any{
+			"agent_role": string(a.promptRole), "prompt_version": a.promptVersion,
+			"prompt_hash": a.promptHash, "tool_set_hash": a.toolSetHash,
+			"turn_id": a.turnID, "step_id": a.stepID, "attempt_id": a.attemptID,
+		},
+		"context_snapshot": map[string]any{
+			"hash": contextSnapshot.Hash, "chars": utf8.RuneCountInString(contextSnapshot.Text),
+			"blocks": blocks,
+		},
+		"user_query_hash": prompt.HashText(query),
+	}
+	if a.shadowHash != "" {
+		payload["shadow_prompt_hash"] = a.shadowHash
+	}
+	return payload
+}
+
+func (a *ChatAgent) emitPromptAudits(phase, query string, snapshot prompt.ContextSnapshot) {
+	roles := a.rolePromptMeta
+	if len(roles) == 0 {
+		roles = map[prompt.Role]map[string]string{a.promptRole: {
+			"version": a.promptVersion, "hash": a.promptHash, "tool_set_hash": a.toolSetHash,
+		}}
+	}
+	orderedRoles := make([]prompt.Role, 0, len(roles))
+	for role := range roles {
+		orderedRoles = append(orderedRoles, role)
+	}
+	sort.Slice(orderedRoles, func(i, j int) bool { return orderedRoles[i] < orderedRoles[j] })
+	for _, role := range orderedRoles {
+		meta := roles[role]
+		payload := a.promptAuditPayload(phase, snapshot, query)
+		payload["agent_role"] = string(role)
+		payload["prompt_version"] = meta["version"]
+		payload["prompt_hash"] = meta["hash"]
+		payload["tool_set_hash"] = meta["tool_set_hash"]
+		if request, ok := payload["model_request"].(map[string]any); ok {
+			request["agent_role"] = string(role)
+			request["prompt_version"] = meta["version"]
+			request["prompt_hash"] = meta["hash"]
+			request["tool_set_hash"] = meta["tool_set_hash"]
+		}
+		a.em.Emit(execution.Event{Type: execution.PromptAssembled, Payload: payload})
+	}
+}
 
 // AppendPreflightContext adds another independent server-verified evidence
 // block without allowing later routing rules to erase an earlier block. A
@@ -103,11 +205,17 @@ func New(ctx context.Context, cm einomodel.ToolCallingChatModel, debug, multiAge
 
 // NewWithInstruction 在基础 Prompt 后追加所选 Skill 的业务规则。
 func NewWithInstruction(ctx context.Context, cm einomodel.ToolCallingChatModel, debug, multiAgent bool, checkPointStore adk.CheckPointStore, instruction string, extraTools ...einotool.BaseTool) (*ChatAgent, error) {
+	return NewWithInstructionProfile(ctx, cm, debug, multiAgent, checkPointStore, instruction, prompt.ProfileLegacy, extraTools...)
+}
+
+// NewWithInstructionProfile is the profile-aware constructor used by CLI
+// callers that own the complete tool list.
+func NewWithInstructionProfile(ctx context.Context, cm einomodel.ToolCallingChatModel, debug, multiAgent bool, checkPointStore adk.CheckPointStore, instruction, profile string, extraTools ...einotool.BaseTool) (*ChatAgent, error) {
 	tools, err := ensureWriteNoteTool(ctx, extraTools)
 	if err != nil {
 		return nil, err
 	}
-	return NewWithRoleModels(ctx, RoleModels{Supervisor: cm, Knowledge: cm, Writer: cm}, debug, multiAgent, checkPointStore, instruction, tools...)
+	return NewWithRoleModelsProfile(ctx, RoleModels{Supervisor: cm, Knowledge: cm, Writer: cm}, debug, multiAgent, checkPointStore, instruction, profile, tools...)
 }
 
 func ensureWriteNoteTool(ctx context.Context, tools []einotool.BaseTool) ([]einotool.BaseTool, error) {
@@ -141,29 +249,67 @@ type RoleModels struct {
 	// SingleModel disables the supervisor/sub-agent graph for a confident fast
 	// route. This keeps simple questions to one Qwen call after classification.
 	SingleModel bool
+	// ModelID is the resolved profile used to reconstruct an approval resume.
+	ModelID string
 }
 
 // NewWithRoleModels builds the agent graph with explicit per-role models.
 func NewWithRoleModels(ctx context.Context, models RoleModels, debug, multiAgent bool, checkPointStore adk.CheckPointStore, instruction string, extraTools ...einotool.BaseTool) (*ChatAgent, error) {
+	return NewWithRoleModelsProfile(ctx, models, debug, multiAgent, checkPointStore, instruction, prompt.ProfileLegacy, extraTools...)
+}
+
+// NewWithRoleModelsProfile builds the graph with an explicit prompt profile.
+// The legacy wrapper above preserves callers that have not opted into v2.
+func NewWithRoleModelsProfile(ctx context.Context, models RoleModels, debug, multiAgent bool, checkPointStore adk.CheckPointStore, instruction, profile string, extraTools ...einotool.BaseTool) (*ChatAgent, error) {
+	if strings.TrimSpace(profile) == "" {
+		profile = prompt.ProfileLegacy
+	}
 	tools := []einotool.BaseTool{toolset.NewTimeTool()}
 	tools = append(tools, extraTools...)
-	runtimeInstruction := wrapSkillInstruction(instruction)
-	supervisorInstruction := prompt.SystemInstruction + "\n" + runtimeInstruction
+	toolNames := toolNames(ctx, tools)
+	renderProfile := profile
+	shadowHash := ""
+	if prompt.ResolveProfile(profile) == prompt.ProfileV2Shadow {
+		renderProfile = prompt.ProfileLegacy
+	}
+	supervisorInstruction, promptVersion, promptHash := prompt.RenderRole(prompt.RoleSupervisor, renderProfile, instruction, toolNames, models.Automatic)
+	rolePromptMeta := map[prompt.Role]map[string]string{
+		prompt.RoleSupervisor: {"version": promptVersion, "hash": promptHash, "tool_set_hash": prompt.ToolSetHash(ctx, tools)},
+	}
+	if prompt.ResolveProfile(profile) == prompt.ProfileV2Shadow {
+		_, _, shadowHash = prompt.RenderRole(prompt.RoleSupervisor, prompt.ProfileV2, instruction, toolNames, models.Automatic)
+	}
 	if models.Automatic {
-		supervisorInstruction += `
-
-<model_routing>
-服务端已经先用 Qwen 9B 完成本轮难度分类，并为本轮绑定了最终模型。不要再次选择模型，也不要为了形式而重复委派。
-简单问答直接回答；涉及私有资料先委派 knowledge-agent；复杂分析、长文组织、方案比较或取得检索结果后需要成稿时，才委派 writer-agent 输出最终答案。
-</model_routing>`
+		// RenderRole includes automatic routing guidance for the supervisor.
+	}
+	models.Supervisor = modelset.WithRequestMetadata(models.Supervisor, map[string]any{
+		"agent_role": string(prompt.RoleSupervisor), "prompt_version": promptVersion,
+		"prompt_hash": promptHash, "tool_set_hash": rolePromptMeta[prompt.RoleSupervisor]["tool_set_hash"],
+	})
+	if multiAgent {
+		models.Knowledge = modelset.WithRequestMetadata(models.Knowledge, map[string]any{
+			"agent_role": string(prompt.RoleKnowledge), "prompt_version": rolePromptMeta[prompt.RoleKnowledge]["version"],
+			"prompt_hash": rolePromptMeta[prompt.RoleKnowledge]["hash"], "tool_set_hash": rolePromptMeta[prompt.RoleKnowledge]["tool_set_hash"],
+		})
+		models.Writer = modelset.WithRequestMetadata(models.Writer, map[string]any{
+			"agent_role": string(prompt.RoleWriter), "prompt_version": rolePromptMeta[prompt.RoleWriter]["version"],
+			"prompt_hash": rolePromptMeta[prompt.RoleWriter]["hash"], "tool_set_hash": rolePromptMeta[prompt.RoleWriter]["tool_set_hash"],
+		})
 	}
 	promptReserveTokens := estimatePromptTokens(ctx, supervisorInstruction, tools)
 	if multiAgent {
+		knowledgeToolsForRole := knowledgeTools(extraTools)
+		writerToolsForRole := skillReadTools(extraTools)
+		knowledgeInstruction, knowledgeVersion, knowledgeHash := prompt.RenderRole(prompt.RoleKnowledge, renderProfile, instruction, toolNamesFor(ctx, knowledgeToolsForRole), models.Automatic)
+		writerInstruction, writerVersion, writerHash := prompt.RenderRole(prompt.RoleWriter, renderProfile, instruction, toolNamesFor(ctx, writerToolsForRole), models.Automatic)
+		rolePromptMeta[prompt.RoleKnowledge] = map[string]string{"version": knowledgeVersion, "hash": knowledgeHash, "tool_set_hash": prompt.ToolSetHash(ctx, knowledgeToolsForRole)}
+		rolePromptMeta[prompt.RoleWriter] = map[string]string{"version": writerVersion, "hash": writerHash, "tool_set_hash": prompt.ToolSetHash(ctx, writerToolsForRole)}
 		promptReserveTokens = max(
 			promptReserveTokens,
-			estimatePromptTokens(ctx, prompt.KnowledgeAgentInstruction+"\n"+runtimeInstruction, knowledgeTools(extraTools)),
-			estimatePromptTokens(ctx, prompt.WriterAgentInstruction+"\n"+runtimeInstruction, skillReadTools(extraTools)),
+			estimatePromptTokens(ctx, knowledgeInstruction, knowledgeTools(extraTools)),
+			estimatePromptTokens(ctx, writerInstruction, skillReadTools(extraTools)),
 		)
+		// The concrete instructions are reused below after token accounting.
 	}
 	a, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:        "xinghe-system-assistant",
@@ -182,10 +328,11 @@ func NewWithRoleModels(ctx context.Context, models RoleModels, debug, multiAgent
 	}
 	var root adk.Agent = a
 	if multiAgent {
+		knowledgeInstruction, _, _ := prompt.RenderRole(prompt.RoleKnowledge, renderProfile, instruction, toolNamesFor(ctx, knowledgeTools(extraTools)), models.Automatic)
 		// knowledge-agent 专注检索事实，避免主 Agent 同时承担检索和写作职责。
 		knowledgeAgent, subErr := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 			Name: "knowledge-agent", Description: "Searches private knowledge and returns grounded facts.",
-			Instruction: prompt.KnowledgeAgentInstruction + "\n" + runtimeInstruction,
+			Instruction: knowledgeInstruction,
 			Model:       models.Knowledge,
 			// 子 Agent 也必须挂同一中间件，否则它会绕过执行事件采集。
 			ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -197,9 +344,10 @@ func NewWithRoleModels(ctx context.Context, models RoleModels, debug, multiAgent
 		if subErr != nil {
 			return nil, fmt.Errorf("new knowledge agent: %w", subErr)
 		}
+		writerInstruction, _, _ := prompt.RenderRole(prompt.RoleWriter, renderProfile, instruction, toolNamesFor(ctx, skillReadTools(extraTools)), models.Automatic)
 		writerAgent, subErr := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 			Name: "writer-agent", Description: "Organizes facts into a clear final answer.",
-			Instruction: prompt.WriterAgentInstruction + "\n" + runtimeInstruction, Model: models.Writer,
+			Instruction: writerInstruction, Model: models.Writer,
 			ToolsConfig: adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{
 				Tools:               skillReadTools(extraTools),
 				UnknownToolsHandler: unknownToolHint(skillReadTools(extraTools)),
@@ -227,7 +375,28 @@ func NewWithRoleModels(ctx context.Context, models RoleModels, debug, multiAgent
 		debug:               debug,
 		em:                  execution.Nop(),
 		promptReserveTokens: promptReserveTokens,
+		promptProfile:       profile,
+		promptVersion:       promptVersion,
+		promptHash:          promptHash,
+		promptRole:          prompt.RoleSupervisor,
+		toolSetHash:         prompt.ToolSetHash(ctx, tools),
+		shadowHash:          shadowHash,
+		rolePromptMeta:      rolePromptMeta,
 	}, nil
+}
+
+func toolNames(ctx context.Context, tools []einotool.BaseTool) []string {
+	return toolNamesFor(ctx, tools)
+}
+
+func toolNamesFor(ctx context.Context, tools []einotool.BaseTool) []string {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if info, err := t.Info(ctx); err == nil && info != nil {
+			names = append(names, info.Name)
+		}
+	}
+	return names
 }
 
 func estimatePromptTokens(ctx context.Context, instruction string, tools []einotool.BaseTool) int {
@@ -385,6 +554,16 @@ func (a *ChatAgent) finishReply(answer string, approval *ApprovalRequest, runErr
 
 // beginReply 在调用模型前持久化助手占位消息，可识别异常退出留下的生成中状态。
 func (a *ChatAgent) beginReply() error {
+	if len(a.history) > 0 {
+		last := a.history[len(a.history)-1]
+		if last != nil && last.Role == schema.Assistant && storageStatus(last) == "generating" {
+			if last.Extra == nil {
+				last.Extra = map[string]any{}
+			}
+			last.Extra["run_id"] = a.runID
+			return a.saveHistory()
+		}
+	}
 	message := schema.AssistantMessage("", nil)
 	extra := map[string]any{"storage_status": "generating", "storage_turn": uuid.NewString()}
 	// 记录 run_id，刷新后前端可据此把执行记录挂回正确的助手消息。
@@ -394,6 +573,14 @@ func (a *ChatAgent) beginReply() error {
 	message.Extra = extra
 	a.history = append(a.history, message)
 	return a.saveHistory()
+}
+
+func storageStatus(message *schema.Message) string {
+	if message == nil || message.Extra == nil {
+		return ""
+	}
+	status, _ := message.Extra["storage_status"].(string)
+	return status
 }
 
 // SetSessionID 同时用作 Runner 的 checkpoint ID。
@@ -420,7 +607,9 @@ func (a *ChatAgent) AskTo(ctx context.Context, query string, writer io.Writer) e
 	previousLength := len(a.history)
 	// Runner 每次需要完整历史；ChatAgent 对外隐藏这部分管理细节。
 	userMessage := schema.UserMessage(query)
-	userMessage.Extra = map[string]any{"memory_turn": uuid.NewString()}
+	turnID := uuid.NewString()
+	userMessage.Extra = map[string]any{"memory_turn": turnID}
+	a.setScope(turnID, uuid.NewString(), uuid.NewString())
 	a.history = append(a.history, userMessage)
 	options := []adk.AgentRunOption{}
 	if a.sessionID != "" {
@@ -435,15 +624,33 @@ func (a *ChatAgent) AskTo(ctx context.Context, query string, writer io.Writer) e
 			a.history = a.history[:previousLength]
 			return fmt.Errorf("load memory: %w", err)
 		}
-		memoryMessage = schema.SystemMessage(text)
+		memoryHit := memoryContextHasFacts(text)
+		memoryPayload := map[string]any{
+			"source_type":  "long_term_memory",
+			"hit":          memoryHit,
+			"hit_count":    memoryContextFactCount(text),
+			"context_hash": prompt.HashText(text),
+		}
+		a.em.Emit(execution.Event{Type: execution.MemoryRetrieved, Payload: memoryPayload})
+		if wrapped := prompt.WrapMemoryContext(text); wrapped != "" {
+			memoryMessage = schema.SystemMessage(wrapped)
+		}
 	}
 	var prefix []*schema.Message
+	var contextBlocks []prompt.ContextBlock
 	if a.preflight != "" {
-		prefix = append(prefix, schema.SystemMessage(a.preflight))
+		wrapped := prompt.WrapRuntimeContext(a.preflight)
+		prefix = append(prefix, schema.SystemMessage(wrapped))
+		contextBlocks = append(contextBlocks, preflightContextBlocks(a.preflight)...)
 	}
 	if memoryMessage != nil {
 		prefix = append(prefix, memoryMessage)
+		contextBlocks = append(contextBlocks, prompt.ContextBlock{Name: "memory_context", Order: 200, Text: memoryMessage.Content})
 	}
+	// Include the user request in the audit snapshot by hash only. The model
+	// still receives the normal user message below; duplicating its body in a
+	// system block would waste context and could change legacy behavior.
+	contextBlocks = append(contextBlocks, prompt.ContextBlock{Name: "user_query", Order: 300, Text: prompt.WrapUserQuery(query), Required: true})
 	historyTokenBudget := a.contextBudget.HistoryTokens(prefix)
 	maxMessages, maxChars := a.maxMessages, a.maxChars
 	if historyTokenBudget >= 0 {
@@ -460,6 +667,15 @@ func (a *ChatAgent) AskTo(ctx context.Context, query string, writer io.Writer) e
 		return fmt.Errorf("%w: 当前问题及检索上下文超过所选模型的估算输入预算，请缩短问题、减少检索资料或选择更大上下文模型", session.ErrContextBudgetExceeded)
 	}
 	input = append(prefix, input...)
+	contextSnapshotRendered := prompt.RenderContextBlocks(contextBlocks...)
+	// Keep one auditable record per model-facing role. Bodies remain private;
+	// only hashes, lengths and block hashes enter the execution log.
+	a.emitPromptAudits("chat", query, contextSnapshotRendered)
+	ctx = execution.WithModelMetadata(ctx, map[string]any{
+		"prompt_version": a.promptVersion, "prompt_hash": a.promptHash,
+		"agent_role": string(a.promptRole), "tool_set_hash": a.toolSetHash,
+		"context_hash": contextSnapshotRendered.Hash,
+	})
 	if err := a.beginReply(); err != nil {
 		a.history = a.history[:previousLength]
 		return err
@@ -472,9 +688,79 @@ func (a *ChatAgent) AskTo(ctx context.Context, query string, writer io.Writer) e
 	return a.finishReply(answer, approval, err)
 }
 
+func memoryContextHasFacts(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	return !strings.Contains(trimmed, "<memory_context>[]</memory_context>") && !strings.Contains(trimmed, "<memory_context>\n[]\n</memory_context>")
+}
+
+func memoryContextFactCount(text string) int {
+	if !memoryContextHasFacts(text) {
+		return 0
+	}
+	return strings.Count(text, `"id"`)
+}
+
+// preflightContextBlocks keeps one model-visible runtime message for backward
+// compatibility while giving audit/replay a stable classification of the
+// evidence inside it. The classification is server-side metadata only.
+func preflightContextBlocks(text string) []prompt.ContextBlock {
+	blocks := []prompt.ContextBlock{}
+	if strings.Contains(text, "<knowledge_preflight") || strings.Contains(text, "<knowledge_results>") {
+		blocks = append(blocks, prompt.ContextBlock{Name: "knowledge_context", Order: 120, Text: text})
+	}
+	if strings.Contains(text, "<untrusted_local_file_evidence>") || strings.Contains(text, "<local_file_preflight") {
+		blocks = append(blocks, prompt.ContextBlock{Name: "file_context", Order: 130, Text: text})
+	}
+	if strings.Contains(text, "<untrusted_attachment_evidence>") {
+		blocks = append(blocks, prompt.ContextBlock{Name: "attachment_context", Order: 140, Text: text})
+	}
+	if len(blocks) == 0 {
+		blocks = append(blocks, prompt.ContextBlock{Name: "runtime_context", Order: 100, Text: text})
+	}
+	return blocks
+}
+
 // ResumeApproval 使用同一 checkpoint 恢复被审批中断的执行。
 func (a *ChatAgent) ResumeApproval(ctx context.Context, request *ApprovalRequest, approved bool) error {
 	return a.ResumeApprovalTo(ctx, request, approved, os.Stdout)
+}
+
+// ResumeInterrupted continues a checkpoint after a process interruption using
+// Eino's implicit resume strategy. It is only called after recovery confirms
+// that no approval is pending.
+func (a *ChatAgent) ResumeInterrupted(ctx context.Context, writer io.Writer) error {
+	a.em = execution.FromContext(ctx)
+	if a.runID == "" {
+		a.runID = a.em.RunID()
+	}
+	a.reasoning = ""
+	if a.turnID == "" {
+		a.turnID = uuid.NewString()
+	}
+	a.setScope(a.turnID, uuid.NewString(), uuid.NewString())
+	a.emitPromptAudits("resume_interrupted", "", prompt.ContextSnapshot{})
+	ctx = execution.WithModelMetadata(ctx, map[string]any{
+		"prompt_version": a.promptVersion, "prompt_hash": a.promptHash,
+		"agent_role": string(a.promptRole), "tool_set_hash": a.toolSetHash,
+	})
+	partial := ""
+	if len(a.history) > 0 && storageStatus(a.history[len(a.history)-1]) == "generating" {
+		partial = a.history[len(a.history)-1].Content
+	}
+	if err := a.beginReply(); err != nil {
+		return err
+	}
+	a.em.Emit(execution.Event{Type: execution.ModelWaiting, Payload: map[string]any{"phase": "resume_interrupted", "attempt": 1}})
+	events, err := a.runner.Resume(ctx, a.sessionID)
+	if err != nil {
+		return a.finishReply(partial, nil, err)
+	}
+	answer, approval, err := a.collect(events, execution.NewChunkWriter(a.em, writer))
+	answer = partial + answer
+	return a.finishReply(answer, approval, err)
 }
 
 // ResumeApprovalTo 将恢复后的增量输出写到指定 Writer。
@@ -488,6 +774,11 @@ func (a *ChatAgent) ResumeApprovalTo(ctx context.Context, request *ApprovalReque
 		a.runID = a.em.RunID()
 	}
 	a.reasoning = ""
+	if a.turnID == "" {
+		a.turnID = uuid.NewString()
+	}
+	a.setScope(a.turnID, uuid.NewString(), uuid.NewString())
+	a.emitPromptAudits("resume", "", prompt.ContextSnapshot{})
 	// TargetID 精确指向产生中断的工具节点，同一会话可从该位置继续运行。
 	if err := a.beginReply(); err != nil {
 		a.history = a.history[:len(a.history)-1]
@@ -576,6 +867,11 @@ func (a *ChatAgent) collect(events *adk.AsyncIterator[*adk.AgentEvent], writer i
 			bodyChars, reasoningChars, chunks := 0, 0, 0
 			streamStarted := time.Now()
 			logStreamEnd := func(err error) {
+				payload := map[string]any{"agent_name": event.AgentName, "finish_reason": finishReason}
+				if err != nil {
+					payload["error"] = execution.DigestArgs(err.Error())
+				}
+				a.em.Emit(execution.Event{Type: execution.ModelCompleted, Payload: payload})
 				if a.debug {
 					fmt.Fprintf(os.Stderr, "[model-stream-end] session=%q run=%q agent=%q role=%q read_duration=%s chunks=%d answer_chars=%d reasoning_chars=%d finish_reason=%q err=%s\n", a.sessionID, a.runID, event.AgentName, output.Role, time.Since(streamStarted), chunks, bodyChars, reasoningChars, finishReason, observability.Redact(fmt.Sprint(err)))
 				}

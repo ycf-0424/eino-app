@@ -61,6 +61,8 @@ skill_tools:
   max_file_count: 256
 
 # P8 实时执行进度；默认关闭，Compose 可通过环境变量或配置文件灰度开启。
+prompt:
+  profile: legacy
 execution_events:
   enabled: true
   queue_size: 256
@@ -172,6 +174,14 @@ retry:
 rag:
   enabled: true
   store: "milvus"
+  hybrid_search: true
+  reranker:
+    enabled: true
+    provider: "lexical"
+  citation_guard:
+    enabled: true
+    enforce: true
+    min_coverage: 0.08
   document_dir: "docs/knowledge"
   chunk_size: 800
   chunk_overlap: 120

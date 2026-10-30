@@ -654,6 +654,23 @@ function renderEvent(panel, event, live = false) {
       text.textContent = "开始处理本轮请求";
       setStatus("正在准备本轮请求…");
       break;
+    case "memory_retrieved":
+      item.dataset.state = "info";
+      icon.textContent = payload.hit ? "◆" : "◇";
+      text.textContent = payload.hit
+        ? `长期记忆：命中 ${payload.hit_count || 1} 条`
+        : "长期记忆：未命中";
+      break;
+    case "citation_checked":
+      item.dataset.state = payload.valid ? "done" : "failed";
+      icon.textContent = payload.valid ? "✓" : "!";
+      text.textContent = payload.valid ? "引用证据校验通过" : `引用证据不足${payload.reason ? `：${payload.reason}` : ""}`;
+      break;
+    case "evidence_conflict":
+      item.dataset.state = "failed";
+      icon.textContent = "!";
+      text.textContent = `检索证据存在冲突：${payload.key || "请核对来源"}`;
+      break;
     case "model_waiting":
       item.dataset.state = "pending";
       icon.textContent = "…";

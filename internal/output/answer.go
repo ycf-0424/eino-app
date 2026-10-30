@@ -11,10 +11,13 @@ import (
 
 // Answer 是 RAG 对外返回的稳定数据结构。
 type Answer struct {
-	Answer     string   `json:"answer"`
-	Sources    []string `json:"sources,omitempty"`
-	Confidence float64  `json:"confidence"`
-	Error      string   `json:"error,omitempty"`
+	Answer        string   `json:"answer"`
+	Sources       []string `json:"sources,omitempty"`
+	Confidence    float64  `json:"confidence"`
+	Error         string   `json:"error,omitempty"`
+	KnowledgeHits int      `json:"knowledge_hits,omitempty"`
+	MemoryHits    int      `json:"memory_hits,omitempty"`
+	CitationValid bool     `json:"citation_valid,omitempty"`
 }
 
 // ParseModelAnswer 解析模型 JSON；模型偶尔返回 Markdown 围栏时也能兼容。

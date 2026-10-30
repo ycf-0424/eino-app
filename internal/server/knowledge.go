@@ -81,6 +81,11 @@ func (s *Service) runKnowledgeIndex(r *http.Request, force bool) (rag.IndexRepor
 	} else {
 		s.knowledgeReport = report
 		s.knowledgeIndexError = ""
+		if s.lexicalIndex != nil && s.cfg != nil {
+			if refreshErr := s.lexicalIndex.Refresh(s.cfg.RAG.DocumentDir, s.cfg.RAG.ChunkSize, s.cfg.RAG.ChunkOverlap); refreshErr != nil {
+				s.knowledgeIndexError = "lexical index refresh failed: " + refreshErr.Error()
+			}
+		}
 	}
 	s.knowledgeMu.Unlock()
 	return report, err

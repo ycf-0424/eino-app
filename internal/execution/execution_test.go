@@ -45,6 +45,33 @@ func TestEmitterAssignsMonotonicSequenceForChunksAndEvents(t *testing.T) {
 	}
 }
 
+func TestEmitterCarriesTurnStepAttemptScope(t *testing.T) {
+	recorder := NewRecorder(0)
+	em := NewSession("run-1", "session-1", nil, recorder, SessionOptions{})
+	scoped, ok := any(em).(ScopedEmitter)
+	if !ok {
+		t.Fatal("session should implement ScopedEmitter")
+	}
+	scoped.SetScope("turn-1", "step-1", "attempt-1")
+	em.Emit(Event{Type: ModelWaiting})
+	events := recorder.Events()
+	if len(events) != 1 || events[0].TurnID != "turn-1" || events[0].StepID != "step-1" || events[0].AttemptID != "attempt-1" {
+		t.Fatalf("scope not carried: %+v", events)
+	}
+}
+
+func TestModelMetadataIsCopiedAndDoesNotLeakBodies(t *testing.T) {
+	ctx := WithModelMetadata(context.Background(), map[string]any{"prompt_hash": "abc", "context_hash": "def"})
+	meta := ModelMetadata(ctx)
+	meta["prompt_hash"] = "changed"
+	if ModelMetadata(ctx)["prompt_hash"] != "abc" {
+		t.Fatal("metadata must be returned as a copy")
+	}
+	if _, ok := ModelMetadata(context.Background())["prompt_hash"]; ok {
+		t.Fatal("metadata should be absent when not attached")
+	}
+}
+
 func TestEmitterIgnoresUnknownType(t *testing.T) {
 	recorder := NewRecorder(0)
 	em := NewSession("run-1", "session-1", nil, recorder, SessionOptions{})
@@ -55,6 +82,29 @@ func TestEmitterIgnoresUnknownType(t *testing.T) {
 	}
 	if !recorder.Events()[0].Type.Known() {
 		t.Fatal("unknown event should not be delivered")
+	}
+}
+
+func TestInspectRecoveryDistinguishesInterruptedAndApproval(t *testing.T) {
+	interrupted := InspectRecovery([]Event{
+		{RunID: "r1", TurnID: "t1", StepID: "s1", AttemptID: "a1", Type: ModelRequest},
+	})
+	if interrupted.Terminal || !interrupted.SafeToRetry || interrupted.OpenAttemptID != "a1" {
+		t.Fatalf("interrupted recovery=%+v", interrupted)
+	}
+	pending := InspectRecovery([]Event{
+		{RunID: "r2", TurnID: "t2", StepID: "s2", AttemptID: "a2", Type: ToolStarted, Payload: map[string]any{"tool_call_id": "c1"}},
+		{RunID: "r2", TurnID: "t2", StepID: "s2", AttemptID: "a2", Type: ApprovalRequired},
+	})
+	if !pending.PendingApproval || pending.SafeToRetry {
+		t.Fatalf("approval recovery=%+v", pending)
+	}
+	resumed := InspectRecovery([]Event{
+		{RunID: "r2", TurnID: "t2", StepID: "s2", AttemptID: "a2", Type: ApprovalRequired},
+		{RunID: "r2", TurnID: "t2", StepID: "s3", AttemptID: "a3", Type: ModelRequest},
+	})
+	if resumed.PendingApproval || !resumed.SafeToRetry || resumed.TurnID != "t2" {
+		t.Fatalf("resumed recovery=%+v", resumed)
 	}
 }
 
@@ -255,6 +305,32 @@ func TestFileStoreRecoverStale(t *testing.T) {
 	events, _ := store.ListEvents(ctx, "session-b", "run-stale", 0, 10)
 	if len(events) != 1 || events[0].Type != RunFailed {
 		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestFileStoreDoesNotRecoverPendingApproval(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	started := time.Now().Add(-time.Hour)
+	if err := store.StartRun(ctx, Run{RunID: "run-approval", SessionID: "session-c", Status: StatusRunning, StartedAt: started}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendEvents(ctx, "run-approval", []Event{
+		{Version: Version, EventID: "approval-start", RunID: "run-approval", SessionID: "session-c", Sequence: 1, OccurredAt: started, Type: ToolStarted, TurnID: "turn-1", StepID: "step-1", AttemptID: "attempt-1", Payload: map[string]any{"tool_call_id": "call-1"}},
+		{Version: Version, EventID: "approval-required", RunID: "run-approval", SessionID: "session-c", Sequence: 2, OccurredAt: started, Type: ApprovalRequired, TurnID: "turn-1", StepID: "step-1", AttemptID: "attempt-1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.RecoverStale(ctx, time.Minute)
+	if err != nil || recovered != 0 {
+		t.Fatalf("recovered=%d err=%v; pending approvals must remain resumable", recovered, err)
+	}
+	runs, err := store.ListRuns(ctx, "session-c", 1)
+	if err != nil || len(runs) != 1 || runs[0].Status != StatusRunning {
+		t.Fatalf("runs=%+v err=%v", runs, err)
 	}
 }
 

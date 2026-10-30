@@ -51,6 +51,38 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestPromptProfileDefaultsToLegacyAndRejectsUnknown(t *testing.T) {
+	cfg := Config{OpenAI: OpenAI{Model: "qwen", BaseURL: "http://localhost:11434/v1"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Prompt.Profile != "legacy" {
+		t.Fatalf("default prompt profile = %q", cfg.Prompt.Profile)
+	}
+	cfg.Prompt.Profile = "unknown"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "prompt.profile") {
+		t.Fatalf("expected prompt profile validation error, got %v", err)
+	}
+	cfg.Prompt.Profile = "v2-shadow"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("v2-shadow should validate: %v", err)
+	}
+}
+
+func TestValidateRAGRerankerDefaultsToLexical(t *testing.T) {
+	cfg := Config{OpenAI: OpenAI{Model: "qwen", BaseURL: "http://localhost:11434/v1"}, RAG: RAG{
+		Enabled: true, Store: "milvus", Dimension: 3,
+		Embedding: OpenAI{Model: "bge", BaseURL: "http://localhost:11434/v1"},
+		Reranker:  RerankerConfig{Enabled: true},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RAG.Reranker.Provider != "lexical" {
+		t.Fatalf("provider=%q", cfg.RAG.Reranker.Provider)
+	}
+}
+
 func TestDocumentToolsRequireLocalFileRoots(t *testing.T) {
 	cfg := Config{
 		OpenAI:        OpenAI{APIKey: "local", Model: "qwen", BaseURL: "http://localhost:11434/v1"},

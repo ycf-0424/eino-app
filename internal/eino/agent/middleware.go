@@ -76,6 +76,18 @@ func safeToolMiddleware(debug bool, agentName string) compose.ToolMiddleware {
 	return compose.ToolMiddleware{Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 		return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
 			em := execution.FromContext(ctx)
+			var turnID string
+			if scoped, ok := em.(execution.ScopedEmitter); ok {
+				turnID, _, _ = scoped.Scope()
+			}
+			stepID, attemptID := uuid.NewString(), uuid.NewString()
+			// Put the concrete tool call identifiers on every event directly. This
+			// avoids a race when Eino runs independent tools concurrently while the
+			// session retains a default scope for ordinary events.
+			scopeEvent := func(ev execution.Event) execution.Event {
+				ev.TurnID, ev.StepID, ev.AttemptID = turnID, stepID, attemptID
+				return ev
+			}
 			toolCtx, cancel := context.WithTimeout(ctx, toolTimeout)
 			defer cancel()
 			// 每次工具调用使用独立标注容器：并发执行时不串数据。
@@ -87,12 +99,12 @@ func safeToolMiddleware(debug bool, agentName string) compose.ToolMiddleware {
 				callID = uuid.NewString()
 			}
 			started := time.Now()
-			em.Emit(execution.Event{Type: execution.ToolStarted, Payload: map[string]any{
+			em.Emit(scopeEvent(execution.Event{Type: execution.ToolStarted, Payload: map[string]any{
 				"tool_name":    input.Name,
 				"tool_call_id": callID,
 				"agent_name":   agentName,
 				"args_digest":  execution.DigestArgs(input.Arguments),
-			}})
+			}}))
 			if debug {
 				fmt.Fprintf(os.Stderr, "[tool] start name=%s args=%s\n", input.Name, observability.Redact(input.Arguments))
 			}
@@ -107,7 +119,7 @@ func safeToolMiddleware(debug bool, agentName string) compose.ToolMiddleware {
 					"duration_ms":  time.Since(started).Milliseconds(),
 					"error_code":   "write_note_not_requested",
 				}
-				em.Emit(execution.Event{Type: execution.ToolFailed, Payload: payload})
+				em.Emit(scopeEvent(execution.Event{Type: execution.ToolFailed, Payload: payload}))
 				return &compose.ToolOutput{Result: "当前请求未明确要求写入笔记或文件，因此不能调用 write_note。请直接回答用户，并由系统自动处理长期记忆。"}, nil
 			}
 
@@ -131,16 +143,16 @@ func safeToolMiddleware(debug bool, agentName string) compose.ToolMiddleware {
 			switch {
 			case err == nil:
 				bag.MergeInto(payload)
-				em.Emit(execution.Event{Type: execution.CompletionTypeFor(input.Name), Payload: payload})
+				em.Emit(scopeEvent(execution.Event{Type: execution.CompletionTypeFor(input.Name), Payload: payload}))
 			case errors.Is(toolCtx.Err(), context.DeadlineExceeded):
 				payload["error_code"] = "timeout"
-				em.Emit(execution.Event{Type: execution.ToolFailed, Payload: payload})
+				em.Emit(scopeEvent(execution.Event{Type: execution.ToolFailed, Payload: payload}))
 			case ctx.Err() != nil:
 				// 用户取消或断线：由取消链路统一收尾，不补发 failed。
 			default:
 				payload["error_code"] = toolset.ErrorCode(err)
 				payload["error_message"] = observability.Redact(err.Error())
-				em.Emit(execution.Event{Type: execution.ToolFailed, Payload: payload})
+				em.Emit(scopeEvent(execution.Event{Type: execution.ToolFailed, Payload: payload}))
 				// 输入类错误降级为可恢复结果，理由见 recoverableToolResult 的注释。
 				if result, ok := recoverableToolResult(payload["error_code"].(string), input.Name, err); ok {
 					return &compose.ToolOutput{Result: result}, nil

@@ -21,6 +21,7 @@ import (
 	"my-eino-app/internal/auth"
 	"my-eino-app/internal/config"
 	"my-eino-app/internal/eino/chain"
+	"my-eino-app/internal/eino/rag"
 	"my-eino-app/internal/evaluation"
 	"my-eino-app/internal/execution"
 	"my-eino-app/internal/health"
@@ -47,6 +48,8 @@ func main() {
 	maxOrdinaryFalsePositive := flag.Float64("max-ordinary-false-positive", 0.01, "普通问题误触发非通用证据来源的最高比例")
 	intentOnly := flag.Bool("intent-only", false, "只运行离线五类意图/普通问题误触发门禁，不启动模型或向量库")
 	maxForbiddenToolViolations := flag.Int("max-forbidden-tool-violations", -1, "评测集明确禁止的工具调用允许的最多违规用例数；-1 表示不检查")
+	abRetrieval := flag.Bool("ab-retrieval", false, "只运行向量检索与混合检索 A/B 评测，不调用生成模型")
+	abFile := flag.String("ab-file", "", "检索 A/B 评测集 JSON；默认 internal/integration/retrieval_ab_cases.json")
 	debugOverride := flag.String("debug", "", "覆盖 config.yaml 的 debug（true/false）；留空时使用配置文件")
 	modelOverride := flag.String("model", "", "评测使用的模型 profile ID；默认固定 config.yaml active_model，使用生产自动路由请显式传 auto")
 	flag.Parse()
@@ -110,6 +113,22 @@ func main() {
 		fail(err)
 	}
 	defer runner.Close()
+	if *abRetrieval {
+		if *abFile == "" {
+			*abFile = filepath.Join(cfg.ProjectDir, "internal", "integration", "retrieval_ab_cases.json")
+		}
+		cases, loadErr := evaluation.LoadRetrievalABCases(*abFile)
+		if loadErr != nil {
+			fail(loadErr)
+		}
+		report := evaluation.EvaluateRetrievalAB(ctx, runner.service.KnowledgeStore(), runner.service.KnowledgeLexicalIndex(), cases, rag.SearchOptions{TopK: cfg.RAG.TopK, ScoreThreshold: effectiveThreshold, MaxContextChars: cfg.RAG.MaxContextChars})
+		data, marshalErr := json.MarshalIndent(report, "", "  ")
+		if marshalErr != nil {
+			fail(marshalErr)
+		}
+		fmt.Println(string(data))
+		return
+	}
 	cases, err := evaluation.LoadCases(*file)
 	if err != nil {
 		fail(err)

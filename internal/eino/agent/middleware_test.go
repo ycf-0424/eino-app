@@ -15,6 +15,7 @@ func runMiddleware(t *testing.T, endpoint compose.InvokableToolEndpoint) []execu
 	t.Helper()
 	recorder := execution.NewRecorder(0)
 	em := execution.NewSession("run-1", "session-1", nil, recorder, execution.SessionOptions{})
+	em.SetScope("turn-1", "step-parent", "attempt-parent")
 	ctx := execution.WithEmitter(context.Background(), em)
 	wrapped := safeToolMiddleware(false, "test-agent").Invokable(endpoint)
 	_, _ = wrapped(ctx, &compose.ToolInput{Name: "current_time", Arguments: `{}`, CallID: "call-1"})
@@ -42,6 +43,9 @@ func TestMiddlewareEmitsStartedAndCompletedWithAnnotations(t *testing.T) {
 	}
 	if payload["hit_count"] != 3 {
 		t.Fatalf("annotation missing: %+v", payload)
+	}
+	if events[0].TurnID == "" || events[0].StepID == "" || events[0].AttemptID == "" || events[1].StepID != events[0].StepID || events[1].AttemptID != events[0].AttemptID {
+		t.Fatalf("tool events should share a durable call scope: %+v", events)
 	}
 	// args_digest 只保留短摘要，绝不写入原始参数。
 	if events[0].Payload["args_digest"] == "" || events[0].Payload["args_digest"] == `{}` {

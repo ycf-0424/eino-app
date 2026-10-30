@@ -42,6 +42,7 @@ type RAGChain struct {
 	run            compose.Runnable[Context, *schema.Message]
 	fallbackRun    compose.Runnable[Context, *schema.Message]
 	memoryFallback MemoryFallback
+	searchOptions  rag.SearchOptions
 }
 
 // New 创建 RAG Chain。Chain 内部使用 Eino compose 节点，而不是在控制台手写步骤。
@@ -77,6 +78,14 @@ func NewWithMemoryFallback(ctx context.Context, store rag.Store, model einomodel
 	return &RAGChain{store: store, model: model, run: run, fallbackRun: fallbackRun, memoryFallback: fallback}, nil
 }
 
+// SetSearchOptions enables the optional P0 hybrid/reranker path for this chain.
+// The zero value keeps the original vector-only behavior.
+func (c *RAGChain) SetSearchOptions(options rag.SearchOptions) {
+	if c != nil {
+		c.searchOptions = options
+	}
+}
+
 // SetMemoryFallback 在构造会话存储后注入长期记忆查询，供控制台入口使用。
 // 应在并发调用 Run 之前设置。
 func (c *RAGChain) SetMemoryFallback(fallback MemoryFallback) {
@@ -89,11 +98,14 @@ func (c *RAGChain) SetMemoryFallback(fallback MemoryFallback) {
 func (c *RAGChain) Run(ctx context.Context, in Input) (output.Answer, error) {
 	// 先改写查询，再把改写后的文本交给向量库；原问题仍用于最终回答。
 	rewrittenQuery := RewriteQuery(in.Query)
-	docs, err := c.store.Search(ctx, rewrittenQuery, in.TopK)
+	options := c.searchOptions
+	options.TopK = in.TopK
+	options.ScoreThreshold = in.ScoreThreshold
+	options.MaxContextChars = in.MaxContextChars
+	docs, err := rag.Retrieve(ctx, c.store, rewrittenQuery, options)
 	if err != nil {
 		return output.Answer{}, fmt.Errorf("retrieve: %w", err)
 	}
-	docs = rag.FilterDocuments(docs, rag.SearchOptions{TopK: in.TopK, ScoreThreshold: in.ScoreThreshold, MaxContextChars: in.MaxContextChars})
 	var content strings.Builder
 	sources := make([]string, 0, len(docs))
 	maxScore := 0.0
@@ -129,11 +141,18 @@ func (c *RAGChain) Run(ctx context.Context, in Input) (output.Answer, error) {
 		if invokeErr != nil {
 			return output.Answer{}, fmt.Errorf("generate fallback answer: %w", invokeErr)
 		}
-		return output.ParseModelAnswer(message, memorySources, 0), nil
+		answer := output.ParseModelAnswer(message, memorySources, 0)
+		answer.MemoryHits = 1
+		answer.CitationValid = output.CheckCitation(answer.Answer, memoryText, memorySources).Valid
+		return answer, nil
 	}
 	message, err := c.run.Invoke(ctx, Context{Query: in.Query, Content: content.String(), Sources: prompt.FormatSources(sources), Docs: docs})
 	if err != nil {
 		return output.Answer{}, fmt.Errorf("generate rag answer: %w", err)
 	}
-	return output.ParseModelAnswer(message, sources, maxScore), nil
+	answer := output.ParseModelAnswer(message, sources, maxScore)
+	report := output.CheckCitation(answer.Answer, content.String(), sources)
+	answer.KnowledgeHits = len(docs)
+	answer.CitationValid = report.Valid
+	return answer, nil
 }

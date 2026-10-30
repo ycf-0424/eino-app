@@ -114,6 +114,13 @@ type Report struct {
 	Debug                    *bool         `json:"debug,omitempty"`
 	ScoreThreshold           float64       `json:"score_threshold,omitempty"`
 	Intent                   IntentReport  `json:"intent_routing"`
+	KnowledgeHitTotal        int           `json:"knowledge_hit_total"`
+	KnowledgeHitRate         float64       `json:"knowledge_hit_rate"`
+	MemoryHitTotal           int           `json:"memory_hit_total"`
+	MemoryHitRate            float64       `json:"memory_hit_rate"`
+	CitationCheckedTotal     int           `json:"citation_checked_total"`
+	CitationValidTotal       int           `json:"citation_valid_total"`
+	CitationGuardRate        float64       `json:"citation_guard_rate"`
 }
 
 // LoadCases 函数。
@@ -148,6 +155,18 @@ func Run(ctx context.Context, runner Runner, cases []Case, input func(string) ch
 		if err != nil {
 			result.Error = err.Error()
 		} else {
+			if answer.KnowledgeHits > 0 {
+				report.KnowledgeHitTotal++
+			}
+			if answer.MemoryHits > 0 {
+				report.MemoryHitTotal++
+			}
+			if answer.KnowledgeHits > 0 || answer.MemoryHits > 0 {
+				report.CitationCheckedTotal++
+				if answer.CitationValid {
+					report.CitationValidTotal++
+				}
+			}
 			result.Refused = isRefusal(answer.Answer)
 			if item.ShouldRefuse {
 				result.Correct = result.Refused
@@ -191,6 +210,13 @@ func Run(ctx context.Context, runner Runner, cases []Case, input func(string) ch
 	}
 	if refusalRequired > 0 {
 		report.RefusalRate = float64(refused) / float64(refusalRequired)
+	}
+	if report.Total > 0 {
+		report.KnowledgeHitRate = float64(report.KnowledgeHitTotal) / float64(report.Total)
+		report.MemoryHitRate = float64(report.MemoryHitTotal) / float64(report.Total)
+	}
+	if report.CitationCheckedTotal > 0 {
+		report.CitationGuardRate = float64(report.CitationValidTotal) / float64(report.CitationCheckedTotal)
 	}
 	return report
 }

@@ -316,12 +316,22 @@ func (s *FileStore) RecoverStale(ctx context.Context, olderThan time.Duration) (
 			if run.Status != StatusRunning || run.StartedAt.After(cutoff) {
 				continue
 			}
+			events, _ := s.ListEvents(ctx, sessionID, runID, 0, 0)
+			recovery := InspectRecovery(events)
+			// Approval checkpoints are intentionally left recoverable. The
+			// approval file/checkpoint is the source of truth and the next
+			// request will resume it; marking it failed here would discard the
+			// user's pending decision.
+			if recovery.PendingApproval {
+				continue
+			}
 			finished := time.Now().UTC()
 			sequence, _ := s.MaxSequence(ctx, runID)
 			ev := Event{
 				Version: Version, EventID: newEventID(), RunID: runID, SessionID: sessionID,
 				Sequence: sequence + 1, OccurredAt: finished, Type: RunFailed,
-				Summary: "运行中断", Payload: map[string]any{"error_code": "interrupted"},
+				TurnID: recovery.TurnID, StepID: recovery.OpenStepID, AttemptID: recovery.OpenAttemptID,
+				Summary: "运行中断", Payload: map[string]any{"error_code": "interrupted", "stop_reason": "interrupted", "recovery_safe": recovery.SafeToRetry},
 			}
 			if err := s.append(sessionID,
 				fileRecord{Kind: recordKindEvent, RunID: runID, Event: &ev},

@@ -72,10 +72,18 @@ type Config struct {
 	SkillTools SkillToolsConfig `yaml:"skill_tools"`
 	// ExecutionEvents 控制实时执行进度与执行记录；默认关闭，关闭时行为与 P7 一致。
 	ExecutionEvents ExecutionEvents `yaml:"execution_events"`
+	// Prompt controls prompt assembly. Empty profile defaults to legacy; set
+	// v2 after comparing prompt snapshots and tool-call metrics.
+	Prompt PromptConfig `yaml:"prompt"`
 	// Auth 控制登录认证与多用户隔离；关闭时以单用户模式运行，行为与改造前一致。
 	Auth Auth `yaml:"auth"`
 	// ProjectDir 是实际找到的 config.yaml 所在目录，不参与 YAML 序列化。
 	ProjectDir string `yaml:"-"`
+}
+
+// PromptConfig selects the model-facing prompt assembly profile.
+type PromptConfig struct {
+	Profile string `yaml:"profile"`
 }
 
 // ResolveModelProfile returns the profile used by a chat request. An empty ID
@@ -273,19 +281,33 @@ type AutoModelRouting struct {
 
 // RAG 配置知识库的 Embedding、向量存储与检索参数。
 type RAG struct {
-	Enabled         bool    `yaml:"enabled"`
-	Store           string  `yaml:"store"`
-	DocumentDir     string  `yaml:"document_dir"`
-	ChunkSize       int     `yaml:"chunk_size"`
-	ChunkOverlap    int     `yaml:"chunk_overlap"`
-	TopK            int     `yaml:"top_k"`
-	ScoreThreshold  float64 `yaml:"score_threshold"`
-	MaxContextChars int     `yaml:"max_context_chars"`
-	MaxUploadBytes  int64   `yaml:"max_upload_bytes"`
-	Embedding       OpenAI  `yaml:"embedding"`
-	Dimension       int     `yaml:"dimension"`
-	Redis           Redis   `yaml:"redis"`
-	Milvus          Milvus  `yaml:"milvus"`
+	Enabled         bool                `yaml:"enabled"`
+	Store           string              `yaml:"store"`
+	DocumentDir     string              `yaml:"document_dir"`
+	ChunkSize       int                 `yaml:"chunk_size"`
+	ChunkOverlap    int                 `yaml:"chunk_overlap"`
+	TopK            int                 `yaml:"top_k"`
+	ScoreThreshold  float64             `yaml:"score_threshold"`
+	MaxContextChars int                 `yaml:"max_context_chars"`
+	MaxUploadBytes  int64               `yaml:"max_upload_bytes"`
+	Embedding       OpenAI              `yaml:"embedding"`
+	Dimension       int                 `yaml:"dimension"`
+	Redis           Redis               `yaml:"redis"`
+	Milvus          Milvus              `yaml:"milvus"`
+	HybridSearch    bool                `yaml:"hybrid_search"`
+	Reranker        RerankerConfig      `yaml:"reranker"`
+	CitationGuard   CitationGuardConfig `yaml:"citation_guard"`
+}
+
+type RerankerConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Provider string `yaml:"provider"`
+}
+
+type CitationGuardConfig struct {
+	Enabled     bool    `yaml:"enabled"`
+	Enforce     bool    `yaml:"enforce"`
+	MinCoverage float64 `yaml:"min_coverage"`
 }
 
 // Redis 类型。
@@ -330,6 +352,14 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 
 // Validate 检查配置中必须存在的字段。
 func (c *Config) Validate() error {
+	if strings.TrimSpace(c.Prompt.Profile) == "" {
+		// Legacy is the safe default: deployments can opt into v2 after
+		// comparing prompt snapshots and tool-call metrics.
+		c.Prompt.Profile = "legacy"
+	}
+	if c.Prompt.Profile != "legacy" && c.Prompt.Profile != "v2" && c.Prompt.Profile != "v2-shadow" {
+		return fmt.Errorf("prompt.profile must be legacy, v2, or v2-shadow")
+	}
 	if c.Session.MaxSummaryChars == 0 {
 		c.Session.MaxSummaryChars = 4000
 	}
@@ -819,6 +849,20 @@ func (c *Config) Validate() error {
 		}
 		if c.RAG.TopK == 0 {
 			c.RAG.TopK = 5
+		}
+		if c.RAG.Reranker.Enabled {
+			if strings.TrimSpace(c.RAG.Reranker.Provider) == "" {
+				c.RAG.Reranker.Provider = "lexical"
+			}
+			if c.RAG.Reranker.Provider != "lexical" {
+				return fmt.Errorf("rag.reranker.provider %q is not available", c.RAG.Reranker.Provider)
+			}
+		}
+		if c.RAG.CitationGuard.MinCoverage <= 0 {
+			c.RAG.CitationGuard.MinCoverage = 0.08
+		}
+		if c.RAG.CitationGuard.MinCoverage > 1 {
+			return fmt.Errorf("rag.citation_guard.min_coverage must be between 0 and 1")
 		}
 		if c.RAG.ChunkOverlap >= c.RAG.ChunkSize {
 			return fmt.Errorf("rag.chunk_overlap must be smaller than chunk_size")
